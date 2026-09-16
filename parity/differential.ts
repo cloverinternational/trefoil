@@ -1066,6 +1066,15 @@ const QUOTA_CLEAR_CASES: KeysCase[] = [
   { name: 'POST quota/clear rejects limited key', method: 'POST', path: '/v0/management/quota/clear', adminHeader: LIMITED_KEY_SECRET, body: { key: 'x' } },
 ];
 
+const DEBUG_LOG_CASES: KeysCase[] = [
+  { name: 'GET debug/logs returns scoped page', method: 'GET', path: '/v0/management/debug/logs?limit=5&offset=0', adminHeader: ADMIN_KEY },
+  { name: 'GET missing debug log returns 404', method: 'GET', path: '/v0/management/debug/logs/parity-missing-log', adminHeader: ADMIN_KEY },
+  { name: 'DELETE all debug logs rejects limited key', method: 'DELETE', path: '/v0/management/debug/logs', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'DELETE missing debug log is idempotent for admin', method: 'DELETE', path: '/v0/management/debug/logs/parity-missing-log', adminHeader: ADMIN_KEY },
+  { name: 'DELETE missing debug log is hidden from limited key', method: 'DELETE', path: '/v0/management/debug/logs/parity-missing-log', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET debug/logs rejects missing credential', method: 'GET', path: '/v0/management/debug/logs' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1316,6 +1325,7 @@ async function main() {
   failures += await runCases(COMPACTION_CASES);
   failures += await runCases(QUOTA_DISCOVERY_CASES);
   failures += await runCases(QUOTA_CLEAR_CASES);
+  failures += await runCases(DEBUG_LOG_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1372,6 +1382,7 @@ async function main() {
     COMPACTION_CASES.length +
     QUOTA_DISCOVERY_CASES.length +
     QUOTA_CLEAR_CASES.length +
+    DEBUG_LOG_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

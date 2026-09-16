@@ -5,6 +5,7 @@ pub mod config_routes;
 pub mod cooldowns;
 pub mod database;
 pub mod debug;
+pub mod debug_logs;
 pub mod errors;
 pub mod inference;
 pub mod keys;
@@ -32,6 +33,7 @@ pub fn app(state: AppState) -> Router {
         .merge(concurrency::router())
         .merge(cooldowns::router())
         .merge(debug::router())
+        .merge(debug_logs::router())
         .merge(errors::router())
         .merge(inference::router())
         .merge(logging::router())
