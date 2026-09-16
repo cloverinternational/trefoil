@@ -10,20 +10,60 @@ use crate::{
     AppState,
 };
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json, Router,
 };
+use serde::Deserialize;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route(
-        "/v0/management/oauth/providers",
-        axum::routing::get(providers),
-    )
+    Router::new()
+        .route(
+            "/v0/management/oauth/providers",
+            axum::routing::get(providers),
+        )
+        .route(
+            "/v0/management/oauth/credentials/status",
+            axum::routing::get(credential_status),
+        )
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CredentialStatusQuery {
+    provider_id: Option<String>,
+    account_id: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    match resolve_principal(
+        state,
+        headers.get("x-admin-key").and_then(|value| value.to_str().ok()),
+    ) {
+        Some(Principal::Admin) => Ok(()),
+        Some(Principal::Limited { .. }) => Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": { "message": "Admin privileges required", "type": "forbidden", "code": 403 }
+            })),
+        )
+            .into_response()),
+        None => Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": { "message": "Unauthorized", "type": "auth_error", "code": 401 }
+            })),
+        )
+            .into_response()),
+    }
+}
+
 async fn providers(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    match resolve_principal(&state,headers.get("x-admin-key").and_then(|v|v.to_str().ok())){Some(Principal::Admin)=>{},Some(Principal::Limited{..})=>return (StatusCode::FORBIDDEN,Json(serde_json::json!({"error":{"message":"Admin privileges required","type":"forbidden","code":403}}))).into_response(),None=>return (StatusCode::UNAUTHORIZED,Json(serde_json::json!({"error":{"message":"Unauthorized","type":"auth_error","code":401}}))).into_response()}
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
     let data = serde_json::json!([
         { "id": "anthropic", "name": "Anthropic (Claude Pro/Max)", "usesCallbackServer": true },
         { "id": "github-copilot", "name": "GitHub Copilot", "usesCallbackServer": false },
@@ -33,6 +73,62 @@ async fn providers(State(state): State<AppState>, headers: HeaderMap) -> Respons
         { "id": "xai", "name": "xAI (Grok/X subscription)", "usesCallbackServer": false },
     ]);
     Json(serde_json::json!({ "data": data, "total": 6 })).into_response()
+}
+
+async fn credential_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<CredentialStatusQuery>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let mut details = Vec::new();
+    for (field, value) in [
+        ("providerId", query.provider_id.as_deref()),
+        ("accountId", query.account_id.as_deref()),
+    ] {
+        if value.is_none_or(str::is_empty) {
+            details.push(query_issue(field, value.is_some()));
+        }
+    }
+    if !details.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid query parameters", "details": details })),
+        )
+            .into_response();
+    }
+    let provider_id = query.provider_id.unwrap();
+    let account_id = query.account_id.unwrap();
+    let ready = if let Some(pool) = &state.inner.database {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM oauth_credentials WHERE oauth_provider_type = $1 AND account_id = $2)",
+        )
+        .bind(provider_id)
+        .bind(account_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false)
+    } else {
+        false
+    };
+    Json(serde_json::json!({ "data": { "ready": ready } })).into_response()
+}
+
+fn query_issue(field: &str, present: bool) -> serde_json::Value {
+    if present {
+        serde_json::json!({
+            "origin": "string", "code": "too_small", "minimum": 1,
+            "inclusive": true, "path": [field],
+            "message": "Too small: expected string to have >=1 characters"
+        })
+    } else {
+        serde_json::json!({
+            "expected": "string", "code": "invalid_type", "path": [field],
+            "message": "Invalid input: expected string, received undefined"
+        })
+    }
 }
 
 #[cfg(test)]
@@ -98,5 +194,43 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn credential_status_defaults_false_and_validates_queries() {
+        let response = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::get("/v0/management/oauth/credentials/status?providerId=anthropic&accountId=default")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body, serde_json::json!({ "data": { "ready": false } }));
+
+        let invalid = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::get("/v0/management/oauth/credentials/status")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&invalid.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["details"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            body["details"][0]["path"],
+            serde_json::json!(["providerId"])
+        );
     }
 }

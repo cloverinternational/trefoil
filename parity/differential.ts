@@ -1024,6 +1024,14 @@ const PI_PROVIDER_CASES: KeysCase[] = [
   { name: 'GET pi/providers rejects missing credential', method: 'GET', path: '/v0/management/pi/providers' },
 ];
 
+const OAUTH_STATUS_CASES: KeysCase[] = [
+  { name: 'GET oauth credential status returns false when absent', method: 'GET', path: '/v0/management/oauth/credentials/status?providerId=anthropic&accountId=parity-missing-account', adminHeader: ADMIN_KEY },
+  { name: 'GET oauth credential status validates missing query', method: 'GET', path: '/v0/management/oauth/credentials/status', adminHeader: ADMIN_KEY },
+  { name: 'GET oauth credential status validates empty account', method: 'GET', path: '/v0/management/oauth/credentials/status?providerId=anthropic&accountId=', adminHeader: ADMIN_KEY },
+  { name: 'GET oauth credential status rejects limited key', method: 'GET', path: '/v0/management/oauth/credentials/status?providerId=anthropic&accountId=x', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET oauth credential status rejects missing credential', method: 'GET', path: '/v0/management/oauth/credentials/status?providerId=anthropic&accountId=x' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1269,6 +1277,7 @@ async function main() {
   failures += await runCases(OAUTH_PROVIDER_CASES);
   failures += await runCases(QUOTA_CHECKER_TYPE_CASES);
   failures += await runCases(PI_PROVIDER_CASES);
+  failures += await runCases(OAUTH_STATUS_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1320,6 +1329,7 @@ async function main() {
     OAUTH_PROVIDER_CASES.length +
     QUOTA_CHECKER_TYPE_CASES.length +
     PI_PROVIDER_CASES.length +
+    OAUTH_STATUS_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
