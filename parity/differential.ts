@@ -915,6 +915,16 @@ const LOGGING_CASES: KeysCase[] = [
   { name: 'DELETE logging/modules clears filter', method: 'DELETE', path: '/v0/management/logging/modules', adminHeader: ADMIN_KEY },
 ];
 
+const BACKGROUND_EXPLORATION_CASES: KeysCase[] = [
+  { name: 'GET background-exploration returns defaults', method: 'GET', path: '/v0/management/config/background-exploration', adminHeader: ADMIN_KEY },
+  { name: 'PATCH background-exploration applies values and coercion', method: 'PATCH', path: '/v0/management/config/background-exploration', adminHeader: ADMIN_KEY, body: { enabled: true, stalenessThresholdSeconds: '120', workerConcurrency: 4 } },
+  { name: 'GET background-exploration reflects PATCH', method: 'GET', path: '/v0/management/config/background-exploration', adminHeader: ADMIN_KEY },
+  { name: 'PATCH background-exploration rejects invalid enabled', method: 'PATCH', path: '/v0/management/config/background-exploration', adminHeader: ADMIN_KEY, body: { enabled: 'false' } },
+  { name: 'PATCH background-exploration rejects invalid concurrency', method: 'PATCH', path: '/v0/management/config/background-exploration', adminHeader: ADMIN_KEY, body: { workerConcurrency: 17 } },
+  { name: 'GET background-exploration rejects limited key', method: 'GET', path: '/v0/management/config/background-exploration', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'PATCH background-exploration cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/background-exploration', adminHeader: ADMIN_KEY, body: { enabled: false, stalenessThresholdSeconds: 600, workerConcurrency: 2 } },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1149,6 +1159,7 @@ async function main() {
   failures += await runCases(STALL_CONFIG_CASES);
   failures += await runCases(VISION_FALLTHROUGH_CASES);
   failures += await runCases(LOGGING_CASES);
+  failures += await runCases(BACKGROUND_EXPLORATION_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1189,6 +1200,7 @@ async function main() {
     STALL_CONFIG_CASES.length +
     VISION_FALLTHROUGH_CASES.length +
     LOGGING_CASES.length +
+    BACKGROUND_EXPLORATION_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

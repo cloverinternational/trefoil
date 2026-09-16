@@ -55,6 +55,86 @@ pub fn router() -> Router<AppState> {
             "/v0/management/config/vision-fallthrough",
             axum::routing::get(get_vision_fallthrough).patch(patch_vision_fallthrough),
         )
+        .route(
+            "/v0/management/config/background-exploration",
+            axum::routing::get(get_background_exploration).patch(patch_background_exploration),
+        )
+}
+
+fn background_exploration_body(state: &AppState) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": config_value(&state, "backgroundExploration.enabled", serde_json::json!(false)),
+        "stalenessThresholdSeconds": config_value(&state, "backgroundExploration.stalenessThresholdSeconds", serde_json::json!(600)),
+        "workerConcurrency": config_value(&state, "backgroundExploration.workerConcurrency", serde_json::json!(2)),
+    })
+}
+
+async fn get_background_exploration(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(background_exploration_body(&state)).into_response()
+}
+
+async fn patch_background_exploration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(object) = body.as_object() else {
+        return bad_request("Object body is required");
+    };
+    let mut entries = serde_json::Map::new();
+    if let Some(raw) = object.get("enabled") {
+        let Some(value) = raw.as_bool() else {
+            return bad_request("enabled must be a boolean");
+        };
+        entries.insert(
+            "backgroundExploration.enabled".into(),
+            serde_json::json!(value),
+        );
+    }
+    if let Some(raw) = object.get("stalenessThresholdSeconds") {
+        let Some(value) = js_number(raw)
+            .filter(|value| value.is_finite() && value.fract() == 0.0 && *value >= 1.0)
+        else {
+            return bad_request("stalenessThresholdSeconds must be an integer >= 1");
+        };
+        entries.insert(
+            "backgroundExploration.stalenessThresholdSeconds".into(),
+            serde_json::json!(value as i64),
+        );
+    }
+    if let Some(raw) = object.get("workerConcurrency") {
+        let Some(value) = js_number(raw).filter(|value| {
+            value.is_finite() && value.fract() == 0.0 && (1.0..=16.0).contains(value)
+        }) else {
+            return bad_request("workerConcurrency must be an integer between 1 and 16");
+        };
+        entries.insert(
+            "backgroundExploration.workerConcurrency".into(),
+            serde_json::json!(value as i64),
+        );
+    }
+    if !entries.is_empty() {
+        if let Some(pool) = &state.inner.database {
+            if crate::database::upsert_settings_bulk(pool, &entries)
+                .await
+                .is_err()
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "Internal server error" })),
+                )
+                    .into_response();
+            }
+        }
+        state.inner.settings.write().unwrap().extend(entries);
+    }
+    Json(background_exploration_body(&state)).into_response()
 }
 
 async fn get_vision_fallthrough(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1333,5 +1413,81 @@ mod tests {
             body,
             serde_json::json!({ "error": "Object body is required" })
         );
+    }
+
+    #[tokio::test]
+    async fn background_exploration_defaults_and_patch_round_trip() {
+        let state = fixture();
+        let get = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/v0/management/config/background-exploration")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "enabled": false, "stalenessThresholdSeconds": 600, "workerConcurrency": 2
+            })
+        );
+
+        let patch = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/background-exploration")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true,"stalenessThresholdSeconds":"120","workerConcurrency":4}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&patch.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "enabled": true, "stalenessThresholdSeconds": 120, "workerConcurrency": 4
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn background_exploration_validates_each_field() {
+        for (body, expected_error) in [
+            (r#"{"enabled":"false"}"#, "enabled must be a boolean"),
+            (
+                r#"{"stalenessThresholdSeconds":0}"#,
+                "stalenessThresholdSeconds must be an integer >= 1",
+            ),
+            (
+                r#"{"workerConcurrency":17}"#,
+                "workerConcurrency must be an integer between 1 and 16",
+            ),
+            (r#"[]"#, "Object body is required"),
+        ] {
+            let response = router()
+                .with_state(fixture())
+                .oneshot(
+                    Request::patch("/v0/management/config/background-exploration")
+                        .header("x-admin-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response_body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(response_body["error"], expected_error);
+        }
     }
 }
