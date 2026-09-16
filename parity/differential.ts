@@ -798,6 +798,45 @@ const CONFIG_STATUS_CASES: KeysCase[] = [
   },
 ];
 
+const TIMEOUT_CONFIG_CASES: KeysCase[] = [
+  {
+    name: 'GET config/timeout returns current timeout',
+    method: 'GET', path: '/v0/management/config/timeout', adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH config/timeout coerces a numeric string',
+    method: 'PATCH', path: '/v0/management/config/timeout', adminHeader: ADMIN_KEY,
+    body: { defaultSeconds: '45' },
+  },
+  {
+    name: 'GET config/timeout reflects PATCH',
+    method: 'GET', path: '/v0/management/config/timeout', adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH config/timeout rejects a fractional value',
+    method: 'PATCH', path: '/v0/management/config/timeout', adminHeader: ADMIN_KEY,
+    body: { defaultSeconds: 1.5 },
+  },
+  {
+    name: 'PATCH config/timeout rejects null',
+    method: 'PATCH', path: '/v0/management/config/timeout', adminHeader: ADMIN_KEY,
+    body: { defaultSeconds: null },
+  },
+  {
+    name: 'GET config/timeout rejects limited key',
+    method: 'GET', path: '/v0/management/config/timeout', adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'GET config/timeout rejects missing credential',
+    method: 'GET', path: '/v0/management/config/timeout',
+  },
+  {
+    name: 'PATCH config/timeout cleanup restores default',
+    method: 'PATCH', path: '/v0/management/config/timeout', adminHeader: ADMIN_KEY,
+    body: { defaultSeconds: 300 },
+  },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1024,6 +1063,7 @@ async function main() {
   failures += await runCases(COOLDOWNS_CASES);
   failures += await runCases(DEBUG_CASES);
   failures += await runCases(CONFIG_STATUS_CASES);
+  failures += await runCases(TIMEOUT_CONFIG_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1056,6 +1096,7 @@ async function main() {
     COOLDOWNS_CASES.length +
     DEBUG_CASES.length +
     CONFIG_STATUS_CASES.length +
+    TIMEOUT_CONFIG_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
