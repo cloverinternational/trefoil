@@ -10,6 +10,7 @@ pub mod errors;
 pub mod inference;
 pub mod keys;
 pub mod logging;
+pub mod mcp_logs;
 pub mod oauth;
 pub mod performance;
 pub mod providers;
@@ -37,6 +38,7 @@ pub fn app(state: AppState) -> Router {
         .merge(errors::router())
         .merge(inference::router())
         .merge(logging::router())
+        .merge(mcp_logs::router())
         .merge(oauth::router())
         .merge(performance::router())
         .merge(keys::router())

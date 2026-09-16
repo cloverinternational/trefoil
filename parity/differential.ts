@@ -1075,6 +1075,15 @@ const DEBUG_LOG_CASES: KeysCase[] = [
   { name: 'GET debug/logs rejects missing credential', method: 'GET', path: '/v0/management/debug/logs' },
 ];
 
+const MCP_LOG_CASES: KeysCase[] = [
+  { name: 'GET mcp-logs returns paginated list', method: 'GET', path: '/v0/management/mcp-logs?limit=5&offset=0', adminHeader: ADMIN_KEY },
+  { name: 'GET mcp-logs accepts filters', method: 'GET', path: '/v0/management/mcp-logs?serverName=missing&apiKey=missing', adminHeader: ADMIN_KEY },
+  { name: 'GET mcp-logs rejects limited key', method: 'GET', path: '/v0/management/mcp-logs', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'DELETE all mcp-logs rejects limited key', method: 'DELETE', path: '/v0/management/mcp-logs', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'DELETE missing mcp-log is idempotent for admin', method: 'DELETE', path: '/v0/management/mcp-logs/parity-missing-log', adminHeader: ADMIN_KEY },
+  { name: 'DELETE mcp-log rejects missing credential', method: 'DELETE', path: '/v0/management/mcp-logs/x' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1326,6 +1335,7 @@ async function main() {
   failures += await runCases(QUOTA_DISCOVERY_CASES);
   failures += await runCases(QUOTA_CLEAR_CASES);
   failures += await runCases(DEBUG_LOG_CASES);
+  failures += await runCases(MCP_LOG_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1383,6 +1393,7 @@ async function main() {
     QUOTA_DISCOVERY_CASES.length +
     QUOTA_CLEAR_CASES.length +
     DEBUG_LOG_CASES.length +
+    MCP_LOG_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
