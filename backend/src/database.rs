@@ -732,14 +732,19 @@ pub async fn reserve_request_quota(
     now_ms: i64,
 ) -> Result<Option<i64>, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let current: Option<f32> = sqlx::query_scalar(
-        "SELECT current_usage FROM quota_state WHERE key_name = $1 AND quota_name = $2 FOR UPDATE",
+    let current: Option<(f32, Option<i64>)> = sqlx::query_as(
+        "SELECT current_usage, window_start FROM quota_state WHERE key_name = $1 AND quota_name = $2 FOR UPDATE",
     )
     .bind(key_name)
     .bind(quota_name)
     .fetch_optional(&mut *tx)
     .await?;
-    let current_usage = f64::from(current.unwrap_or(0.0));
+    let (usage, stored_window) = current.unwrap_or((0.0, None));
+    let current_usage = f64::from(if stored_window == Some(window_start) {
+        usage
+    } else {
+        0.0
+    });
     if current_usage >= f64::from(limit) {
         tx.rollback().await?;
         return Ok(Some(current_usage.round() as i64));
@@ -747,7 +752,7 @@ pub async fn reserve_request_quota(
     sqlx::query(
         "INSERT INTO quota_state (key_name, quota_name, limit_type, current_usage, last_updated, window_start)
          VALUES ($1,$2,'requests',1,$3,$4)
-         ON CONFLICT (key_name, quota_name) DO UPDATE SET current_usage = quota_state.current_usage + 1, last_updated = EXCLUDED.last_updated, window_start = EXCLUDED.window_start",
+         ON CONFLICT (key_name, quota_name) DO UPDATE SET current_usage = CASE WHEN quota_state.window_start IS DISTINCT FROM EXCLUDED.window_start THEN 1 ELSE quota_state.current_usage + 1 END, last_updated = EXCLUDED.last_updated, window_start = EXCLUDED.window_start",
     )
     .bind(key_name).bind(quota_name).bind(now_ms).bind(window_start)
     .execute(&mut *tx).await?;
