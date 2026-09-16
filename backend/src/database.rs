@@ -650,6 +650,14 @@ pub async fn record_request_usage(
     .map(|_| ())
 }
 
+pub async fn delete_request_usage(pool: &PgPool, request_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM request_usage WHERE request_id = $1")
+        .bind(request_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Calendar window start (UTC, epoch ms) for daily/weekly/monthly quota
 /// types, matching Plexus's `QuotaEnforcer.getWindowStart` exactly: daily
 /// is UTC midnight, weekly is the most recent UTC Monday midnight, monthly

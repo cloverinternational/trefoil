@@ -1,7 +1,7 @@
 //! PostgreSQL-backed usage management endpoints (initial subset).
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json, Router,
@@ -24,6 +24,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v0/management/usage/summary",
             axum::routing::get(summary_usage),
+        )
+        .route(
+            "/v0/management/usage/:request_id",
+            axum::routing::delete(delete_usage),
         )
 }
 
@@ -155,4 +159,25 @@ async fn summary_usage(State(state): State<AppState>, headers: HeaderMap) -> Res
             .into_response();
     };
     Json(serde_json::json!({"requests":row.try_get::<i64,_>("requests").unwrap_or(0),"errors":row.try_get::<i64,_>("errors").unwrap_or(0),"inputTokens":row.try_get::<i64,_>("input_tokens").unwrap_or(0),"outputTokens":row.try_get::<i64,_>("output_tokens").unwrap_or(0),"totalCost":row.try_get::<f32,_>("total_cost").unwrap_or(0.0)})).into_response()
+}
+
+async fn delete_usage(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(pool) = &state.inner.database else {
+        return Json(serde_json::json!({"success":true})).into_response();
+    };
+    match crate::database::delete_request_usage(pool, &request_id).await {
+        Ok(()) => Json(serde_json::json!({"success":true})).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error":error.to_string()})),
+        )
+            .into_response(),
+    }
 }
