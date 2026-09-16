@@ -47,6 +47,122 @@ pub fn router() -> Router<AppState> {
             "/v0/management/config/capture-trace-on-error",
             axum::routing::get(get_capture_trace_on_error).patch(patch_capture_trace_on_error),
         )
+        .route(
+            "/v0/management/config/stall",
+            axum::routing::get(get_stall).patch(patch_stall),
+        )
+}
+
+async fn get_stall(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(serde_json::json!({
+        "ttfbSeconds": config_value(&state, "stall.ttfbSeconds", serde_json::Value::Null),
+        "ttfbBytes": config_value(&state, "stall.ttfbBytes", serde_json::json!(100)),
+        "minBytesPerSecond": config_value(&state, "stall.minBytesPerSecond", serde_json::Value::Null),
+        "windowSeconds": config_value(&state, "stall.windowSeconds", serde_json::json!(10)),
+        "gracePeriodSeconds": config_value(&state, "stall.gracePeriodSeconds", serde_json::json!(30)),
+        "stallCooldown": config_value(&state, "stall.stallCooldown", serde_json::json!(false)),
+    }))
+    .into_response()
+}
+async fn patch_stall(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(object) = body.as_object() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Object body is required"})),
+        )
+            .into_response();
+    };
+    let mut entries = serde_json::Map::new();
+    if let Some(raw) = object.get("ttfbSeconds") {
+        if raw.is_null() {
+            entries.insert("stall.ttfbSeconds".into(), serde_json::Value::Null);
+        } else if let Some(value) =
+            js_number(raw).filter(|value| value.is_finite() && (5.0..=120.0).contains(value))
+        {
+            entries.insert("stall.ttfbSeconds".into(), serde_json::json!(value));
+        } else {
+            return bad_request("ttfbSeconds must be null or a number between 5 and 120");
+        }
+    }
+    if let Some(raw) = object.get("ttfbBytes") {
+        if let Some(value) = js_number(raw).filter(|value| {
+            value.is_finite() && value.fract() == 0.0 && (50.0..=10000.0).contains(value)
+        }) {
+            entries.insert("stall.ttfbBytes".into(), serde_json::json!(value as i64));
+        } else {
+            return bad_request("ttfbBytes must be an integer between 50 and 10000");
+        }
+    }
+    if let Some(raw) = object.get("minBytesPerSecond") {
+        if raw.is_null() {
+            entries.insert("stall.minBytesPerSecond".into(), serde_json::Value::Null);
+        } else if let Some(value) = js_number(raw).filter(|value| {
+            value.is_finite() && value.fract() == 0.0 && (50.0..=5000.0).contains(value)
+        }) {
+            entries.insert(
+                "stall.minBytesPerSecond".into(),
+                serde_json::json!(value as i64),
+            );
+        } else {
+            return bad_request("minBytesPerSecond must be null or an integer between 50 and 5000");
+        }
+    }
+    for (key, min, max) in [
+        ("windowSeconds", 3.0, 30.0),
+        ("gracePeriodSeconds", 0.0, 120.0),
+    ] {
+        if let Some(raw) = object.get(key) {
+            if let Some(value) = js_number(raw).filter(|value| {
+                value.is_finite() && value.fract() == 0.0 && (min..=max).contains(value)
+            }) {
+                entries.insert(format!("stall.{key}"), serde_json::json!(value as i64));
+            } else {
+                return bad_request(&format!(
+                    "{key} must be an integer between {} and {}",
+                    min as i64, max as i64
+                ));
+            }
+        }
+    }
+    if let Some(raw) = object.get("stallCooldown") {
+        if let Some(value) = raw.as_bool() {
+            entries.insert("stall.stallCooldown".into(), serde_json::json!(value));
+        } else {
+            return bad_request("stallCooldown must be a boolean");
+        }
+    }
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_settings_bulk(pool, &entries)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error":"Internal server error"})),
+            )
+                .into_response();
+        }
+    }
+    state.inner.settings.write().unwrap().extend(entries);
+    get_stall(State(state), headers).await
+}
+
+fn bad_request(message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": message })),
+    )
+        .into_response()
 }
 
 fn config_value(state: &AppState, key: &str, default: serde_json::Value) -> serde_json::Value {
@@ -996,6 +1112,107 @@ mod tests {
                 .with_state(fixture())
                 .oneshot(
                     Request::patch("/v0/management/config/capture-trace-on-error")
+                        .header("x-admin-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response_body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(response_body["error"], expected_error);
+        }
+    }
+
+    #[tokio::test]
+    async fn stall_defaults_and_patch_all_fields() {
+        let state = fixture();
+        let get = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/v0/management/config/stall")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "ttfbSeconds": null,
+                "ttfbBytes": 100,
+                "minBytesPerSecond": null,
+                "windowSeconds": 10,
+                "gracePeriodSeconds": 30,
+                "stallCooldown": false,
+            })
+        );
+
+        let patch = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/stall")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"ttfbSeconds":"12.5","ttfbBytes":"250","minBytesPerSecond":500,"windowSeconds":5,"gracePeriodSeconds":0,"stallCooldown":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&patch.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "ttfbSeconds": 12.5,
+                "ttfbBytes": 250,
+                "minBytesPerSecond": 500,
+                "windowSeconds": 5,
+                "gracePeriodSeconds": 0,
+                "stallCooldown": true,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn stall_patch_validates_each_field() {
+        for (body, expected_error) in [
+            (
+                r#"{"ttfbSeconds":4}"#,
+                "ttfbSeconds must be null or a number between 5 and 120",
+            ),
+            (
+                r#"{"ttfbBytes":50.5}"#,
+                "ttfbBytes must be an integer between 50 and 10000",
+            ),
+            (
+                r#"{"minBytesPerSecond":49}"#,
+                "minBytesPerSecond must be null or an integer between 50 and 5000",
+            ),
+            (
+                r#"{"windowSeconds":31}"#,
+                "windowSeconds must be an integer between 3 and 30",
+            ),
+            (
+                r#"{"gracePeriodSeconds":121}"#,
+                "gracePeriodSeconds must be an integer between 0 and 120",
+            ),
+            (
+                r#"{"stallCooldown":"true"}"#,
+                "stallCooldown must be a boolean",
+            ),
+            (r#"[]"#, "Object body is required"),
+        ] {
+            let response = router()
+                .with_state(fixture())
+                .oneshot(
+                    Request::patch("/v0/management/config/stall")
                         .header("x-admin-key", "admin")
                         .header("content-type", "application/json")
                         .body(Body::from(body))

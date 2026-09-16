@@ -882,6 +882,17 @@ const CAPTURE_TRACE_CASES: KeysCase[] = [
   { name: 'PATCH capture-trace-on-error cleanup restores false', method: 'PATCH', path: '/v0/management/config/capture-trace-on-error', adminHeader: ADMIN_KEY, body: { enabled: false } },
 ];
 
+const STALL_CONFIG_CASES: KeysCase[] = [
+  { name: 'GET config/stall returns all defaults', method: 'GET', path: '/v0/management/config/stall', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/stall updates all fields', method: 'PATCH', path: '/v0/management/config/stall', adminHeader: ADMIN_KEY, body: { ttfbSeconds: '12.5', ttfbBytes: '250', minBytesPerSecond: 500, windowSeconds: 5, gracePeriodSeconds: 0, stallCooldown: true } },
+  { name: 'GET config/stall reflects PATCH', method: 'GET', path: '/v0/management/config/stall', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/stall rejects fractional ttfbBytes', method: 'PATCH', path: '/v0/management/config/stall', adminHeader: ADMIN_KEY, body: { ttfbBytes: 50.5 } },
+  { name: 'PATCH config/stall rejects invalid stallCooldown', method: 'PATCH', path: '/v0/management/config/stall', adminHeader: ADMIN_KEY, body: { stallCooldown: 'true' } },
+  { name: 'PATCH config/stall accepts nullable thresholds', method: 'PATCH', path: '/v0/management/config/stall', adminHeader: ADMIN_KEY, body: { ttfbSeconds: null, minBytesPerSecond: null } },
+  { name: 'GET config/stall rejects limited key', method: 'GET', path: '/v0/management/config/stall', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'PATCH config/stall cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/stall', adminHeader: ADMIN_KEY, body: { ttfbSeconds: null, ttfbBytes: 100, minBytesPerSecond: null, windowSeconds: 10, gracePeriodSeconds: 30, stallCooldown: false } },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1113,6 +1124,7 @@ async function main() {
   failures += await runCases(EXPLORATION_RATE_CASES);
   failures += await runCases(FAILOVER_COOLDOWN_CASES);
   failures += await runCases(CAPTURE_TRACE_CASES);
+  failures += await runCases(STALL_CONFIG_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1150,6 +1162,7 @@ async function main() {
     EXPLORATION_RATE_CASES.length +
     FAILOVER_COOLDOWN_CASES.length +
     CAPTURE_TRACE_CASES.length +
+    STALL_CONFIG_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
