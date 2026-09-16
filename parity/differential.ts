@@ -1032,6 +1032,14 @@ const OAUTH_STATUS_CASES: KeysCase[] = [
   { name: 'GET oauth credential status rejects missing credential', method: 'GET', path: '/v0/management/oauth/credentials/status?providerId=anthropic&accountId=x' },
 ];
 
+const OAUTH_DELETE_CASES: KeysCase[] = [
+  { name: 'DELETE missing OAuth credential returns 404', method: 'DELETE', path: '/v0/management/oauth/credentials', adminHeader: ADMIN_KEY, body: { providerId: 'anthropic', accountId: 'parity-missing-account' } },
+  { name: 'DELETE OAuth credential validates missing body fields', method: 'DELETE', path: '/v0/management/oauth/credentials', adminHeader: ADMIN_KEY, body: {} },
+  { name: 'DELETE OAuth credential validates empty account', method: 'DELETE', path: '/v0/management/oauth/credentials', adminHeader: ADMIN_KEY, body: { providerId: 'anthropic', accountId: '' } },
+  { name: 'DELETE OAuth credential rejects limited key', method: 'DELETE', path: '/v0/management/oauth/credentials', adminHeader: LIMITED_KEY_SECRET, body: { providerId: 'anthropic', accountId: 'x' } },
+  { name: 'DELETE OAuth credential rejects missing credential', method: 'DELETE', path: '/v0/management/oauth/credentials', body: { providerId: 'anthropic', accountId: 'x' } },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1278,6 +1286,7 @@ async function main() {
   failures += await runCases(QUOTA_CHECKER_TYPE_CASES);
   failures += await runCases(PI_PROVIDER_CASES);
   failures += await runCases(OAUTH_STATUS_CASES);
+  failures += await runCases(OAUTH_DELETE_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1330,6 +1339,7 @@ async function main() {
     QUOTA_CHECKER_TYPE_CASES.length +
     PI_PROVIDER_CASES.length +
     OAUTH_STATUS_CASES.length +
+    OAUTH_DELETE_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

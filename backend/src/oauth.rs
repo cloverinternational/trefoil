@@ -27,6 +27,10 @@ pub fn router() -> Router<AppState> {
             "/v0/management/oauth/credentials/status",
             axum::routing::get(credential_status),
         )
+        .route(
+            "/v0/management/oauth/credentials",
+            axum::routing::delete(delete_credentials),
+        )
 }
 
 #[derive(Deserialize)]
@@ -131,6 +135,73 @@ fn query_issue(field: &str, present: bool) -> serde_json::Value {
     }
 }
 
+async fn delete_credentials(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let object = body.as_object();
+    let mut details = Vec::new();
+    for field in ["providerId", "accountId"] {
+        match object.and_then(|object| object.get(field)) {
+            Some(serde_json::Value::String(value)) if !value.is_empty() => {}
+            Some(serde_json::Value::String(_)) => details.push(serde_json::json!({
+                "origin": "string", "code": "too_small", "minimum": 1,
+                "inclusive": true, "path": [field],
+                "message": "Too small: expected string to have >=1 characters"
+            })),
+            Some(value) => details.push(serde_json::json!({
+                "expected": "string", "code": "invalid_type", "path": [field],
+                "message": format!("Invalid input: expected string, received {}", json_type(value))
+            })),
+            None => details.push(query_issue(field, false)),
+        }
+    }
+    if !details.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid request body", "details": details })),
+        )
+            .into_response();
+    }
+    let object = object.unwrap();
+    let deleted = if let Some(pool) = &state.inner.database {
+        sqlx::query(
+            "DELETE FROM oauth_credentials WHERE oauth_provider_type = $1 AND account_id = $2",
+        )
+        .bind(object["providerId"].as_str().unwrap())
+        .bind(object["accountId"].as_str().unwrap())
+        .execute(pool)
+        .await
+        .map(|result| result.rows_affected() > 0)
+        .unwrap_or(false)
+    } else {
+        false
+    };
+    if !deleted {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "OAuth credentials not found" })),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({ "data": { "deleted": true } })).into_response()
+}
+
+fn json_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +303,40 @@ mod tests {
             body["details"][0]["path"],
             serde_json::json!(["providerId"])
         );
+    }
+
+    #[tokio::test]
+    async fn delete_credentials_validates_body_and_returns_not_found() {
+        let missing = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::delete("/v0/management/oauth/credentials")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"providerId":"anthropic","accountId":"missing"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let invalid = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::delete("/v0/management/oauth/credentials")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&invalid.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["details"].as_array().unwrap().len(), 2);
     }
 }
