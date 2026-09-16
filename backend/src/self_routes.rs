@@ -126,17 +126,24 @@ async fn rotate_secret(
         Err(resp) => return resp,
     };
 
-    let mut keys = state.inner.keys.write().unwrap();
-    let Some(existing) = keys.get_mut(&key_name) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": format!("Key '{key_name}' not found") })),
-        )
-            .into_response();
-    };
-
     let new_secret = generate_secret();
-    existing.secret = new_secret.clone();
+    let rotated = {
+        let mut keys = state.inner.keys.write().unwrap();
+        let Some(existing) = keys.get_mut(&key_name) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": format!("Key '{key_name}' not found") })),
+            )
+                .into_response();
+        };
+        existing.secret = new_secret.clone();
+        existing.clone()
+    };
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_key(pool, &key_name, &rotated).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": error.to_string() }))).into_response();
+        }
+    }
 
     Json(serde_json::json!({
         "keyName": key_name,
@@ -192,17 +199,24 @@ async fn update_comment(
         Err(resp) => return resp,
     };
 
-    let mut keys = state.inner.keys.write().unwrap();
-    let Some(existing) = keys.get_mut(&key_name) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": format!("Key '{key_name}' not found") })),
-        )
-            .into_response();
-    };
-
     let comment_str = comment_value.as_ref().and_then(|v| v.as_str().map(String::from));
-    existing.comment = comment_str.clone();
+    let updated = {
+        let mut keys = state.inner.keys.write().unwrap();
+        let Some(existing) = keys.get_mut(&key_name) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": format!("Key '{key_name}' not found") })),
+            )
+                .into_response();
+        };
+        existing.comment = comment_str.clone();
+        existing.clone()
+    };
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_key(pool, &key_name, &updated).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": error.to_string() }))).into_response();
+        }
+    }
 
     // Mirror Plexus exactly: when the request body omits `comment`
     // entirely, the response also omits it (its JSON.stringify drops the
