@@ -935,6 +935,14 @@ const TRUSTED_PROXIES_CASES: KeysCase[] = [
   { name: 'PATCH trusted-proxies cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/trusted-proxies', adminHeader: ADMIN_KEY, body: { trustedProxies: ['0.0.0.0/0', '::/0'] } },
 ];
 
+const ERRORS_CASES: KeysCase[] = [
+  { name: 'GET errors returns scoped page', method: 'GET', path: '/v0/management/errors?limit=5&offset=0', adminHeader: ADMIN_KEY },
+  { name: 'GET errors rejects missing credential', method: 'GET', path: '/v0/management/errors' },
+  { name: 'DELETE all errors rejects limited key', method: 'DELETE', path: '/v0/management/errors', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'DELETE missing error is idempotent for admin', method: 'DELETE', path: '/v0/management/errors/parity-missing-error', adminHeader: ADMIN_KEY },
+  { name: 'DELETE missing error is hidden from limited key', method: 'DELETE', path: '/v0/management/errors/parity-missing-error', adminHeader: LIMITED_KEY_SECRET },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1171,6 +1179,7 @@ async function main() {
   failures += await runCases(LOGGING_CASES);
   failures += await runCases(BACKGROUND_EXPLORATION_CASES);
   failures += await runCases(TRUSTED_PROXIES_CASES);
+  failures += await runCases(ERRORS_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1213,6 +1222,7 @@ async function main() {
     LOGGING_CASES.length +
     BACKGROUND_EXPLORATION_CASES.length +
     TRUSTED_PROXIES_CASES.length +
+    ERRORS_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
