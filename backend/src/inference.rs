@@ -215,10 +215,17 @@ async fn chat_completions(
             "upstream_error",
         );
     }
+    let Ok(provider_url) = dispatch_provider_url(&provider.api_base_url) else {
+        return error_response(
+            axum::http::StatusCode::BAD_GATEWAY,
+            "Provider API base URL is invalid",
+            "upstream_error",
+        );
+    };
     body["model"] = Value::String(upstream_model);
     let endpoint = format!(
         "{}/chat/completions",
-        provider.api_base_url.trim_end_matches('/')
+        provider_url.as_str().trim_end_matches('/')
     );
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -341,6 +348,15 @@ fn error_response(status: axum::http::StatusCode, message: &str, error_type: &st
         Json(serde_json::json!({ "error": { "message": message, "type": error_type } })),
     )
         .into_response()
+}
+
+fn dispatch_provider_url(value: &str) -> Result<url::Url, ()> {
+    let parsed = url::Url::parse(value).map_err(|_| ())?;
+    if matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some() {
+        Ok(parsed)
+    } else {
+        Err(())
+    }
 }
 
 /// Matches Plexus's `buildQuotaExceededBody` shape exactly (only the single
@@ -542,5 +558,14 @@ mod tests {
             "claude",
             1_000
         ));
+    }
+
+    #[test]
+    fn dispatch_provider_url_requires_http_or_https_with_a_host() {
+        assert!(dispatch_provider_url("https://api.example.test/v1").is_ok());
+        assert!(dispatch_provider_url("http://localhost:1234/v1").is_ok());
+        assert!(dispatch_provider_url("not a URL").is_err());
+        assert!(dispatch_provider_url("oauth://").is_err());
+        assert!(dispatch_provider_url("file:///tmp/provider").is_err());
     }
 }
