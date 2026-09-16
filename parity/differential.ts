@@ -1058,6 +1058,14 @@ const QUOTA_DISCOVERY_CASES: KeysCase[] = [
   { name: 'GET quotas rejects missing credential', method: 'GET', path: '/v0/management/quotas' },
 ];
 
+const QUOTA_CLEAR_CASES: KeysCase[] = [
+  { name: 'POST quota/clear requires key', method: 'POST', path: '/v0/management/quota/clear', adminHeader: ADMIN_KEY, body: {} },
+  { name: 'POST quota/clear returns 404 for missing key with quota', method: 'POST', path: '/v0/management/quota/clear', adminHeader: ADMIN_KEY, body: { key: 'parity-missing-key', quota: 'q' } },
+  { name: 'POST quota/clear rejects unattached quota', method: 'POST', path: '/v0/management/quota/clear', adminHeader: ADMIN_KEY, body: { key: 'test-key', quota: 'parity-unattached' } },
+  { name: 'POST quota/clear all is idempotent for arbitrary key', method: 'POST', path: '/v0/management/quota/clear', adminHeader: ADMIN_KEY, body: { key: 'parity-no-state' } },
+  { name: 'POST quota/clear rejects limited key', method: 'POST', path: '/v0/management/quota/clear', adminHeader: LIMITED_KEY_SECRET, body: { key: 'x' } },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1307,6 +1315,7 @@ async function main() {
   failures += await runCases(OAUTH_DELETE_CASES);
   failures += await runCases(COMPACTION_CASES);
   failures += await runCases(QUOTA_DISCOVERY_CASES);
+  failures += await runCases(QUOTA_CLEAR_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1362,6 +1371,7 @@ async function main() {
     OAUTH_DELETE_CASES.length +
     COMPACTION_CASES.length +
     QUOTA_DISCOVERY_CASES.length +
+    QUOTA_CLEAR_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

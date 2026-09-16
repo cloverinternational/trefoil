@@ -12,6 +12,7 @@ pub mod logging;
 pub mod oauth;
 pub mod performance;
 pub mod providers;
+pub mod quota_management;
 pub mod self_routes;
 pub mod state;
 pub mod system_settings;
@@ -38,6 +39,7 @@ pub fn app(state: AppState) -> Router {
         .merge(performance::router())
         .merge(keys::router())
         .merge(providers::router())
+        .merge(quota_management::router())
         .merge(self_routes::router())
         .merge(user_quotas::router())
         .merge(system_settings::router())
