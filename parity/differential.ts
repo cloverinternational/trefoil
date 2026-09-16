@@ -900,6 +900,21 @@ const VISION_FALLTHROUGH_CASES: KeysCase[] = [
   { name: 'GET config/vision-fallthrough rejects limited key', method: 'GET', path: '/v0/management/config/vision-fallthrough', adminHeader: LIMITED_KEY_SECRET },
 ];
 
+const LOGGING_CASES: KeysCase[] = [
+  { name: 'GET logging/level returns runtime state', method: 'GET', path: '/v0/management/logging/level', adminHeader: ADMIN_KEY },
+  { name: 'PUT logging/level trims and normalizes', method: 'PUT', path: '/v0/management/logging/level', adminHeader: ADMIN_KEY, body: { level: ' DEBUG ' } },
+  { name: 'GET logging/level reflects PUT', method: 'GET', path: '/v0/management/logging/level', adminHeader: ADMIN_KEY },
+  { name: 'PUT logging/level rejects unsupported trace', method: 'PUT', path: '/v0/management/logging/level', adminHeader: ADMIN_KEY, body: { level: 'trace' } },
+  { name: 'GET logging/level rejects limited key', method: 'GET', path: '/v0/management/logging/level', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'DELETE logging/level resets startup default', method: 'DELETE', path: '/v0/management/logging/level', adminHeader: ADMIN_KEY },
+  { name: 'GET logging/modules starts empty', method: 'GET', path: '/v0/management/logging/modules', adminHeader: ADMIN_KEY },
+  { name: 'PUT logging/modules deduplicates entries', method: 'PUT', path: '/v0/management/logging/modules', adminHeader: ADMIN_KEY, body: { modules: ['routing', 'routing', 'quota'] } },
+  { name: 'GET logging/modules reflects PUT', method: 'GET', path: '/v0/management/logging/modules', adminHeader: ADMIN_KEY },
+  { name: 'PUT logging/modules rejects empty module', method: 'PUT', path: '/v0/management/logging/modules', adminHeader: ADMIN_KEY, body: { modules: [''] } },
+  { name: 'GET logging/modules rejects missing credential', method: 'GET', path: '/v0/management/logging/modules' },
+  { name: 'DELETE logging/modules clears filter', method: 'DELETE', path: '/v0/management/logging/modules', adminHeader: ADMIN_KEY },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1133,6 +1148,7 @@ async function main() {
   failures += await runCases(CAPTURE_TRACE_CASES);
   failures += await runCases(STALL_CONFIG_CASES);
   failures += await runCases(VISION_FALLTHROUGH_CASES);
+  failures += await runCases(LOGGING_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1172,6 +1188,7 @@ async function main() {
     CAPTURE_TRACE_CASES.length +
     STALL_CONFIG_CASES.length +
     VISION_FALLTHROUGH_CASES.length +
+    LOGGING_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
