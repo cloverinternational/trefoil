@@ -658,6 +658,19 @@ pub async fn delete_request_usage(pool: &PgPool, request_id: &str) -> Result<(),
     Ok(())
 }
 
+pub async fn update_request_usage_metrics(
+    pool: &PgPool,
+    request_id: &str,
+    input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+    total_cost: Option<f32>,
+    duration_ms: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE request_usage SET tokens_input = $2, tokens_output = $3, cost_total = $4, duration_ms = $5 WHERE request_id = $1")
+        .bind(request_id).bind(input_tokens).bind(output_tokens).bind(total_cost).bind(duration_ms)
+        .execute(pool).await.map(|_| ())
+}
+
 /// Calendar window start (UTC, epoch ms) for daily/weekly/monthly quota
 /// types, matching Plexus's `QuotaEnforcer.getWindowStart` exactly: daily
 /// is UTC midnight, weekly is the most recent UTC Monday midnight, monthly
