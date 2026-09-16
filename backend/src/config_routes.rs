@@ -76,6 +76,59 @@ pub fn router() -> Router<AppState> {
             "/v0/management/quota-checker-types",
             axum::routing::get(quota_checker_types),
         )
+        .route(
+            "/v0/management/pi/providers",
+            axum::routing::get(pi_providers),
+        )
+}
+
+async fn pi_providers(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    // Pinned to Plexus's pi-ai provider registry at the reference revision.
+    let data = [
+        "amazon-bedrock",
+        "ant-ling",
+        "anthropic",
+        "azure-openai-responses",
+        "baseten",
+        "cerebras",
+        "cloudflare-ai-gateway",
+        "cloudflare-workers-ai",
+        "deepseek",
+        "fireworks",
+        "github-copilot",
+        "google",
+        "google-vertex",
+        "groq",
+        "huggingface",
+        "kimi-coding",
+        "minimax",
+        "minimax-cn",
+        "mistral",
+        "moonshotai",
+        "moonshotai-cn",
+        "nvidia",
+        "openai",
+        "openai-codex",
+        "opencode",
+        "opencode-go",
+        "openrouter",
+        "qwen-token-plan",
+        "qwen-token-plan-cn",
+        "qwen-token-plan-individual",
+        "together",
+        "vercel-ai-gateway",
+        "xai",
+        "xiaomi",
+        "xiaomi-token-plan-ams",
+        "xiaomi-token-plan-cn",
+        "xiaomi-token-plan-sgp",
+        "zai",
+        "zai-coding-cn",
+    ];
+    Json(serde_json::json!({ "data": data.as_slice() })).into_response()
 }
 
 async fn quota_checker_types(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -2013,5 +2066,27 @@ mod tests {
             body["types"][29],
             serde_json::json!({ "type": "cline", "displayName": "Cline" })
         );
+    }
+
+    #[tokio::test]
+    async fn pi_providers_lists_pinned_registry() {
+        let response = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::get("/v0/management/pi/providers")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let providers = body["data"].as_array().unwrap();
+        assert_eq!(providers.len(), 39);
+        assert_eq!(providers.first().unwrap(), "amazon-bedrock");
+        assert_eq!(providers.last().unwrap(), "zai-coding-cn");
+        assert!(providers.contains(&serde_json::json!("openai")));
     }
 }

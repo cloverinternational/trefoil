@@ -1018,6 +1018,12 @@ const CONCURRENCY_CASES: KeysCase[] = [
   { name: 'GET concurrency rejects missing credential', method: 'GET', path: '/v0/management/concurrency' },
 ];
 
+const PI_PROVIDER_CASES: KeysCase[] = [
+  { name: 'GET pi/providers lists pinned provider registry', method: 'GET', path: '/v0/management/pi/providers', adminHeader: ADMIN_KEY },
+  { name: 'GET pi/providers rejects limited key', method: 'GET', path: '/v0/management/pi/providers', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET pi/providers rejects missing credential', method: 'GET', path: '/v0/management/pi/providers' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1262,6 +1268,7 @@ async function main() {
   failures += await runCases(VISION_CACHE_CASES);
   failures += await runCases(OAUTH_PROVIDER_CASES);
   failures += await runCases(QUOTA_CHECKER_TYPE_CASES);
+  failures += await runCases(PI_PROVIDER_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1312,6 +1319,7 @@ async function main() {
     VISION_CACHE_CASES.length +
     OAUTH_PROVIDER_CASES.length +
     QUOTA_CHECKER_TYPE_CASES.length +
+    PI_PROVIDER_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
