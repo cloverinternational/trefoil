@@ -16,10 +16,15 @@ use crate::{
 };
 
 pub fn router() -> Router<AppState> {
-    Router::new().route(
-        "/v0/management/usage",
-        axum::routing::get(list_usage).delete(clear_usage),
-    )
+    Router::new()
+        .route(
+            "/v0/management/usage",
+            axum::routing::get(list_usage).delete(clear_usage),
+        )
+        .route(
+            "/v0/management/usage/summary",
+            axum::routing::get(summary_usage),
+        )
 }
 
 #[derive(Deserialize)]
@@ -119,4 +124,35 @@ async fn clear_usage(State(state): State<AppState>, headers: HeaderMap) -> Respo
         }
     }
     Json(serde_json::json!({"success":true})).into_response()
+}
+
+async fn summary_usage(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let principal = match admin(&state, &headers) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let scope = match principal {
+        Principal::Admin => None,
+        Principal::Limited { key_name, .. } => Some(key_name),
+    };
+    let Some(pool) = &state.inner.database else {
+        return Json(serde_json::json!({"requests":0,"errors":0,"inputTokens":0,"outputTokens":0,"totalCost":0})).into_response();
+    };
+    // Matches Plexus's aggregateSelection.errors definition exactly: a row
+    // counts as an error when response_status is NULL or anything other
+    // than the literal string 'success' (so e.g. Trefoil's own "streaming"
+    // status also counts, same as Plexus's default-to-error stance).
+    let query = if scope.is_some() {
+        sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input_tokens, coalesce(sum(tokens_output),0)::bigint AS output_tokens, coalesce(sum(cost_total),0)::real AS total_cost FROM request_usage WHERE api_key = $1").bind(scope.unwrap()).fetch_one(pool).await
+    } else {
+        sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input_tokens, coalesce(sum(tokens_output),0)::bigint AS output_tokens, coalesce(sum(cost_total),0)::real AS total_cost FROM request_usage").fetch_one(pool).await
+    };
+    let Ok(row) = query else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error":"Failed to read usage summary"})),
+        )
+            .into_response();
+    };
+    Json(serde_json::json!({"requests":row.try_get::<i64,_>("requests").unwrap_or(0),"errors":row.try_get::<i64,_>("errors").unwrap_or(0),"inputTokens":row.try_get::<i64,_>("input_tokens").unwrap_or(0),"outputTokens":row.try_get::<i64,_>("output_tokens").unwrap_or(0),"totalCost":row.try_get::<f32,_>("total_cost").unwrap_or(0.0)})).into_response()
 }
