@@ -620,12 +620,14 @@ pub async fn delete_cooldown(
 }
 
 /// Record the minimal request lifecycle in Plexus's `request_usage` table.
+#[allow(clippy::too_many_arguments)] // Mirrors the flat request_usage row fields at one SQL seam.
 pub async fn record_request_usage(
     pool: &PgPool,
     request_id: &str,
     api_key: Option<&str>,
     provider: Option<&str>,
     model: Option<&str>,
+    incoming_api_type: &str,
     status: &str,
     streamed: bool,
     start_time: i64,
@@ -634,7 +636,7 @@ pub async fn record_request_usage(
         "INSERT INTO request_usage
           (request_id, date, api_key, provider, incoming_model_alias,
            incoming_api_type, response_status, is_streamed, start_time, created_at)
-         VALUES ($1,$2,$3,$4,$5,'chat',$6,$7,$8,$8)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
          ON CONFLICT (request_id) DO UPDATE SET response_status=EXCLUDED.response_status",
     )
     .bind(request_id)
@@ -642,6 +644,7 @@ pub async fn record_request_usage(
     .bind(api_key)
     .bind(provider)
     .bind(model)
+    .bind(incoming_api_type)
     .bind(status)
     .bind(if streamed { 1 } else { 0 })
     .bind(start_time)
