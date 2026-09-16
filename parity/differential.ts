@@ -943,6 +943,14 @@ const ERRORS_CASES: KeysCase[] = [
   { name: 'DELETE missing error is hidden from limited key', method: 'DELETE', path: '/v0/management/errors/parity-missing-error', adminHeader: LIMITED_KEY_SECRET },
 ];
 
+const PERFORMANCE_CASES: KeysCase[] = [
+  { name: 'GET performance returns current aggregates', method: 'GET', path: '/v0/management/performance', adminHeader: ADMIN_KEY },
+  { name: 'GET performance accepts provider/model filters', method: 'GET', path: '/v0/management/performance?provider=missing&model=missing', adminHeader: ADMIN_KEY },
+  { name: 'GET performance rejects limited key', method: 'GET', path: '/v0/management/performance', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'DELETE performance requires model parameter', method: 'DELETE', path: '/v0/management/performance', adminHeader: ADMIN_KEY },
+  { name: 'DELETE nonexistent performance model is idempotent', method: 'DELETE', path: '/v0/management/performance?model=parity-missing-performance', adminHeader: ADMIN_KEY },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1180,6 +1188,7 @@ async function main() {
   failures += await runCases(BACKGROUND_EXPLORATION_CASES);
   failures += await runCases(TRUSTED_PROXIES_CASES);
   failures += await runCases(ERRORS_CASES);
+  failures += await runCases(PERFORMANCE_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1223,6 +1232,7 @@ async function main() {
     BACKGROUND_EXPLORATION_CASES.length +
     TRUSTED_PROXIES_CASES.length +
     ERRORS_CASES.length +
+    PERFORMANCE_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

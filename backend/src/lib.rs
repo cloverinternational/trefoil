@@ -8,6 +8,7 @@ pub mod errors;
 pub mod inference;
 pub mod keys;
 pub mod logging;
+pub mod performance;
 pub mod providers;
 pub mod self_routes;
 pub mod state;
@@ -30,6 +31,7 @@ pub fn app(state: AppState) -> Router {
         .merge(errors::router())
         .merge(inference::router())
         .merge(logging::router())
+        .merge(performance::router())
         .merge(keys::router())
         .merge(providers::router())
         .merge(self_routes::router())
