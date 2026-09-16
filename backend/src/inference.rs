@@ -75,18 +75,32 @@ async fn chat_completions(
         Err(response) => return response,
     };
     if let Principal::Limited { key_name, config } = &principal {
+        let quota_names = if config.quota_names.is_empty() {
+            state
+                .inner
+                .settings
+                .read()
+                .unwrap()
+                .get("default_quotas")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            config.quota_names.clone()
+        };
         if let Some(pool) = &state.inner.database {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_millis() as i64)
                 .unwrap_or_default();
-            match crate::database::request_quota_exceeded(
-                pool,
-                key_name,
-                &config.quota_names,
-                now_ms,
-            )
-            .await
+            match crate::database::request_quota_exceeded(pool, key_name, &quota_names, now_ms)
+                .await
             {
                 Ok(Some((quota, limit, used))) => {
                     return error_response(

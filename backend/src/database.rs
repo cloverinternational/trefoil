@@ -661,7 +661,12 @@ fn calendar_window_start_ms(quota_type: &str, now_ms: i64) -> Option<i64> {
     use chrono::{Datelike, TimeZone, Utc};
     let now = Utc.timestamp_millis_opt(now_ms).single()?;
     match quota_type {
-        "daily" => Some(now.date_naive().and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis()),
+        "daily" => Some(
+            now.date_naive()
+                .and_hms_opt(0, 0, 0)?
+                .and_utc()
+                .timestamp_millis(),
+        ),
         "weekly" => {
             let days_since_monday = now.weekday().num_days_from_monday() as i64;
             Some(
@@ -777,7 +782,10 @@ mod tests {
     fn daily_window_is_utc_midnight() {
         let noon_ms = 1_704_888_000_000; // 2024-01-10T12:00:00Z
         let midnight_ms = 1_704_844_800_000; // 2024-01-10T00:00:00Z
-        assert_eq!(calendar_window_start_ms("daily", noon_ms), Some(midnight_ms));
+        assert_eq!(
+            calendar_window_start_ms("daily", noon_ms),
+            Some(midnight_ms)
+        );
     }
 
     #[test]
