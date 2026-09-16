@@ -1,6 +1,8 @@
 pub mod auth;
 pub mod aliases;
 pub mod cooldowns;
+pub mod database;
+pub mod debug;
 pub mod keys;
 pub mod providers;
 pub mod self_routes;
@@ -18,6 +20,7 @@ pub fn app(state: AppState) -> Router {
         .merge(auth::router())
         .merge(aliases::router())
         .merge(cooldowns::router())
+        .merge(debug::router())
         .merge(keys::router())
         .merge(providers::router())
         .merge(self_routes::router())

@@ -1,0 +1,1 @@
+ALTER TABLE "providers" ADD COLUMN "gemini_thinking_enabled" boolean DEFAULT false NOT NULL;

@@ -441,15 +441,24 @@ async fn put_alias(
         Err(issues) => return ApiError::validation(issues).into_response(),
     };
 
-    let mut aliases = state.inner.aliases.write().unwrap();
-    let mut candidate = aliases.clone();
-    candidate.insert(slug.clone(), config.clone());
-    if let Err(_message) = assert_no_alias_ref_cycles(&candidate) {
-        return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
-            .into_response();
+    {
+        let aliases = state.inner.aliases.read().unwrap();
+        let mut candidate = aliases.clone();
+        candidate.insert(slug.clone(), config.clone());
+        if let Err(_message) = assert_no_alias_ref_cycles(&candidate) {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
+                .into_response();
+        }
     }
 
-    aliases.insert(slug.clone(), config);
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_alias(pool, &slug, &config).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
+    }
+
+    state.inner.aliases.write().unwrap().insert(slug.clone(), config);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
@@ -467,8 +476,7 @@ async fn patch_alias(
             .into_response();
     }
 
-    let mut aliases = state.inner.aliases.write().unwrap();
-    let Some(existing) = aliases.get(&slug).cloned() else {
+    let Some(existing) = state.inner.aliases.read().unwrap().get(&slug).cloned() else {
         return ApiError::Simple(StatusCode::NOT_FOUND, format!("Alias '{slug}' not found")).into_response();
     };
 
@@ -481,14 +489,24 @@ async fn patch_alias(
         Err(issues) => return ApiError::validation(issues).into_response(),
     };
 
-    let mut candidate = aliases.clone();
-    candidate.insert(slug.clone(), merged.clone());
-    if let Err(_message) = assert_no_alias_ref_cycles(&candidate) {
-        return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
-            .into_response();
+    {
+        let aliases = state.inner.aliases.read().unwrap();
+        let mut candidate = aliases.clone();
+        candidate.insert(slug.clone(), merged.clone());
+        if let Err(_message) = assert_no_alias_ref_cycles(&candidate) {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
+                .into_response();
+        }
     }
 
-    aliases.insert(slug.clone(), merged);
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_alias(pool, &slug, &merged).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
+    }
+
+    state.inner.aliases.write().unwrap().insert(slug.clone(), merged);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
@@ -500,6 +518,12 @@ async fn delete_alias(
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
     }
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::delete_alias(pool, &slug).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
+    }
     state.inner.aliases.write().unwrap().remove(&slug);
     Json(serde_json::json!({ "success": true })).into_response()
 }
@@ -507,6 +531,12 @@ async fn delete_alias(
 async fn delete_all_aliases(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
+    }
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::delete_all_aliases(pool).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
     }
     let mut aliases = state.inner.aliases.write().unwrap();
     let deleted_count = aliases.len();

@@ -90,7 +90,9 @@ async fn get_me(State(state): State<AppState>, headers: HeaderMap) -> Response {
     match principal {
         Principal::Admin => Json(serde_json::json!({ "role": "admin" })).into_response(),
         Principal::Limited { key_name, config } => {
-            let debug_enabled = state.inner.debug_enabled_keys.read().unwrap().contains(&key_name);
+            let global = *state.inner.debug_enabled_global.read().unwrap();
+            let debug_enabled =
+                global || state.inner.debug_enabled_keys.read().unwrap().contains(&key_name);
             Json(serde_json::json!({
                 "role": "limited",
                 "keyName": key_name,
@@ -103,7 +105,7 @@ async fn get_me(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 "quotaName": config.quota_names.first(),
                 "comment": config.comment,
                 "traceEnabled": debug_enabled,
-                "traceEnabledGlobal": false,
+                "traceEnabledGlobal": global,
             }))
             .into_response()
         }
@@ -295,11 +297,12 @@ async fn toggle_debug(
         }
     }
 
-    let now_enabled = state.inner.debug_enabled_keys.read().unwrap().contains(&key_name);
+    let global = *state.inner.debug_enabled_global.read().unwrap();
+    let now_enabled = global || state.inner.debug_enabled_keys.read().unwrap().contains(&key_name);
     Json(serde_json::json!({
         "keyName": key_name,
         "enabled": now_enabled,
-        "enabledGlobal": false,
+        "enabledGlobal": global,
     }))
     .into_response()
 }

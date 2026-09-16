@@ -4,9 +4,10 @@
 //! see `packages/backend/src/routes/management.ts` line ~87 vs the
 //! `requireAdmin` preHandler on the delete routes.
 //!
-//! Trefoil keeps cooldowns in memory only; Plexus additionally persists
-//! them to SQLite for restart-survival, which is an implementation detail
-//! invisible to this contract.
+//! Cooldowns are dual-written to PostgreSQL (mirroring Plexus's
+//! `cooldown-manager.ts`, which persists them via Drizzle) when a database
+//! pool is attached, in addition to the in-memory `RwLock` used for the
+//! hot read path.
 
 use axum::{
     extract::{Path, Query, State},
@@ -108,6 +109,15 @@ async fn delete_all_cooldowns(State(state): State<AppState>, headers: HeaderMap)
     if let Err(resp) = require_admin(&state, &headers) {
         return resp;
     }
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::delete_all_cooldowns(pool).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response();
+        }
+    }
     state.inner.cooldowns.write().unwrap().clear();
     Json(serde_json::json!({ "success": true })).into_response()
 }
@@ -125,6 +135,20 @@ async fn delete_provider_cooldowns(
 ) -> Response {
     if let Err(resp) = require_admin(&state, &headers) {
         return resp;
+    }
+
+    if let Some(pool) = &state.inner.database {
+        let result = match &query.model {
+            Some(model) => crate::database::delete_cooldown(pool, &provider, model).await,
+            None => crate::database::delete_cooldowns_by_provider(pool, &provider).await,
+        };
+        if let Err(error) = result {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response();
+        }
     }
 
     let mut cooldowns = state.inner.cooldowns.write().unwrap();

@@ -376,6 +376,12 @@ async fn put_provider(
         return e.into_response();
     }
 
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_provider(pool, &slug, &config).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
+    }
     state.inner.providers.write().unwrap().insert(slug.clone(), config);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
@@ -394,8 +400,7 @@ async fn patch_provider(
             .into_response();
     }
 
-    let mut providers = state.inner.providers.write().unwrap();
-    let Some(existing) = providers.get(&slug).cloned() else {
+    let Some(existing) = state.inner.providers.read().unwrap().get(&slug).cloned() else {
         return ApiError::Simple(StatusCode::NOT_FOUND, format!("Provider '{slug}' not found"))
             .into_response();
     };
@@ -412,7 +417,13 @@ async fn patch_provider(
         return e.into_response();
     }
 
-    providers.insert(slug.clone(), merged);
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_provider(pool, &slug, &merged).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
+    }
+    state.inner.providers.write().unwrap().insert(slug.clone(), merged);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
@@ -427,6 +438,12 @@ async fn delete_provider(
     // Plexus's `cascade=true` query param also deletes model aliases that
     // reference this provider; there's no model-alias store yet in this
     // slice, so `cascade` is a no-op here until aliases are ported.
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::delete_provider(pool, &slug).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
+    }
     state.inner.providers.write().unwrap().remove(&slug);
     Json(serde_json::json!({ "success": true, "provider": slug })).into_response()
 }

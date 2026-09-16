@@ -1,25 +1,46 @@
-use std::collections::HashMap;
-
-use trefoil_backend::{app, state::KeyConfig, AppState};
+use trefoil_backend::{app, database, AppState};
 
 #[tokio::main]
 async fn main() {
-    // Real config loading (files/DB) isn't implemented yet for this vertical
-    // slice. ADMIN_KEY mirrors Plexus's own env var. The fixed "test-key"
-    // fixture matches BASE_CONFIG in
-    // packages/backend/src/routes/management/__tests__/admin-auth.test.ts so
-    // parity/differential.ts can exercise the same cases against both
-    // servers.
-    let admin_key = std::env::var("ADMIN_KEY").ok();
-    let mut keys = HashMap::new();
-    keys.insert(
-        "test-key".to_string(),
-        KeyConfig {
-            secret: "sk-test-secret".to_string(),
-            ..Default::default()
-        },
-    );
-    let state = AppState::new(admin_key, keys);
+    let pool = database::connect_from_env().await.unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
+    database::migrate(&pool).await.unwrap_or_else(|error| {
+        eprintln!("failed to run PostgreSQL migrations: {error}");
+        std::process::exit(1);
+    });
+    let keys = database::load_keys(&pool).await.unwrap_or_else(|error| {
+        eprintln!("failed to load API keys from PostgreSQL: {error}");
+        std::process::exit(1);
+    });
+    let providers = database::load_providers(&pool).await.unwrap_or_else(|error| {
+        eprintln!("failed to load providers from PostgreSQL: {error}");
+        std::process::exit(1);
+    });
+    let aliases = database::load_aliases(&pool).await.unwrap_or_else(|error| {
+        eprintln!("failed to load model aliases from PostgreSQL: {error}");
+        std::process::exit(1);
+    });
+    let user_quotas = database::load_user_quotas(&pool).await.unwrap_or_else(|error| {
+        eprintln!("failed to load user quotas from PostgreSQL: {error}");
+        std::process::exit(1);
+    });
+    let settings = database::load_settings(&pool).await.unwrap_or_else(|error| {
+        eprintln!("failed to load system settings from PostgreSQL: {error}");
+        std::process::exit(1);
+    });
+    let cooldowns = database::load_cooldowns(&pool).await.unwrap_or_else(|error| {
+        eprintln!("failed to load provider cooldowns from PostgreSQL: {error}");
+        std::process::exit(1);
+    });
+    let state = AppState::new(std::env::var("ADMIN_KEY").ok(), keys)
+        .with_database(pool);
+    *state.inner.providers.write().unwrap() = providers;
+    *state.inner.aliases.write().unwrap() = aliases;
+    *state.inner.user_quotas.write().unwrap() = user_quotas;
+    *state.inner.settings.write().unwrap() = settings;
+    *state.inner.cooldowns.write().unwrap() = cooldowns;
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
         .await

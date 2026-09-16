@@ -231,6 +231,15 @@ async fn put_quota(
     };
 
     let response_value = serde_json::to_value(&quota).unwrap();
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_user_quota(pool, &name, &quota).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_body(error.to_string(), "internal_error")),
+            )
+                .into_response();
+        }
+    }
     state.inner.user_quotas.write().unwrap().insert(name.clone(), quota);
     Json(serde_json::json!({ "success": true, "name": name, "quota": response_value })).into_response()
 }
@@ -245,8 +254,7 @@ async fn patch_quota(
         return resp;
     }
 
-    let mut quotas = state.inner.user_quotas.write().unwrap();
-    let Some(existing) = quotas.get(&name).cloned() else {
+    let Some(existing) = state.inner.user_quotas.read().unwrap().get(&name).cloned() else {
         return (
             StatusCode::NOT_FOUND,
             Json(error_body(format!("Quota not found: {name}"), "not_found_error")),
@@ -276,7 +284,16 @@ async fn patch_quota(
     };
 
     let response_value = serde_json::to_value(&quota).unwrap();
-    quotas.insert(name.clone(), quota);
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_user_quota(pool, &name, &quota).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_body(error.to_string(), "internal_error")),
+            )
+                .into_response();
+        }
+    }
+    state.inner.user_quotas.write().unwrap().insert(name.clone(), quota);
     Json(serde_json::json!({ "success": true, "name": name, "quota": response_value })).into_response()
 }
 
@@ -289,8 +306,7 @@ async fn delete_quota(
         return resp;
     }
 
-    let mut quotas = state.inner.user_quotas.write().unwrap();
-    if !quotas.contains_key(&name) {
+    if !state.inner.user_quotas.read().unwrap().contains_key(&name) {
         return (
             StatusCode::NOT_FOUND,
             Json(error_body(format!("Quota not found: {name}"), "not_found_error")),
@@ -332,7 +348,16 @@ async fn delete_quota(
             .into_response();
     }
 
-    quotas.remove(&name);
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::delete_user_quota(pool, &name).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(error_body(error.to_string(), "internal_error")),
+            )
+                .into_response();
+        }
+    }
+    state.inner.user_quotas.write().unwrap().remove(&name);
     Json(serde_json::json!({
         "success": true,
         "name": name,

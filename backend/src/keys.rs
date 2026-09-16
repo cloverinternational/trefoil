@@ -200,8 +200,7 @@ async fn put_key(
             .into_response();
     }
 
-    let mut keys = state.inner.keys.write().unwrap();
-    let existing = keys.get(&name).cloned();
+    let existing = state.inner.keys.read().unwrap().get(&name).cloned();
 
     if existing.is_some() && has_expiry_fields(&raw) {
         return ApiError::Simple(
@@ -248,7 +247,13 @@ async fn put_key(
         expires_at,
         disabled_at,
     };
-    keys.insert(name.clone(), config);
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_key(pool, &name, &config).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
+    }
+    state.inner.keys.write().unwrap().insert(name.clone(), config);
 
     Json(serde_json::json!({ "success": true, "name": name })).into_response()
 }
@@ -274,8 +279,7 @@ async fn patch_key(
         .into_response();
     }
 
-    let mut keys = state.inner.keys.write().unwrap();
-    let Some(existing) = keys.get(&name).cloned() else {
+    let Some(existing) = state.inner.keys.read().unwrap().get(&name).cloned() else {
         return ApiError::Simple(
             StatusCode::NOT_FOUND,
             format!("API key '{name}' not found"),
@@ -306,7 +310,13 @@ async fn patch_key(
         expires_at: existing.expires_at,
         disabled_at: existing.disabled_at,
     };
-    keys.insert(name.clone(), merged);
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_key(pool, &name, &merged).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
+    }
+    state.inner.keys.write().unwrap().insert(name.clone(), merged);
 
     Json(serde_json::json!({ "success": true, "name": name })).into_response()
 }
@@ -318,6 +328,12 @@ async fn delete_key(
 ) -> Response {
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
+    }
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::delete_key(pool, &name).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
     }
     state.inner.keys.write().unwrap().remove(&name);
     Json(serde_json::json!({ "success": true })).into_response()
@@ -331,8 +347,7 @@ async fn disable_key(
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
     }
-    let mut keys = state.inner.keys.write().unwrap();
-    let Some(existing) = keys.get_mut(&name) else {
+    let Some(mut existing) = state.inner.keys.read().unwrap().get(&name).cloned() else {
         return ApiError::Simple(
             StatusCode::NOT_FOUND,
             format!("API key '{name}' not found"),
@@ -347,6 +362,14 @@ async fn disable_key(
         .into_response();
     }
     existing.disabled_at = Some(now_ms());
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_key(pool, &name, &existing).await {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                .into_response();
+        }
+    }
+
+    state.inner.keys.write().unwrap().insert(name.clone(), existing);
 
     Json(serde_json::json!({ "success": true, "name": name })).into_response()
 }

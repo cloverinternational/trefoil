@@ -109,6 +109,16 @@ async fn patch_settings(
         }
     }
 
+    if let Some(pool) = &state.inner.database {
+        if let Err(error) = crate::database::upsert_settings_bulk(pool, body).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response();
+        }
+    }
+
     let mut settings = state.inner.settings.write().unwrap();
     for (k, v) in body {
         settings.insert(k.clone(), v.clone());

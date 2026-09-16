@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use serde_json::Value;
+use sqlx::PgPool;
 
 /// Configuration for a single limited (non-admin) API key.
 ///
@@ -154,6 +155,9 @@ pub struct AppState {
 
 #[derive(Debug, Default)]
 pub struct AppStateInner {
+    /// Production state is being migrated to PostgreSQL repository by
+    /// repository. `None` is reserved for unit-test-only in-memory fixtures.
+    pub database: Option<PgPool>,
     pub admin_key: Option<String>,
     pub keys: RwLock<HashMap<String, KeyConfig>>,
     pub providers: RwLock<HashMap<String, ProviderConfig>>,
@@ -162,16 +166,23 @@ pub struct AppStateInner {
     pub settings: RwLock<HashMap<String, Value>>,
     pub cooldowns: RwLock<HashMap<(String, String), CooldownEntry>>,
     /// Per-key trace/debug capture toggle, mirroring `DebugManager`'s
-    /// `enabledKeys` set. Trefoil does not implement the global toggle or
-    /// actual trace capture — only the on/off bookkeeping this contract's
-    /// `self/debug/toggle` endpoint reads and writes.
+    /// `enabledKeys` set. Trefoil does not implement actual trace capture —
+    /// only the on/off bookkeeping the `self/debug/toggle` and
+    /// `/v0/management/debug` endpoints read and write.
     pub debug_enabled_keys: RwLock<std::collections::HashSet<String>>,
+    /// Mirrors `DebugManager.enabledGlobal`.
+    pub debug_enabled_global: RwLock<bool>,
+    /// Mirrors `DebugManager.enabledAliases`.
+    pub debug_enabled_aliases: RwLock<std::collections::HashSet<String>>,
+    /// Mirrors `DebugManager.enabledProviders` (the "provider filter").
+    pub debug_enabled_providers: RwLock<std::collections::HashSet<String>>,
 }
 
 impl AppState {
     pub fn new(admin_key: Option<String>, keys: HashMap<String, KeyConfig>) -> Self {
         Self {
             inner: Arc::new(AppStateInner {
+                database: None,
                 admin_key,
                 keys: RwLock::new(keys),
                 providers: RwLock::new(HashMap::new()),
@@ -180,8 +191,18 @@ impl AppState {
                 settings: RwLock::new(HashMap::new()),
                 cooldowns: RwLock::new(HashMap::new()),
                 debug_enabled_keys: RwLock::new(std::collections::HashSet::new()),
+                debug_enabled_global: RwLock::new(false),
+                debug_enabled_aliases: RwLock::new(std::collections::HashSet::new()),
+                debug_enabled_providers: RwLock::new(std::collections::HashSet::new()),
             }),
         }
+    }
+
+    pub fn with_database(mut self, database: PgPool) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("database must be attached before AppState is cloned")
+            .database = Some(database);
+        self
     }
 }
 
