@@ -53,11 +53,12 @@ async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Respo
     if authenticate(&state, &headers).is_err() {
         return auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized");
     }
+    // Only alias slugs are listed here, matching Plexus's /v1/models: direct
+    // provider/model syntax (e.g. "openai/gpt-4o") is intentionally excluded
+    // from discovery since it's meant for debugging only, not client-facing
+    // model selection.
     let mut data = Vec::new();
     for slug in state.inner.aliases.read().unwrap().keys() {
-        data.push(serde_json::json!({ "id": slug, "object": "model", "owned_by": "trefoil" }));
-    }
-    for slug in state.inner.providers.read().unwrap().keys() {
         data.push(serde_json::json!({ "id": slug, "object": "model", "owned_by": "trefoil" }));
     }
     data.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
@@ -273,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn models_lists_aliases_and_providers() {
+    async fn models_lists_aliases_only_not_raw_providers() {
         let state = AppState::new(Some("admin".into()), HashMap::new());
         state
             .inner
@@ -281,6 +282,12 @@ mod tests {
             .write()
             .unwrap()
             .insert("openai".into(), Default::default());
+        state
+            .inner
+            .aliases
+            .write()
+            .unwrap()
+            .insert("gpt-4o-alias".into(), Default::default());
         let request = Request::get("/v1/models")
             .header("Authorization", "Bearer admin")
             .body(Body::empty())
@@ -288,6 +295,12 @@ mod tests {
         let response = router().with_state(state).oneshot(request).await.unwrap();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["data"][0]["id"], "openai");
+        let ids: Vec<&str> = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["gpt-4o-alias"]);
     }
 }
