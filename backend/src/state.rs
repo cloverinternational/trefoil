@@ -158,6 +158,8 @@ pub struct AppStateInner {
     pub keys: RwLock<HashMap<String, KeyConfig>>,
     pub providers: RwLock<HashMap<String, ProviderConfig>>,
     pub aliases: RwLock<HashMap<String, ModelConfig>>,
+    pub user_quotas: RwLock<HashMap<String, QuotaDefinition>>,
+    pub settings: RwLock<HashMap<String, Value>>,
 }
 
 impl AppState {
@@ -168,9 +170,40 @@ impl AppState {
                 keys: RwLock::new(keys),
                 providers: RwLock::new(HashMap::new()),
                 aliases: RwLock::new(HashMap::new()),
+                user_quotas: RwLock::new(HashMap::new()),
+                settings: RwLock::new(HashMap::new()),
             }),
         }
     }
+}
+
+/// A user quota definition.
+///
+/// Mirrors `QuotaDefinitionSchema` (`packages/backend/src/config.ts`): a
+/// discriminated union on `type`, with shared `QuotaScopeFields` applied to
+/// every variant. `duration` is required for `rolling` and absent/ignored
+/// for the other three (`daily`/`weekly`/`monthly`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QuotaDefinition {
+    #[serde(rename = "type")]
+    pub quota_type: String,
+    #[serde(rename = "limitType")]
+    pub limit_type: String,
+    pub limit: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<String>,
+    #[serde(rename = "allowedProviders", skip_serializing_if = "Option::is_none")]
+    pub allowed_providers: Option<Vec<String>>,
+    #[serde(rename = "excludedProviders", skip_serializing_if = "Option::is_none")]
+    pub excluded_providers: Option<Vec<String>>,
+    #[serde(rename = "allowedModels", skip_serializing_if = "Option::is_none")]
+    pub allowed_models: Option<Vec<String>>,
+    #[serde(rename = "excludedModels", skip_serializing_if = "Option::is_none")]
+    pub excluded_models: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared: Option<bool>,
+    #[serde(rename = "warnAt", skip_serializing_if = "Option::is_none")]
+    pub warn_at: Option<f64>,
 }
 
 /// A single dispatch target within a `ModelTargetGroup`.

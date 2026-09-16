@@ -3,6 +3,8 @@ pub mod aliases;
 pub mod keys;
 pub mod providers;
 pub mod state;
+pub mod system_settings;
+pub mod user_quotas;
 
 pub use state::AppState;
 
@@ -15,6 +17,8 @@ pub fn app(state: AppState) -> Router {
         .merge(aliases::router())
         .merge(keys::router())
         .merge(providers::router())
+        .merge(user_quotas::router())
+        .merge(system_settings::router())
         .with_state(state)
 }
 

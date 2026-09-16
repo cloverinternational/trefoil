@@ -386,6 +386,195 @@ const ALIASES_CASES: KeysCase[] = [
   },
 ];
 
+// Cases mirror user-quotas.ts routes and user-quotas-delete-conflict.test.ts.
+const USER_QUOTAS_CASES: KeysCase[] = [
+  {
+    name: 'GET nonexistent quota -> 404',
+    method: 'GET',
+    path: `/v0/management/user-quotas/nope-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PUT rejects invalid (too-short/uppercase) quota name',
+    method: 'PUT',
+    path: `/v0/management/user-quotas/A`,
+    adminHeader: ADMIN_KEY,
+    body: { type: 'daily', limitType: 'requests', limit: 100 },
+  },
+  {
+    name: 'PUT creates a daily quota',
+    method: 'PUT',
+    path: `/v0/management/user-quotas/my-quota-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { type: 'daily', limitType: 'requests', limit: 100 },
+  },
+  {
+    name: 'GET returns the created quota',
+    method: 'GET',
+    path: `/v0/management/user-quotas/my-quota-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH partially updates limit',
+    method: 'PATCH',
+    path: `/v0/management/user-quotas/my-quota-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { limit: 200 },
+  },
+  {
+    name: 'GET reflects the patched limit',
+    method: 'GET',
+    path: `/v0/management/user-quotas/my-quota-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH nonexistent quota -> 404',
+    method: 'PATCH',
+    path: `/v0/management/user-quotas/does-not-exist-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { limit: 5 },
+  },
+  {
+    name: 'PUT rolling quota missing duration -> 400',
+    method: 'PUT',
+    path: `/v0/management/user-quotas/rolling-q-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { type: 'rolling', limitType: 'tokens', limit: 50 },
+  },
+  {
+    name: 'PUT quota with scope fields round-trips them',
+    method: 'PUT',
+    path: `/v0/management/user-quotas/scoped-q-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { type: 'monthly', limitType: 'cost', limit: 10, allowedProviders: ['p1'], warnAt: 0.8, shared: true },
+  },
+  {
+    name: 'GET returns the scoped quota with scope fields',
+    method: 'GET',
+    path: `/v0/management/user-quotas/scoped-q-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'DELETE unreferenced scoped quota succeeds',
+    method: 'DELETE',
+    path: `/v0/management/user-quotas/scoped-q-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'DELETE rolling-q fixture cleanup (never created due to validation failure)',
+    method: 'DELETE',
+    path: `/v0/management/user-quotas/rolling-q-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PUT a key referencing my-quota',
+    method: 'PUT',
+    path: `/v0/management/keys/quota-user-key-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { secret: `sk-quota-user-${runId}`, quotas: [`my-quota-${runId}`] },
+  },
+  {
+    name: 'DELETE quota referenced by a key -> 409',
+    method: 'DELETE',
+    path: `/v0/management/user-quotas/my-quota-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH system-settings default_quotas references the quota',
+    method: 'PATCH',
+    path: '/v0/management/system-settings',
+    adminHeader: ADMIN_KEY,
+    body: { default_quotas: [`my-quota-${runId}`] },
+  },
+  {
+    name: 'DELETE the referencing key so only default_quotas blocks deletion',
+    method: 'DELETE',
+    path: `/v0/management/keys/quota-user-key-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'DELETE quota referenced by default_quotas -> 409',
+    method: 'DELETE',
+    path: `/v0/management/user-quotas/my-quota-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH system-settings clears default_quotas',
+    method: 'PATCH',
+    path: '/v0/management/system-settings',
+    adminHeader: ADMIN_KEY,
+    body: { default_quotas: null },
+  },
+  {
+    name: 'DELETE quota now unreferenced succeeds (cleanup)',
+    method: 'DELETE',
+    path: `/v0/management/user-quotas/my-quota-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'limited key gets 403 on admin-only user-quotas route',
+    method: 'GET',
+    path: '/v0/management/user-quotas',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'missing credential gets 401 on admin-only user-quotas route',
+    method: 'GET',
+    path: '/v0/management/user-quotas',
+  },
+];
+
+// Cases mirror system-settings-default-quotas.test.ts and the PATCH/GET
+// contract in config.ts's system-settings routes.
+const SYSTEM_SETTINGS_CASES: KeysCase[] = [
+  {
+    name: 'PATCH default_quotas referencing an unknown quota -> 400',
+    method: 'PATCH',
+    path: '/v0/management/system-settings',
+    adminHeader: ADMIN_KEY,
+    body: { default_quotas: [`ghost-quota-${runId}`] },
+  },
+  {
+    name: 'PATCH default_quotas as a non-array -> 400',
+    method: 'PATCH',
+    path: '/v0/management/system-settings',
+    adminHeader: ADMIN_KEY,
+    body: { default_quotas: 'not-an-array' },
+  },
+  {
+    name: 'PATCH default_quotas with non-string entries -> 400',
+    method: 'PATCH',
+    path: '/v0/management/system-settings',
+    adminHeader: ADMIN_KEY,
+    body: { default_quotas: [1] },
+  },
+  {
+    name: 'PATCH default_quotas empty array succeeds',
+    method: 'PATCH',
+    path: '/v0/management/system-settings',
+    adminHeader: ADMIN_KEY,
+    body: { default_quotas: [] },
+  },
+  {
+    name: 'PATCH sets a free-form setting',
+    method: 'PATCH',
+    path: '/v0/management/system-settings',
+    adminHeader: ADMIN_KEY,
+    body: { [`custom_setting_${runId}`]: 'whatever' },
+  },
+  {
+    name: 'limited key gets 403 on admin-only system-settings route',
+    method: 'GET',
+    path: '/v0/management/system-settings',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'missing credential gets 401 on admin-only system-settings route',
+    method: 'GET',
+    path: '/v0/management/system-settings',
+  },
+];
+
 async function runCases(cases: KeysCase[]): Promise<number> {
   let failures = 0;
   for (const testCase of cases) {
@@ -432,8 +621,16 @@ async function main() {
   failures += await runCases(KEYS_CASES);
   failures += await runCases(PROVIDERS_CASES);
   failures += await runCases(ALIASES_CASES);
+  failures += await runCases(USER_QUOTAS_CASES);
+  failures += await runCases(SYSTEM_SETTINGS_CASES);
 
-  const total = CASES.length + KEYS_CASES.length + PROVIDERS_CASES.length + ALIASES_CASES.length;
+  const total =
+    CASES.length +
+    KEYS_CASES.length +
+    PROVIDERS_CASES.length +
+    ALIASES_CASES.length +
+    USER_QUOTAS_CASES.length +
+    SYSTEM_SETTINGS_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
     process.exit(1);
