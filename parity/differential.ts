@@ -166,6 +166,115 @@ const KEYS_CASES: KeysCase[] = [
   },
 ];
 
+// --- /v0/management/providers/* CRUD (admin-only) ---
+
+const PROVIDERS_CASES: KeysCase[] = [
+  {
+    name: 'PUT rejects missing api_key',
+    method: 'PUT',
+    path: `/v0/management/providers/test-provider-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { api_base_url: 'https://api.example.com' },
+  },
+  {
+    name: 'PUT accepts a valid minimal provider',
+    method: 'PUT',
+    path: `/v0/management/providers/test-provider-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { api_base_url: 'https://api.example.com', api_key: 'sk-x', adapter: 'openai' },
+  },
+  {
+    name: 'GET returns the created provider with defaults',
+    method: 'GET',
+    path: `/v0/management/providers/test-provider-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PUT oauth:// placeholder requires oauth_provider and oauth_account',
+    method: 'PUT',
+    path: `/v0/management/providers/oauth-test-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { api_base_url: 'oauth://', adapter: 'openai' },
+  },
+  {
+    name: 'PUT rejects an invalid api_base_url',
+    method: 'PUT',
+    path: `/v0/management/providers/bad-url-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { api_base_url: 'not-a-url', api_key: 'sk-x', adapter: 'openai' },
+  },
+  {
+    name: 'PUT raw_passthrough round-trips with default auth',
+    method: 'PUT',
+    path: `/v0/management/providers/openrouter-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: {
+      api_base_url: 'https://openrouter.ai/api/v1',
+      api_key: 'sk-x',
+      adapter: 'openai',
+      raw_passthrough: { enabled: true, base_url: 'https://openrouter.ai/api' },
+    },
+  },
+  {
+    name: 'GET reflects raw_passthrough with default auth',
+    method: 'GET',
+    path: `/v0/management/providers/openrouter-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH nonexistent provider -> 404',
+    method: 'PATCH',
+    path: `/v0/management/providers/does-not-exist-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { enabled: false },
+  },
+  {
+    name: 'DELETE returns success with provider name',
+    method: 'DELETE',
+    path: `/v0/management/providers/test-provider-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'DELETE cleans up the raw_passthrough fixture',
+    method: 'DELETE',
+    path: `/v0/management/providers/openrouter-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'limited key gets 403 on admin-only providers route',
+    method: 'GET',
+    path: '/v0/management/providers',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'missing credential gets 401 on admin-only providers route',
+    method: 'GET',
+    path: '/v0/management/providers',
+  },
+];
+
+async function runCases(cases: KeysCase[]): Promise<number> {
+  let failures = 0;
+  for (const testCase of cases) {
+    const [plexus, trefoil] = await Promise.all([
+      fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body),
+      fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body),
+    ]);
+
+    const statusMatch = plexus.status === trefoil.status;
+    const bodyMatch = deepEqual(normalize(plexus.body), normalize(trefoil.body));
+    const pass = statusMatch && bodyMatch;
+    if (!pass) failures += 1;
+
+    console.log(`${pass ? 'PASS' : 'FAIL'} ${testCase.name}`);
+    if (!pass) {
+      console.log(`  plexus:  ${plexus.status} ${JSON.stringify(plexus.body)}`);
+      console.log(`  trefoil: ${trefoil.status} ${JSON.stringify(trefoil.body)}`);
+    }
+  }
+  return failures;
+}
+
 async function main() {
   let failures = 0;
 
@@ -187,25 +296,10 @@ async function main() {
     }
   }
 
-  for (const testCase of KEYS_CASES) {
-    const [plexus, trefoil] = await Promise.all([
-      fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body),
-      fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body),
-    ]);
+  failures += await runCases(KEYS_CASES);
+  failures += await runCases(PROVIDERS_CASES);
 
-    const statusMatch = plexus.status === trefoil.status;
-    const bodyMatch = deepEqual(normalize(plexus.body), normalize(trefoil.body));
-    const pass = statusMatch && bodyMatch;
-    if (!pass) failures += 1;
-
-    console.log(`${pass ? 'PASS' : 'FAIL'} ${testCase.name}`);
-    if (!pass) {
-      console.log(`  plexus:  ${plexus.status} ${JSON.stringify(plexus.body)}`);
-      console.log(`  trefoil: ${trefoil.status} ${JSON.stringify(trefoil.body)}`);
-    }
-  }
-
-  const total = CASES.length + KEYS_CASES.length;
+  const total = CASES.length + KEYS_CASES.length + PROVIDERS_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
     process.exit(1);
