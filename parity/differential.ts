@@ -47,9 +47,22 @@ async function fetchVerify(baseUrl: string, header: string | undefined) {
 }
 
 function normalize(body: unknown): unknown {
-  // No nondeterministic fields in this contract today (no timestamps/ids),
-  // but keep a hook here for future endpoints that need normalization
-  // before comparison (e.g. request ids, timestamps).
+  // Most contracts have no nondeterministic fields (no timestamps/ids). The
+  // one exception so far is POST /v0/management/self/rotate, whose response
+  // embeds a freshly random secret that will never match between the two
+  // servers' independent RNGs -- mask it to a fixed placeholder so the rest
+  // of the shape (keyName/message) is still compared structurally.
+  if (
+    body &&
+    typeof body === 'object' &&
+    !Array.isArray(body) &&
+    'secret' in (body as Record<string, unknown>) &&
+    'keyName' in (body as Record<string, unknown>) &&
+    'message' in (body as Record<string, unknown>)
+  ) {
+    const b = body as Record<string, unknown>;
+    return { ...b, secret: typeof b.secret === 'string' ? '<secret>' : b.secret };
+  }
   return body;
 }
 
@@ -629,6 +642,178 @@ const COOLDOWNS_CASES: KeysCase[] = [
   },
 ];
 
+// Cases mirror self.ts. A dedicated key fixture is used throughout instead
+// of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
+// self/rotate mutates the credential in place -- reusing the shared
+// fixture would silently break every later case (and every later slice)
+// that relies on LIMITED_KEY_SECRET still matching. self/rotate is
+// exercised exactly once, as the final case against this fixture, and its
+// randomly-generated `secret` field is masked by `normalize()` before
+// comparison since the two servers' RNGs will never agree on a value.
+const SELF_TARGET_SECRET = `sk-self-target-${runId}`;
+const SELF_GHOST_KEY_NAME = `self-ghost-${runId}`;
+
+const SELF_CASES: KeysCase[] = [
+  {
+    name: 'PUT creates the self-service target key fixture',
+    method: 'PUT',
+    path: `/v0/management/keys/self-target-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { secret: SELF_TARGET_SECRET },
+  },
+  {
+    name: 'GET self/me as the target key returns limited metadata',
+    method: 'GET',
+    path: '/v0/management/self/me',
+    adminHeader: SELF_TARGET_SECRET,
+  },
+  {
+    name: 'GET self/me as admin returns {role: admin}',
+    method: 'GET',
+    path: '/v0/management/self/me',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'missing credential gets 401 on self/me',
+    method: 'GET',
+    path: '/v0/management/self/me',
+  },
+  {
+    name: 'PATCH self/comment sets the comment',
+    method: 'PATCH',
+    path: '/v0/management/self/comment',
+    adminHeader: SELF_TARGET_SECRET,
+    body: { comment: 'hello from parity' },
+  },
+  {
+    name: 'PATCH self/comment with no comment field clears it',
+    method: 'PATCH',
+    path: '/v0/management/self/comment',
+    adminHeader: SELF_TARGET_SECRET,
+    body: {},
+  },
+  {
+    name: 'PATCH self/comment rejects a non-string comment',
+    method: 'PATCH',
+    path: '/v0/management/self/comment',
+    adminHeader: SELF_TARGET_SECRET,
+    body: { comment: 123 },
+  },
+  {
+    name: 'PATCH self/comment as admin without ?keyName= -> 400',
+    method: 'PATCH',
+    path: '/v0/management/self/comment',
+    adminHeader: ADMIN_KEY,
+    body: { comment: 'x' },
+  },
+  {
+    name: 'PATCH self/comment as admin for a nonexistent key -> 404',
+    method: 'PATCH',
+    path: `/v0/management/self/comment?keyName=${SELF_GHOST_KEY_NAME}`,
+    adminHeader: ADMIN_KEY,
+    body: { comment: 'x' },
+  },
+  {
+    name: 'missing credential gets 401 on self/comment',
+    method: 'PATCH',
+    path: '/v0/management/self/comment',
+    body: { comment: 'x' },
+  },
+  {
+    name: 'POST self/debug/toggle enables trace for the target key',
+    method: 'POST',
+    path: '/v0/management/self/debug/toggle',
+    adminHeader: SELF_TARGET_SECRET,
+    body: { enabled: true },
+  },
+  {
+    name: 'POST self/debug/toggle disables trace for the target key',
+    method: 'POST',
+    path: '/v0/management/self/debug/toggle',
+    adminHeader: SELF_TARGET_SECRET,
+    body: { enabled: false },
+  },
+  {
+    name: 'POST self/debug/toggle rejects a non-boolean enabled',
+    method: 'POST',
+    path: '/v0/management/self/debug/toggle',
+    adminHeader: SELF_TARGET_SECRET,
+    body: { enabled: 'yes' },
+  },
+  {
+    name: 'POST self/debug/toggle as admin for a nonexistent key still succeeds (no existence check)',
+    method: 'POST',
+    path: `/v0/management/self/debug/toggle?keyName=${SELF_GHOST_KEY_NAME}`,
+    adminHeader: ADMIN_KEY,
+    body: { enabled: true },
+  },
+  {
+    name: 'POST self/debug/toggle cleanup: disable the nonexistent-key entry',
+    method: 'POST',
+    path: `/v0/management/self/debug/toggle?keyName=${SELF_GHOST_KEY_NAME}`,
+    adminHeader: ADMIN_KEY,
+    body: { enabled: false },
+  },
+  {
+    name: 'missing credential gets 401 on self/debug/toggle',
+    method: 'POST',
+    path: '/v0/management/self/debug/toggle',
+    body: { enabled: true },
+  },
+  {
+    name: 'GET self/quota as the target key returns the no-quota-assigned shape',
+    method: 'GET',
+    path: '/v0/management/self/quota',
+    adminHeader: SELF_TARGET_SECRET,
+  },
+  {
+    name: 'GET self/quota as admin without ?keyName= -> 400',
+    method: 'GET',
+    path: '/v0/management/self/quota',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'GET self/quota as admin for a nonexistent key -> 404',
+    method: 'GET',
+    path: `/v0/management/self/quota?keyName=${SELF_GHOST_KEY_NAME}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'missing credential gets 401 on self/quota',
+    method: 'GET',
+    path: '/v0/management/self/quota',
+  },
+  {
+    name: 'POST self/rotate as admin without ?keyName= -> 400',
+    method: 'POST',
+    path: '/v0/management/self/rotate',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'POST self/rotate as admin for a nonexistent key -> 404',
+    method: 'POST',
+    path: `/v0/management/self/rotate?keyName=${SELF_GHOST_KEY_NAME}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'missing credential gets 401 on self/rotate',
+    method: 'POST',
+    path: '/v0/management/self/rotate',
+  },
+  {
+    name: 'POST self/rotate as the target key replaces its own secret (must run last against this fixture)',
+    method: 'POST',
+    path: '/v0/management/self/rotate',
+    adminHeader: SELF_TARGET_SECRET,
+  },
+  {
+    name: 'DELETE cleans up the self-service target key fixture',
+    method: 'DELETE',
+    path: `/v0/management/keys/self-target-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+];
+
 async function runCases(cases: KeysCase[]): Promise<number> {
   let failures = 0;
   for (const testCase of cases) {
@@ -679,6 +864,27 @@ async function main() {
   failures += await runCases(SYSTEM_SETTINGS_CASES);
   failures += await runCases(COOLDOWNS_CASES);
 
+  // Plexus's ConfigService coalesces config-mutating writes into an
+  // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
+  // config-service.ts). The self-service routes read that cache, so a key
+  // created immediately before self/* calls can 401 on Plexus until the
+  // rebuild fires. Poll the key back via the ordinary keys GET (which reads
+  // the same cache) before exercising the self-service cases against it.
+  const [selfSetupCase, ...selfRestCases] = SELF_CASES;
+  failures += await runCases([selfSetupCase]);
+  // Poll self/me itself (not the admin keys CRUD GET, which reads straight
+  // from the repo and would 200 well before ConfigService's cache catches
+  // up) with the target key's own secret, since that's the code path the
+  // rest of SELF_CASES actually exercises.
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const res = await fetch(`${PLEXUS_BASE_URL}/v0/management/self/me`, {
+      headers: { 'x-admin-key': SELF_TARGET_SECRET },
+    });
+    if (res.status === 200) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  failures += await runCases(selfRestCases);
+
   const total =
     CASES.length +
     KEYS_CASES.length +
@@ -686,7 +892,8 @@ async function main() {
     ALIASES_CASES.length +
     USER_QUOTAS_CASES.length +
     SYSTEM_SETTINGS_CASES.length +
-    COOLDOWNS_CASES.length;
+    COOLDOWNS_CASES.length +
+    SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
     process.exit(1);

@@ -3,6 +3,7 @@ pub mod aliases;
 pub mod cooldowns;
 pub mod keys;
 pub mod providers;
+pub mod self_routes;
 pub mod state;
 pub mod system_settings;
 pub mod user_quotas;
@@ -19,6 +20,7 @@ pub fn app(state: AppState) -> Router {
         .merge(cooldowns::router())
         .merge(keys::router())
         .merge(providers::router())
+        .merge(self_routes::router())
         .merge(user_quotas::router())
         .merge(system_settings::router())
         .with_state(state)

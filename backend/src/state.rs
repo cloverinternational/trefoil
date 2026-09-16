@@ -161,6 +161,11 @@ pub struct AppStateInner {
     pub user_quotas: RwLock<HashMap<String, QuotaDefinition>>,
     pub settings: RwLock<HashMap<String, Value>>,
     pub cooldowns: RwLock<HashMap<(String, String), CooldownEntry>>,
+    /// Per-key trace/debug capture toggle, mirroring `DebugManager`'s
+    /// `enabledKeys` set. Trefoil does not implement the global toggle or
+    /// actual trace capture — only the on/off bookkeeping this contract's
+    /// `self/debug/toggle` endpoint reads and writes.
+    pub debug_enabled_keys: RwLock<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -174,6 +179,7 @@ impl AppState {
                 user_quotas: RwLock::new(HashMap::new()),
                 settings: RwLock::new(HashMap::new()),
                 cooldowns: RwLock::new(HashMap::new()),
+                debug_enabled_keys: RwLock::new(std::collections::HashSet::new()),
             }),
         }
     }
