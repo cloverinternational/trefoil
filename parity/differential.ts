@@ -991,6 +991,12 @@ const CONFIG_EXPORT_CASES: KeysCase[] = [
   { name: 'GET config/export rejects missing credential', method: 'GET', path: '/v0/management/config/export' },
 ];
 
+const VISION_CACHE_CASES: KeysCase[] = [
+  { name: 'POST vision descriptor cache clear succeeds', method: 'POST', path: '/v0/management/cache/vision-descriptor/clear', adminHeader: ADMIN_KEY },
+  { name: 'POST vision descriptor cache clear rejects limited key', method: 'POST', path: '/v0/management/cache/vision-descriptor/clear', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'POST vision descriptor cache clear rejects missing credential', method: 'POST', path: '/v0/management/cache/vision-descriptor/clear' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1231,6 +1237,7 @@ async function main() {
   failures += await runCases(PERFORMANCE_CASES);
   failures += await runCases(CONFIG_SNAPSHOT_CASES);
   failures += await runCases(CONFIG_EXPORT_CASES);
+  failures += await runCases(VISION_CACHE_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1277,6 +1284,7 @@ async function main() {
     PERFORMANCE_CASES.length +
     CONFIG_SNAPSHOT_CASES.length +
     CONFIG_EXPORT_CASES.length +
+    VISION_CACHE_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

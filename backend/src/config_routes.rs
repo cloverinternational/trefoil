@@ -68,6 +68,26 @@ pub fn router() -> Router<AppState> {
             "/v0/management/config/trusted-proxies",
             axum::routing::get(get_trusted_proxies).patch(patch_trusted_proxies),
         )
+        .route(
+            "/v0/management/cache/vision-descriptor/clear",
+            axum::routing::post(clear_vision_descriptor_cache),
+        )
+}
+
+async fn clear_vision_descriptor_cache(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    // Vision descriptor generation/cache storage is not yet implemented in
+    // Trefoil, so clearing the currently-empty cache is an idempotent no-op.
+    Json(serde_json::json!({
+        "success": true,
+        "message": "Vision descriptor cache cleared."
+    }))
+    .into_response()
 }
 
 async fn config_snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1886,5 +1906,40 @@ mod tests {
             .unwrap();
             assert_eq!(response_body["error"], expected_error);
         }
+    }
+
+    #[tokio::test]
+    async fn vision_descriptor_cache_clear_is_admin_only_and_idempotent() {
+        let response = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::post("/v0/management/cache/vision-descriptor/clear")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "success": true, "message": "Vision descriptor cache cleared."
+            })
+        );
+
+        let limited = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::post("/v0/management/cache/vision-descriptor/clear")
+                    .header("x-admin-key", "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::FORBIDDEN);
     }
 }
