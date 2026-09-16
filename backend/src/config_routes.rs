@@ -72,6 +72,52 @@ pub fn router() -> Router<AppState> {
             "/v0/management/cache/vision-descriptor/clear",
             axum::routing::post(clear_vision_descriptor_cache),
         )
+        .route(
+            "/v0/management/quota-checker-types",
+            axum::routing::get(quota_checker_types),
+        )
+}
+
+async fn quota_checker_types(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    // Plexus builds this from its checker registry. Trefoil does not yet run
+    // provider quota checkers, so discovery mirrors the pinned reference
+    // revision's registry for management-client compatibility.
+    let types = serde_json::json!([
+        {"type":"naga","displayName":"Naga"},
+        {"type":"synthetic","displayName":"Synthetic"},
+        {"type":"nanogpt","displayName":"NanoGPT"},
+        {"type":"zai","displayName":"ZAI Coding Plan (Global)"},
+        {"type":"moonshot","displayName":"Moonshot"},
+        {"type":"novita","displayName":"Novita"},
+        {"type":"minimax","displayName":"MiniMax"},
+        {"type":"minimax-coding","displayName":"MiniMax Coding"},
+        {"type":"openrouter","displayName":"OpenRouter"},
+        {"type":"kilo","displayName":"Kilo"},
+        {"type":"openai-codex","displayName":"OpenAI Codex"},
+        {"type":"kimi-code","displayName":"Kimi Code"},
+        {"type":"claude-code","displayName":"Claude Code"},
+        {"type":"copilot","displayName":"GitHub Copilot"},
+        {"type":"wisdomgate","displayName":"Wisdom Gate"},
+        {"type":"apertis","displayName":"Apertis"},
+        {"type":"poe","displayName":"POE"},
+        {"type":"routing-run","displayName":"Routing.run"},
+        {"type":"ollama","displayName":"Ollama"},
+        {"type":"neuralwatt","displayName":"Neuralwatt"},
+        {"type":"zenmux","displayName":"Zenmux"},
+        {"type":"devpass","displayName":"DevPass"},
+        {"type":"wafer","displayName":"Wafer"},
+        {"type":"opencode-go","displayName":"OpenCode Go"},
+        {"type":"crof","displayName":"Crof"},
+        {"type":"exedev","displayName":"exe.dev"},
+        {"type":"hyper","displayName":"Hyper"},
+        {"type":"deepseek","displayName":"DeepSeek"},
+        {"type":"sakana","displayName":"Sakana"},
+        {"type":"cline","displayName":"Cline"}
+    ]);
+    Json(serde_json::json!({ "types": types, "count": 30 })).into_response()
 }
 
 async fn clear_vision_descriptor_cache(
@@ -1941,5 +1987,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(limited.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn quota_checker_types_lists_pinned_registry() {
+        let response = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::get("/v0/management/quota-checker-types")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["count"], 30);
+        assert_eq!(
+            body["types"][0],
+            serde_json::json!({ "type": "naga", "displayName": "Naga" })
+        );
+        assert_eq!(
+            body["types"][29],
+            serde_json::json!({ "type": "cline", "displayName": "Cline" })
+        );
     }
 }

@@ -1003,6 +1003,12 @@ const OAUTH_PROVIDER_CASES: KeysCase[] = [
   { name: 'GET oauth/providers rejects missing credential', method: 'GET', path: '/v0/management/oauth/providers' },
 ];
 
+const QUOTA_CHECKER_TYPE_CASES: KeysCase[] = [
+  { name: 'GET quota-checker-types lists pinned registry', method: 'GET', path: '/v0/management/quota-checker-types', adminHeader: ADMIN_KEY },
+  { name: 'GET quota-checker-types rejects limited key', method: 'GET', path: '/v0/management/quota-checker-types', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET quota-checker-types rejects missing credential', method: 'GET', path: '/v0/management/quota-checker-types' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1245,6 +1251,7 @@ async function main() {
   failures += await runCases(CONFIG_EXPORT_CASES);
   failures += await runCases(VISION_CACHE_CASES);
   failures += await runCases(OAUTH_PROVIDER_CASES);
+  failures += await runCases(QUOTA_CHECKER_TYPE_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1293,6 +1300,7 @@ async function main() {
     CONFIG_EXPORT_CASES.length +
     VISION_CACHE_CASES.length +
     OAUTH_PROVIDER_CASES.length +
+    QUOTA_CHECKER_TYPE_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
