@@ -253,6 +253,139 @@ const PROVIDERS_CASES: KeysCase[] = [
   },
 ];
 
+// --- /v0/management/aliases/* and /v0/management/models* CRUD (admin-only) ---
+
+const ALIASES_CASES: KeysCase[] = [
+  {
+    name: 'PUT creates alias from legacy flat targets',
+    method: 'PUT',
+    path: `/v0/management/aliases/my-alias-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { targets: [{ provider: 'test-provider', model: 'gpt-4' }] },
+  },
+  {
+    name: 'GET returns the created alias normalized to target_groups',
+    method: 'GET',
+    path: `/v0/management/aliases/my-alias-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH merges additional_aliases without touching targets',
+    method: 'PATCH',
+    path: `/v0/management/aliases/my-alias-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { additional_aliases: ['nick'] },
+  },
+  {
+    name: 'GET reflects the PATCH',
+    method: 'GET',
+    path: `/v0/management/aliases/my-alias-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PUT rejects a duplicate target',
+    method: 'PUT',
+    path: `/v0/management/aliases/dup-alias-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: {
+      target_groups: [
+        {
+          name: 'g',
+          selector: 'random',
+          targets: [
+            { provider: 'p', model: 'm' },
+            { provider: 'p', model: 'm' },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    name: "PUT rejects a target with neither alias nor provider/model",
+    method: 'PUT',
+    path: `/v0/management/aliases/bad-target-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { target_groups: [{ name: 'g', selector: 'random', targets: [{}] }] },
+  },
+  {
+    name: 'PUT rejects an invalid selector',
+    method: 'PUT',
+    path: `/v0/management/aliases/no-selector-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: {
+      target_groups: [
+        { name: 'g', selector: 'not-a-selector', targets: [{ provider: 'p', model: 'm' }] },
+      ],
+    },
+  },
+  {
+    name: 'PUT rejects duplicate additional_aliases',
+    method: 'PUT',
+    path: `/v0/management/aliases/dup-add-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: {
+      additional_aliases: ['x', 'x'],
+      target_groups: [{ name: 'g', selector: 'random', targets: [{ provider: 'p', model: 'm' }] }],
+    },
+  },
+  {
+    name: 'PUT alias-a -> alias-b succeeds',
+    method: 'PUT',
+    path: `/v0/management/aliases/alias-a-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { target_groups: [{ name: 'g', selector: 'random', targets: [{ alias: `alias-b-${runId}` }] }] },
+  },
+  {
+    name: 'PUT alias-b -> alias-a detects the cycle -> 500',
+    method: 'PUT',
+    path: `/v0/management/aliases/alias-b-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { target_groups: [{ name: 'g', selector: 'random', targets: [{ alias: `alias-a-${runId}` }] }] },
+  },
+  {
+    name: 'GET alias-b -> 404 (cycle detected before save)',
+    method: 'GET',
+    path: `/v0/management/aliases/alias-b-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH nonexistent alias -> 404',
+    method: 'PATCH',
+    path: `/v0/management/aliases/does-not-exist-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { sticky_session: false },
+  },
+  {
+    name: 'DELETE via /v0/management/models/* removes the alias',
+    method: 'DELETE',
+    path: `/v0/management/models/my-alias-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'GET after delete -> 404',
+    method: 'GET',
+    path: `/v0/management/aliases/my-alias-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'DELETE cleans up the alias-a fixture',
+    method: 'DELETE',
+    path: `/v0/management/models/alias-a-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'limited key gets 403 on admin-only aliases route',
+    method: 'GET',
+    path: '/v0/management/aliases',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'missing credential gets 401 on admin-only aliases route',
+    method: 'GET',
+    path: '/v0/management/aliases',
+  },
+];
+
 async function runCases(cases: KeysCase[]): Promise<number> {
   let failures = 0;
   for (const testCase of cases) {
@@ -298,8 +431,9 @@ async function main() {
 
   failures += await runCases(KEYS_CASES);
   failures += await runCases(PROVIDERS_CASES);
+  failures += await runCases(ALIASES_CASES);
 
-  const total = CASES.length + KEYS_CASES.length + PROVIDERS_CASES.length;
+  const total = CASES.length + KEYS_CASES.length + PROVIDERS_CASES.length + ALIASES_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
     process.exit(1);

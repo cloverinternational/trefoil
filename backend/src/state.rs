@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+use serde_json::Value;
+
 /// Configuration for a single limited (non-admin) API key.
 ///
 /// Mirrors the fields Plexus's `Principal`/`api_keys` config exposes on
@@ -155,6 +157,7 @@ pub struct AppStateInner {
     pub admin_key: Option<String>,
     pub keys: RwLock<HashMap<String, KeyConfig>>,
     pub providers: RwLock<HashMap<String, ProviderConfig>>,
+    pub aliases: RwLock<HashMap<String, ModelConfig>>,
 }
 
 impl AppState {
@@ -164,7 +167,95 @@ impl AppState {
                 admin_key,
                 keys: RwLock::new(keys),
                 providers: RwLock::new(HashMap::new()),
+                aliases: RwLock::new(HashMap::new()),
             }),
+        }
+    }
+}
+
+/// A single dispatch target within a `ModelTargetGroup`.
+///
+/// Mirrors `ModelTargetSchema` (`packages/backend/src/config.ts`): a target
+/// is either an `alias` reference (to another model alias/nickname) or a
+/// concrete `(provider, model)` pair — never both, never neither.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ModelTarget {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default = "target_enabled_default")]
+    pub enabled: bool,
+}
+
+fn target_enabled_default() -> bool {
+    true
+}
+
+/// Mirrors `ModelTargetGroupSchema`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModelTargetGroup {
+    pub name: String,
+    pub selector: String,
+    pub targets: Vec<ModelTarget>,
+}
+
+/// A model alias ("model") configuration.
+///
+/// Mirrors the load-bearing subset of `ModelConfigSchema`
+/// (`packages/backend/src/config.ts`): the routing-relevant fields
+/// (`target_groups`, `priority`, `additional_aliases`,
+/// `use_image_fallthrough`, `enforce_limits`, `sticky_session`,
+/// `preferred_api`, `type`) are fully typed and validated; the remaining
+/// schema fields (`advanced`, `metadata`, `pi_model`, `extraBody`,
+/// `compaction`) are large nested schemas not required for CRUD contract
+/// parity — they round-trip as opaque JSON (`serde_json::Value`) so a
+/// client that sets them still gets them back verbatim on GET, without
+/// this port re-implementing their full validation/normalization.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModelConfig {
+    pub priority: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub target_groups: Vec<ModelTargetGroup>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub additional_aliases: Vec<String>,
+    pub use_image_fallthrough: bool,
+    pub enforce_limits: bool,
+    pub sticky_session: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_api: Option<Vec<String>>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub model_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advanced: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pi_model: Option<Value>,
+    #[serde(rename = "extraBody", skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<Value>,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            priority: "selector".to_string(),
+            target_groups: Vec::new(),
+            additional_aliases: Vec::new(),
+            use_image_fallthrough: false,
+            enforce_limits: false,
+            sticky_session: true,
+            preferred_api: None,
+            model_type: None,
+            advanced: None,
+            metadata: None,
+            pi_model: None,
+            extra_body: None,
+            compaction: None,
         }
     }
 }
