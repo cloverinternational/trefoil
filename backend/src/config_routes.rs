@@ -21,6 +21,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v0/management/config", axum::routing::get(config_snapshot))
         .route(
+            "/v0/management/config/export",
+            axum::routing::get(config_export),
+        )
+        .route(
             "/v0/management/config/status",
             axum::routing::get(config_status),
         )
@@ -120,6 +124,23 @@ async fn config_snapshot(State(state): State<AppState>, headers: HeaderMap) -> R
         );
     }
     Json(serde_json::Value::Object(config)).into_response()
+}
+
+async fn config_export(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(serde_json::json!({
+        "providers": state.inner.providers.read().unwrap().clone(),
+        "models": state.inner.aliases.read().unwrap().clone(),
+        "keys": state.inner.keys.read().unwrap().clone(),
+        "user_quotas": state.inner.user_quotas.read().unwrap().clone(),
+        "mcp_servers": {},
+        "mcp_keys": [],
+        "settings": state.inner.settings.read().unwrap().clone(),
+        "oauth_providers": [],
+    }))
+    .into_response()
 }
 
 fn failover_body(state: &AppState) -> serde_json::Value {
@@ -1105,6 +1126,38 @@ mod tests {
         assert_eq!(body["quotas"], serde_json::json!([]));
         assert_eq!(body["providers"].as_object().unwrap().len(), 1);
         assert_eq!(body["user_quotas"].as_object().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn config_export_returns_raw_repository_collections() {
+        let state = fixture();
+        state
+            .inner
+            .settings
+            .write()
+            .unwrap()
+            .insert("custom".into(), serde_json::json!(42));
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::get("/v0/management/config/export")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["providers"].as_object().unwrap().len(), 1);
+        assert_eq!(body["models"].as_object().unwrap().len(), 1);
+        assert_eq!(body["keys"].as_object().unwrap().len(), 1);
+        assert_eq!(body["user_quotas"].as_object().unwrap().len(), 1);
+        assert_eq!(body["settings"]["custom"], 42);
+        assert_eq!(body["mcp_servers"], serde_json::json!({}));
+        assert_eq!(body["mcp_keys"], serde_json::json!([]));
+        assert_eq!(body["oauth_providers"], serde_json::json!([]));
     }
 
     #[tokio::test]

@@ -95,6 +95,20 @@ function normalizeForCase(path: string, body: unknown): unknown {
       ])
     );
   }
+  if (
+    path === '/v0/management/config/export' &&
+    normalized &&
+    typeof normalized === 'object' &&
+    !Array.isArray(normalized)
+  ) {
+    const object = normalized as Record<string, unknown>;
+    const kind = (value: unknown) =>
+      Array.isArray(value) ? 'array' : value !== null && typeof value === 'object' ? 'object' : typeof value;
+    return Object.fromEntries(
+      ['providers', 'models', 'keys', 'user_quotas', 'mcp_servers', 'mcp_keys', 'settings', 'oauth_providers']
+        .map((key) => [key, kind(object[key])])
+    );
+  }
   return normalized;
 }
 
@@ -971,6 +985,12 @@ const CONFIG_SNAPSHOT_CASES: KeysCase[] = [
   { name: 'GET config rejects missing credential', method: 'GET', path: '/v0/management/config' },
 ];
 
+const CONFIG_EXPORT_CASES: KeysCase[] = [
+  { name: 'GET config/export returns raw repository collections', method: 'GET', path: '/v0/management/config/export', adminHeader: ADMIN_KEY },
+  { name: 'GET config/export rejects limited key', method: 'GET', path: '/v0/management/config/export', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET config/export rejects missing credential', method: 'GET', path: '/v0/management/config/export' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1210,6 +1230,7 @@ async function main() {
   failures += await runCases(ERRORS_CASES);
   failures += await runCases(PERFORMANCE_CASES);
   failures += await runCases(CONFIG_SNAPSHOT_CASES);
+  failures += await runCases(CONFIG_EXPORT_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1255,6 +1276,7 @@ async function main() {
     ERRORS_CASES.length +
     PERFORMANCE_CASES.length +
     CONFIG_SNAPSHOT_CASES.length +
+    CONFIG_EXPORT_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
