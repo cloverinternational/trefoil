@@ -1040,6 +1040,17 @@ const OAUTH_DELETE_CASES: KeysCase[] = [
   { name: 'DELETE OAuth credential rejects missing credential', method: 'DELETE', path: '/v0/management/oauth/credentials', body: { providerId: 'anthropic', accountId: 'x' } },
 ];
 
+const COMPACTION_CASES: KeysCase[] = [
+  { name: 'GET config/compaction returns current object', method: 'GET', path: '/v0/management/config/compaction', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/compaction stores valid config', method: 'PATCH', path: '/v0/management/config/compaction', adminHeader: ADMIN_KEY, body: { enabled: true, strategy: 'headroom', triggerRatio: 0.7, minTokens: 2000, headroom: { baseUrl: 'http://localhost:8787', timeoutMs: 5000 } } },
+  { name: 'PATCH config/compaction nested merge preserves fields', method: 'PATCH', path: '/v0/management/config/compaction', adminHeader: ADMIN_KEY, body: { headroom: { timeoutMs: 1000 } } },
+  { name: 'PATCH config/compaction null clears scalar and nested field', method: 'PATCH', path: '/v0/management/config/compaction', adminHeader: ADMIN_KEY, body: { triggerRatio: null, headroom: { timeoutMs: null } } },
+  { name: 'PATCH config/compaction rejects invalid ratio', method: 'PATCH', path: '/v0/management/config/compaction', adminHeader: ADMIN_KEY, body: { triggerRatio: 2 } },
+  { name: 'PATCH config/compaction rejects non-object body', method: 'PATCH', path: '/v0/management/config/compaction', adminHeader: ADMIN_KEY, body: [] },
+  { name: 'GET config/compaction rejects limited key', method: 'GET', path: '/v0/management/config/compaction', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'PATCH config/compaction cleanup clears fields', method: 'PATCH', path: '/v0/management/config/compaction', adminHeader: ADMIN_KEY, body: { enabled: null, strategy: null, minTokens: null, native: null, headroom: null } },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1287,6 +1298,7 @@ async function main() {
   failures += await runCases(PI_PROVIDER_CASES);
   failures += await runCases(OAUTH_STATUS_CASES);
   failures += await runCases(OAUTH_DELETE_CASES);
+  failures += await runCases(COMPACTION_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1340,6 +1352,7 @@ async function main() {
     PI_PROVIDER_CASES.length +
     OAUTH_STATUS_CASES.length +
     OAUTH_DELETE_CASES.length +
+    COMPACTION_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

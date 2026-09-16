@@ -80,6 +80,230 @@ pub fn router() -> Router<AppState> {
             "/v0/management/pi/providers",
             axum::routing::get(pi_providers),
         )
+        .route(
+            "/v0/management/config/compaction",
+            axum::routing::get(get_compaction).patch(patch_compaction),
+        )
+}
+
+async fn get_compaction(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(config_value(&state, "compaction", serde_json::json!({}))).into_response()
+}
+
+fn merge_compaction(
+    current: &serde_json::Map<String, serde_json::Value>,
+    patch: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut merged = current.clone();
+    for (key, value) in patch {
+        if value.is_null() {
+            merged.remove(key);
+        } else if matches!(key.as_str(), "native" | "headroom") && value.is_object() {
+            let current_nested = merged
+                .get(key)
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let nested = merge_compaction(&current_nested, value.as_object().unwrap());
+            if nested.is_empty() {
+                merged.remove(key);
+            } else {
+                merged.insert(key.clone(), serde_json::Value::Object(nested));
+            }
+        } else {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    merged
+}
+
+fn compaction_issue(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    if let Some(value) = object.get("enabled") {
+        if !value.is_boolean() {
+            return Some(type_issue("boolean", ["enabled"]));
+        }
+    }
+    if let Some(value) = object.get("strategy") {
+        if !matches!(value.as_str(), Some("native" | "headroom")) {
+            return Some(serde_json::json!({
+                "code": "invalid_value", "values": ["native", "headroom"],
+                "path": ["strategy"], "message": "Invalid option: expected one of \"native\"|\"headroom\""
+            }));
+        }
+    }
+    for (key, min, inclusive, nullable) in [
+        ("triggerRatio", 0.0, true, false),
+        ("absoluteTriggerTokens", 0.0, false, true),
+        ("minTokens", 0.0, true, false),
+        ("protectRecent", 0.0, true, false),
+    ] {
+        if let Some(value) = object.get(key) {
+            if nullable && value.is_null() {
+                continue;
+            }
+            let Some(number) = value.as_f64() else {
+                return Some(type_issue("number", [key]));
+            };
+            if key != "triggerRatio" && number.fract() != 0.0 {
+                return Some(serde_json::json!({
+                    "expected":"int","format":"safeint","code":"invalid_type","path":[key],
+                    "message":"Invalid input: expected int, received number"
+                }));
+            }
+            if number < min || (!inclusive && number <= min) {
+                return Some(too_small_issue([key], min, inclusive));
+            }
+            if key == "triggerRatio" && number > 1.0 {
+                return Some(serde_json::json!({
+                    "origin":"number","code":"too_big","maximum":1,"inclusive":true,
+                    "path":[key],"message":"Too big: expected number to be <=1"
+                }));
+            }
+        }
+    }
+    if let Some(native) = object.get("native") {
+        let Some(native) = native.as_object() else {
+            return Some(type_issue("object", ["native"]));
+        };
+        for key in ["maxArrayItems", "maxStringChars"] {
+            if let Some(value) = native.get(key) {
+                let Some(number) = value.as_f64() else {
+                    return Some(type_issue("number", ["native", key]));
+                };
+                if number.fract() != 0.0 || number <= 0.0 {
+                    return Some(too_small_issue(["native", key], 0.0, false));
+                }
+            }
+        }
+    }
+    if let Some(headroom) = object.get("headroom") {
+        let Some(headroom) = headroom.as_object() else {
+            return Some(type_issue("object", ["headroom"]));
+        };
+        if let Some(value) = headroom.get("baseUrl") {
+            if value
+                .as_str()
+                .and_then(|v| url::Url::parse(v).ok())
+                .is_none()
+            {
+                return Some(serde_json::json!({
+                    "code":"invalid_format","format":"url","path":["headroom","baseUrl"],
+                    "message":"Invalid URL"
+                }));
+            }
+        }
+        if headroom.get("apiKey").is_some_and(|v| !v.is_string()) {
+            return Some(type_issue("string", ["headroom", "apiKey"]));
+        }
+        if let Some(value) = headroom.get("targetRatio") {
+            if !value.is_null() {
+                let Some(number) = value.as_f64() else {
+                    return Some(type_issue("number", ["headroom", "targetRatio"]));
+                };
+                if !(0.0..=1.0).contains(&number) {
+                    return Some(if number < 0.0 {
+                        too_small_issue(["headroom", "targetRatio"], 0.0, true)
+                    } else {
+                        serde_json::json!({"origin":"number","code":"too_big","maximum":1,"inclusive":true,"path":["headroom","targetRatio"],"message":"Too big: expected number to be <=1"})
+                    });
+                }
+            }
+        }
+        if let Some(value) = headroom.get("timeoutMs") {
+            let Some(number) = value.as_f64() else {
+                return Some(type_issue("number", ["headroom", "timeoutMs"]));
+            };
+            if number.fract() != 0.0 || !(100.0..=60000.0).contains(&number) {
+                return Some(if number < 100.0 {
+                    too_small_issue(["headroom", "timeoutMs"], 100.0, true)
+                } else {
+                    serde_json::json!({"origin":"number","code":"too_big","maximum":60000,"inclusive":true,"path":["headroom","timeoutMs"],"message":"Too big: expected number to be <=60000"})
+                });
+            }
+        }
+    }
+    None
+}
+
+fn type_issue<const N: usize>(expected: &str, path: [&str; N]) -> serde_json::Value {
+    let path = path.to_vec();
+    serde_json::json!({
+        "expected": expected, "code": "invalid_type", "path": path,
+        "message": format!("Invalid input: expected {expected}, received {}", "invalid")
+    })
+}
+
+fn too_small_issue<const N: usize>(
+    path: [&str; N],
+    minimum: f64,
+    inclusive: bool,
+) -> serde_json::Value {
+    let path = path.to_vec();
+    let comparison = if inclusive { ">=" } else { ">" };
+    serde_json::json!({
+        "origin":"number","code":"too_small","minimum":minimum,"inclusive":inclusive,
+        "path":path,"message":format!("Too small: expected number to be {comparison}{minimum}")
+    })
+}
+
+async fn patch_compaction(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(patch) = body.as_object() else {
+        return bad_request("Object body is required");
+    };
+    let current = config_value(&state, "compaction", serde_json::json!({}))
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let mut merged = merge_compaction(&current, patch);
+    // Zod objects strip unknown keys.
+    merged.retain(|key, _| {
+        matches!(
+            key.as_str(),
+            "enabled"
+                | "strategy"
+                | "triggerRatio"
+                | "absoluteTriggerTokens"
+                | "minTokens"
+                | "protectRecent"
+                | "native"
+                | "headroom"
+        )
+    });
+    if let Some(issue) = compaction_issue(&merged) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid compaction config", "details": [issue] })),
+        )
+            .into_response();
+    }
+    let value = serde_json::Value::Object(merged);
+    let entries = serde_json::Map::from_iter([("compaction".into(), value.clone())]);
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_settings_bulk(pool, &entries)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error":"Internal server error"})),
+            )
+                .into_response();
+        }
+    }
+    state.inner.settings.write().unwrap().extend(entries);
+    Json(value).into_response()
 }
 
 async fn pi_providers(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -2088,5 +2312,61 @@ mod tests {
         assert_eq!(providers.first().unwrap(), "amazon-bedrock");
         assert_eq!(providers.last().unwrap(), "zai-coding-cn");
         assert!(providers.contains(&serde_json::json!("openai")));
+    }
+
+    #[tokio::test]
+    async fn compaction_nested_merge_and_null_clear() {
+        let state = fixture();
+        state.inner.settings.write().unwrap().insert(
+            "compaction".into(),
+            serde_json::json!({
+                "triggerRatio": 0.7, "minTokens": 2000,
+                "headroom": { "baseUrl": "http://localhost:8787", "timeoutMs": 5000 }
+            }),
+        );
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/compaction")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"triggerRatio":null,"headroom":{"timeoutMs":null}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "minTokens": 2000, "headroom": { "baseUrl": "http://localhost:8787" }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_rejects_invalid_values() {
+        for body in [
+            r#"{"triggerRatio":2}"#,
+            r#"{"native":{"maxArrayItems":0}}"#,
+            r#"{"headroom":{"baseUrl":"bad"}}"#,
+        ] {
+            let response = router()
+                .with_state(fixture())
+                .oneshot(
+                    Request::patch("/v0/management/config/compaction")
+                        .header("x-admin-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
     }
 }
