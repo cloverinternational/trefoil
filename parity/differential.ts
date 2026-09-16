@@ -66,6 +66,24 @@ function normalize(body: unknown): unknown {
   return body;
 }
 
+function normalizeForCase(path: string, body: unknown): unknown {
+  const normalized = normalize(body);
+  if (
+    path === '/v0/management/config/status' &&
+    normalized &&
+    typeof normalized === 'object' &&
+    !Array.isArray(normalized)
+  ) {
+    return Object.fromEntries(
+      Object.entries(normalized as Record<string, unknown>).map(([key, value]) => [
+        key,
+        typeof value === 'number' && Number.isInteger(value) ? '<integer>' : value,
+      ])
+    );
+  }
+  return normalized;
+}
+
 // Structural comparison, independent of key insertion order (Fastify/JS
 // object literals and Rust serde_json output insertion-order their keys
 // differently even when semantically identical).
@@ -760,6 +778,26 @@ const DEBUG_CASES: KeysCase[] = [
   },
 ];
 
+const CONFIG_STATUS_CASES: KeysCase[] = [
+  {
+    name: 'GET config/status returns resource counts for admin',
+    method: 'GET',
+    path: '/v0/management/config/status',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'GET config/status rejects limited key',
+    method: 'GET',
+    path: '/v0/management/config/status',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'GET config/status rejects missing credential',
+    method: 'GET',
+    path: '/v0/management/config/status',
+  },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -941,7 +979,10 @@ async function runCases(cases: KeysCase[]): Promise<number> {
     ]);
 
     const statusMatch = plexus.status === trefoil.status;
-    const bodyMatch = deepEqual(normalize(plexus.body), normalize(trefoil.body));
+    const bodyMatch = deepEqual(
+      normalizeForCase(testCase.path, plexus.body),
+      normalizeForCase(testCase.path, trefoil.body)
+    );
     const pass = statusMatch && bodyMatch;
     if (!pass) failures += 1;
 
@@ -982,6 +1023,7 @@ async function main() {
   failures += await runCases(SYSTEM_SETTINGS_CASES);
   failures += await runCases(COOLDOWNS_CASES);
   failures += await runCases(DEBUG_CASES);
+  failures += await runCases(CONFIG_STATUS_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1013,6 +1055,7 @@ async function main() {
     SYSTEM_SETTINGS_CASES.length +
     COOLDOWNS_CASES.length +
     DEBUG_CASES.length +
+    CONFIG_STATUS_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
