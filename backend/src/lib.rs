@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod keys;
 pub mod state;
 
 pub use state::AppState;
@@ -9,6 +10,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .merge(auth::router())
+        .merge(keys::router())
         .with_state(state)
 }
 

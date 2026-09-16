@@ -124,7 +124,8 @@ pub fn resolve_principal(state: &AppState, provided_key: Option<&str>) -> Option
     }
 
     let mut matched: Option<(String, KeyConfig)> = None;
-    for (name, cfg) in state.inner.keys.iter() {
+    let keys = state.inner.keys.read().unwrap();
+    for (name, cfg) in keys.iter() {
         if constant_time_hash_equals(&cfg.secret, provided_key) && matched.is_none() {
             matched = Some((name.clone(), cfg.clone()));
         }

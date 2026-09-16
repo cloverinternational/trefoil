@@ -74,6 +74,98 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return aKeys.every((k) => deepEqual(aObj[k], bObj[k]));
 }
 
+// --- /v0/management/keys/:name CRUD (admin-only) ---
+
+async function fetchJson(
+  baseUrl: string,
+  method: string,
+  path: string,
+  adminHeader: string | undefined,
+  body?: unknown
+) {
+  const headers: Record<string, string> = {};
+  if (adminHeader !== undefined) headers['x-admin-key'] = adminHeader;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const res = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json().catch(() => null);
+  return { status: res.status, body: json };
+}
+
+interface KeysCase {
+  name: string;
+  method: string;
+  path: string;
+  adminHeader?: string;
+  body?: unknown;
+}
+
+// A fresh key name per run avoids collisions with state left over from a
+// previous run against the same live Plexus instance.
+const runId = Date.now();
+
+const KEYS_CASES: KeysCase[] = [
+  {
+    name: 'PUT rejects name containing "*"',
+    method: 'PUT',
+    path: `/v0/management/keys/wild*card-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { secret: 'sk-x' },
+  },
+  {
+    name: 'PUT creates a key, normalizing legacy `quota`',
+    method: 'PUT',
+    path: `/v0/management/keys/parity-key-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { secret: 'sk-parity', quota: 'legacy-q' },
+  },
+  {
+    name: 'GET returns the created key',
+    method: 'GET',
+    path: `/v0/management/keys/parity-key-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH updates comment without touching quotas',
+    method: 'PATCH',
+    path: `/v0/management/keys/parity-key-${runId}`,
+    adminHeader: ADMIN_KEY,
+    body: { comment: 'hi' },
+  },
+  {
+    name: 'GET reflects the PATCH',
+    method: 'GET',
+    path: `/v0/management/keys/parity-key-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'DELETE removes the key',
+    method: 'DELETE',
+    path: `/v0/management/keys/parity-key-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'GET after delete -> 404',
+    method: 'GET',
+    path: `/v0/management/keys/parity-key-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'limited key gets 403 on admin-only route',
+    method: 'GET',
+    path: '/v0/management/keys',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'missing credential gets 401 on admin-only route',
+    method: 'GET',
+    path: '/v0/management/keys',
+  },
+];
+
 async function main() {
   let failures = 0;
 
@@ -95,11 +187,30 @@ async function main() {
     }
   }
 
+  for (const testCase of KEYS_CASES) {
+    const [plexus, trefoil] = await Promise.all([
+      fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body),
+      fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body),
+    ]);
+
+    const statusMatch = plexus.status === trefoil.status;
+    const bodyMatch = deepEqual(normalize(plexus.body), normalize(trefoil.body));
+    const pass = statusMatch && bodyMatch;
+    if (!pass) failures += 1;
+
+    console.log(`${pass ? 'PASS' : 'FAIL'} ${testCase.name}`);
+    if (!pass) {
+      console.log(`  plexus:  ${plexus.status} ${JSON.stringify(plexus.body)}`);
+      console.log(`  trefoil: ${trefoil.status} ${JSON.stringify(trefoil.body)}`);
+    }
+  }
+
+  const total = CASES.length + KEYS_CASES.length;
   if (failures > 0) {
-    console.error(`\n${failures}/${CASES.length} case(s) diverged.`);
+    console.error(`\n${failures}/${total} case(s) diverged.`);
     process.exit(1);
   }
-  console.log(`\nAll ${CASES.length} cases match.`);
+  console.log(`\nAll ${total} cases match.`);
 }
 
 main();
