@@ -134,9 +134,7 @@ pub fn resolve_principal(state: &AppState, provided_key: Option<&str>) -> Option
 }
 
 async fn verify(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AuthError> {
-    let provided_key = headers
-        .get("x-admin-key")
-        .and_then(|v| v.to_str().ok());
+    let provided_key = headers.get("x-admin-key").and_then(|v| v.to_str().ok());
 
     match resolve_principal(&state, provided_key) {
         Some(Principal::Admin) => Ok(Json(AdminVerifyResponse {

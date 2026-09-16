@@ -152,16 +152,34 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
         let base: serde_json::Value = row.try_get("api_base_url")?;
         let adapter: Option<serde_json::Value> = row.try_get("adapter")?;
         let raw: Option<serde_json::Value> = row.try_get("raw_passthrough")?;
-        result.insert(row.try_get("slug")?, ProviderConfig {
-            display_name: row.try_get("display_name")?, api_base_url: base.as_str().unwrap_or_default().to_string(),
-            api_key: row.try_get("api_key")?, oauth_provider: row.try_get("oauth_provider_type")?, oauth_account: None,
-            enabled: row.try_get("enabled")?, disable_cooldown: row.try_get("disable_cooldown")?, stall_cooldown: row.try_get("stall_cooldown")?,
-            allow_100_percent_utilization: row.try_get("allow_100_percent_utilization")?, discount: row.try_get("discount")?, estimate_tokens: row.try_get("estimate_tokens")?,
-            use_claude_masking: row.try_get("use_claude_masking")?, gemini_thinking_enabled: row.try_get("gemini_thinking_enabled")?, auto_compat: row.try_get("auto_compat")?,
-            adapter: adapter.and_then(|v| serde_json::from_value::<Vec<AdapterEntry>>(v).ok()).unwrap_or_default(),
-            model_autosync: crate::state::ModelAutosync { enabled: row.try_get("model_autosync_enabled")?, interval_minutes: row.try_get::<i32, _>("model_autosync_interval")? as u32 },
-            raw_passthrough: raw.and_then(|v| serde_json::from_value::<RawPassthroughConfig>(v).ok()),
-        });
+        result.insert(
+            row.try_get("slug")?,
+            ProviderConfig {
+                display_name: row.try_get("display_name")?,
+                api_base_url: base.as_str().unwrap_or_default().to_string(),
+                api_key: row.try_get("api_key")?,
+                oauth_provider: row.try_get("oauth_provider_type")?,
+                oauth_account: None,
+                enabled: row.try_get("enabled")?,
+                disable_cooldown: row.try_get("disable_cooldown")?,
+                stall_cooldown: row.try_get("stall_cooldown")?,
+                allow_100_percent_utilization: row.try_get("allow_100_percent_utilization")?,
+                discount: row.try_get("discount")?,
+                estimate_tokens: row.try_get("estimate_tokens")?,
+                use_claude_masking: row.try_get("use_claude_masking")?,
+                gemini_thinking_enabled: row.try_get("gemini_thinking_enabled")?,
+                auto_compat: row.try_get("auto_compat")?,
+                adapter: adapter
+                    .and_then(|v| serde_json::from_value::<Vec<AdapterEntry>>(v).ok())
+                    .unwrap_or_default(),
+                model_autosync: crate::state::ModelAutosync {
+                    enabled: row.try_get("model_autosync_enabled")?,
+                    interval_minutes: row.try_get::<i32, _>("model_autosync_interval")? as u32,
+                },
+                raw_passthrough: raw
+                    .and_then(|v| serde_json::from_value::<RawPassthroughConfig>(v).ok()),
+            },
+        );
     }
     Ok(result)
 }
@@ -230,7 +248,9 @@ pub async fn delete_provider(pool: &PgPool, slug: &str) -> Result<(), sqlx::Erro
 }
 
 fn json_list_opt(value: &Option<Vec<String>>) -> Option<String> {
-    value.as_ref().map(|v| serde_json::to_string(v).expect("string lists are serializable"))
+    value
+        .as_ref()
+        .map(|v| serde_json::to_string(v).expect("string lists are serializable"))
 }
 
 fn parse_json_list_opt(value: Option<String>) -> Option<Vec<String>> {
@@ -287,7 +307,11 @@ pub async fn load_aliases(pool: &PgPool) -> Result<HashMap<String, ModelConfig>,
     Ok(result)
 }
 
-pub async fn upsert_alias(pool: &PgPool, slug: &str, config: &ModelConfig) -> Result<(), sqlx::Error> {
+pub async fn upsert_alias(
+    pool: &PgPool,
+    slug: &str,
+    config: &ModelConfig,
+) -> Result<(), sqlx::Error> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock is before Unix epoch")
@@ -384,7 +408,9 @@ pub async fn delete_all_aliases(pool: &PgPool) -> Result<(), sqlx::Error> {
 }
 
 /// Load all user quota definitions from PostgreSQL.
-pub async fn load_user_quotas(pool: &PgPool) -> Result<HashMap<String, QuotaDefinition>, sqlx::Error> {
+pub async fn load_user_quotas(
+    pool: &PgPool,
+) -> Result<HashMap<String, QuotaDefinition>, sqlx::Error> {
     let rows = sqlx::query(
         "SELECT name, quota_type::text, limit_type::text, limit_value, duration, allowed_models,
                 allowed_providers, excluded_models, excluded_providers, shared, warn_at
@@ -463,7 +489,9 @@ pub async fn delete_user_quota(pool: &PgPool, name: &str) -> Result<(), sqlx::Er
 
 /// Load all system settings from PostgreSQL, unwrapping the `{"value": ...}`
 /// envelope Plexus's `SystemSettingsRepository` wraps every value in.
-pub async fn load_settings(pool: &PgPool) -> Result<HashMap<String, serde_json::Value>, sqlx::Error> {
+pub async fn load_settings(
+    pool: &PgPool,
+) -> Result<HashMap<String, serde_json::Value>, sqlx::Error> {
     let rows = sqlx::query("SELECT key, value FROM system_settings")
         .fetch_all(pool)
         .await?;
@@ -567,7 +595,10 @@ pub async fn delete_all_cooldowns(pool: &PgPool) -> Result<(), sqlx::Error> {
         .map(|_| ())
 }
 
-pub async fn delete_cooldowns_by_provider(pool: &PgPool, provider: &str) -> Result<(), sqlx::Error> {
+pub async fn delete_cooldowns_by_provider(
+    pool: &PgPool,
+    provider: &str,
+) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM provider_cooldowns WHERE provider = $1")
         .bind(provider)
         .execute(pool)
@@ -575,7 +606,11 @@ pub async fn delete_cooldowns_by_provider(pool: &PgPool, provider: &str) -> Resu
         .map(|_| ())
 }
 
-pub async fn delete_cooldown(pool: &PgPool, provider: &str, model: &str) -> Result<(), sqlx::Error> {
+pub async fn delete_cooldown(
+    pool: &PgPool,
+    provider: &str,
+    model: &str,
+) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM provider_cooldowns WHERE provider = $1 AND model = $2")
         .bind(provider)
         .bind(model)
@@ -584,12 +619,81 @@ pub async fn delete_cooldown(pool: &PgPool, provider: &str, model: &str) -> Resu
         .map(|_| ())
 }
 
+/// Record the minimal request lifecycle in Plexus's `request_usage` table.
+pub async fn record_request_usage(
+    pool: &PgPool,
+    request_id: &str,
+    api_key: Option<&str>,
+    provider: Option<&str>,
+    model: Option<&str>,
+    status: &str,
+    streamed: bool,
+    start_time: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO request_usage
+          (request_id, date, api_key, provider, incoming_model_alias,
+           incoming_api_type, response_status, is_streamed, start_time, created_at)
+         VALUES ($1,$2,$3,$4,$5,'chat',$6,$7,$8,$8)
+         ON CONFLICT (request_id) DO UPDATE SET response_status=EXCLUDED.response_status",
+    )
+    .bind(request_id)
+    .bind(start_time.to_string())
+    .bind(api_key)
+    .bind(provider)
+    .bind(model)
+    .bind(status)
+    .bind(if streamed { 1 } else { 0 })
+    .bind(start_time)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::DEFAULT_MAX_CONNECTIONS;
+    use super::{connect, delete_key, load_keys, migrate, upsert_key, DEFAULT_MAX_CONNECTIONS};
+    use crate::state::KeyConfig;
 
     #[test]
     fn pool_default_is_bounded() {
         assert_eq!(DEFAULT_MAX_CONNECTIONS, 16);
+    }
+
+    #[tokio::test]
+    async fn postgres_key_round_trip_is_available_when_configured() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        let pool = connect(&url).await.expect("DATABASE_URL must be reachable");
+        migrate(&pool).await.expect("Plexus migrations must apply");
+
+        let name = format!("trefoil-db-test-{}", std::process::id());
+        let config = KeyConfig {
+            secret: format!("secret-{name}"),
+            comment: Some("database round trip".to_string()),
+            quota_names: vec!["daily".to_string()],
+            allowed_providers: vec!["openai".to_string()],
+            ..Default::default()
+        };
+        upsert_key(&pool, &name, &config)
+            .await
+            .expect("key upsert must succeed");
+
+        let loaded = load_keys(&pool).await.expect("key load must succeed");
+        assert_eq!(
+            loaded.get(&name).map(|key| &key.comment),
+            Some(&config.comment)
+        );
+        assert_eq!(
+            loaded.get(&name).map(|key| &key.quota_names),
+            Some(&config.quota_names)
+        );
+
+        delete_key(&pool, &name)
+            .await
+            .expect("test key cleanup must succeed");
+        let after_cleanup = load_keys(&pool).await.expect("key reload must succeed");
+        assert!(!after_cleanup.contains_key(&name));
     }
 }

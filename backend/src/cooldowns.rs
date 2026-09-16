@@ -24,7 +24,10 @@ use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v0/management/cooldowns", axum::routing::get(list_cooldowns).delete(delete_all_cooldowns))
+        .route(
+            "/v0/management/cooldowns",
+            axum::routing::get(list_cooldowns).delete(delete_all_cooldowns),
+        )
         .route(
             "/v0/management/cooldowns/:provider",
             axum::routing::delete(delete_provider_cooldowns),
@@ -32,7 +35,10 @@ pub fn router() -> Router<AppState> {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 /// Read access is available to both admin and limited principals; only a
@@ -205,7 +211,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_is_empty_when_no_cooldowns() {
-        let (status, body) = call(admin_state(), "GET", "/v0/management/cooldowns", Some("correct-admin-key")).await;
+        let (status, body) = call(
+            admin_state(),
+            "GET",
+            "/v0/management/cooldowns",
+            Some("correct-admin-key"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!([]));
     }
@@ -215,10 +227,19 @@ mod tests {
         let mut keys = HashMap::new();
         keys.insert(
             "limited".to_string(),
-            crate::state::KeyConfig { secret: "limited-secret".to_string(), ..Default::default() },
+            crate::state::KeyConfig {
+                secret: "limited-secret".to_string(),
+                ..Default::default()
+            },
         );
         let state = AppState::new(Some("correct-admin-key".to_string()), keys);
-        let (status, _) = call(state, "GET", "/v0/management/cooldowns", Some("limited-secret")).await;
+        let (status, _) = call(
+            state,
+            "GET",
+            "/v0/management/cooldowns",
+            Some("limited-secret"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
     }
 
@@ -233,9 +254,19 @@ mod tests {
         let state = admin_state();
         state.inner.cooldowns.write().unwrap().insert(
             ("prov-a".to_string(), "model-a".to_string()),
-            CooldownEntry { expiry_ms: now_ms() - 1000, consecutive_failures: 1, last_error: None },
+            CooldownEntry {
+                expiry_ms: now_ms() - 1000,
+                consecutive_failures: 1,
+                last_error: None,
+            },
         );
-        let (_, body) = call(state, "GET", "/v0/management/cooldowns", Some("correct-admin-key")).await;
+        let (_, body) = call(
+            state,
+            "GET",
+            "/v0/management/cooldowns",
+            Some("correct-admin-key"),
+        )
+        .await;
         assert_eq!(body, serde_json::json!([]));
     }
 
@@ -250,7 +281,13 @@ mod tests {
                 last_error: Some("boom".to_string()),
             },
         );
-        let (_, body) = call(state, "GET", "/v0/management/cooldowns", Some("correct-admin-key")).await;
+        let (_, body) = call(
+            state,
+            "GET",
+            "/v0/management/cooldowns",
+            Some("correct-admin-key"),
+        )
+        .await;
         let arr = body.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["provider"], "prov-a");
@@ -262,13 +299,26 @@ mod tests {
         let state = admin_state();
         state.inner.providers.write().unwrap().insert(
             "prov-a".to_string(),
-            crate::state::ProviderConfig { disable_cooldown: true, ..Default::default() },
+            crate::state::ProviderConfig {
+                disable_cooldown: true,
+                ..Default::default()
+            },
         );
         state.inner.cooldowns.write().unwrap().insert(
             ("prov-a".to_string(), "model-a".to_string()),
-            CooldownEntry { expiry_ms: now_ms() + 60_000, consecutive_failures: 1, last_error: None },
+            CooldownEntry {
+                expiry_ms: now_ms() + 60_000,
+                consecutive_failures: 1,
+                last_error: None,
+            },
         );
-        let (_, body) = call(state, "GET", "/v0/management/cooldowns", Some("correct-admin-key")).await;
+        let (_, body) = call(
+            state,
+            "GET",
+            "/v0/management/cooldowns",
+            Some("correct-admin-key"),
+        )
+        .await;
         assert_eq!(body, serde_json::json!([]));
     }
 
@@ -277,10 +327,19 @@ mod tests {
         let mut keys = HashMap::new();
         keys.insert(
             "limited".to_string(),
-            crate::state::KeyConfig { secret: "limited-secret".to_string(), ..Default::default() },
+            crate::state::KeyConfig {
+                secret: "limited-secret".to_string(),
+                ..Default::default()
+            },
         );
         let state = AppState::new(Some("correct-admin-key".to_string()), keys);
-        let (status, _) = call(state, "DELETE", "/v0/management/cooldowns", Some("limited-secret")).await;
+        let (status, _) = call(
+            state,
+            "DELETE",
+            "/v0/management/cooldowns",
+            Some("limited-secret"),
+        )
+        .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
@@ -289,9 +348,19 @@ mod tests {
         let state = admin_state();
         state.inner.cooldowns.write().unwrap().insert(
             ("prov-a".to_string(), "model-a".to_string()),
-            CooldownEntry { expiry_ms: now_ms() + 60_000, consecutive_failures: 1, last_error: None },
+            CooldownEntry {
+                expiry_ms: now_ms() + 60_000,
+                consecutive_failures: 1,
+                last_error: None,
+            },
         );
-        let (status, body) = call(state.clone(), "DELETE", "/v0/management/cooldowns", Some("correct-admin-key")).await;
+        let (status, body) = call(
+            state.clone(),
+            "DELETE",
+            "/v0/management/cooldowns",
+            Some("correct-admin-key"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
         assert!(state.inner.cooldowns.read().unwrap().is_empty());
@@ -304,14 +373,28 @@ mod tests {
             let mut c = state.inner.cooldowns.write().unwrap();
             c.insert(
                 ("prov-a".to_string(), "model-a".to_string()),
-                CooldownEntry { expiry_ms: now_ms() + 60_000, consecutive_failures: 1, last_error: None },
+                CooldownEntry {
+                    expiry_ms: now_ms() + 60_000,
+                    consecutive_failures: 1,
+                    last_error: None,
+                },
             );
             c.insert(
                 ("prov-b".to_string(), "model-b".to_string()),
-                CooldownEntry { expiry_ms: now_ms() + 60_000, consecutive_failures: 1, last_error: None },
+                CooldownEntry {
+                    expiry_ms: now_ms() + 60_000,
+                    consecutive_failures: 1,
+                    last_error: None,
+                },
             );
         }
-        let (status, _) = call(state.clone(), "DELETE", "/v0/management/cooldowns/prov-a", Some("correct-admin-key")).await;
+        let (status, _) = call(
+            state.clone(),
+            "DELETE",
+            "/v0/management/cooldowns/prov-a",
+            Some("correct-admin-key"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let remaining = state.inner.cooldowns.read().unwrap();
         assert!(!remaining.contains_key(&("prov-a".to_string(), "model-a".to_string())));
@@ -325,11 +408,19 @@ mod tests {
             let mut c = state.inner.cooldowns.write().unwrap();
             c.insert(
                 ("prov-a".to_string(), "model-a".to_string()),
-                CooldownEntry { expiry_ms: now_ms() + 60_000, consecutive_failures: 1, last_error: None },
+                CooldownEntry {
+                    expiry_ms: now_ms() + 60_000,
+                    consecutive_failures: 1,
+                    last_error: None,
+                },
             );
             c.insert(
                 ("prov-a".to_string(), "model-b".to_string()),
-                CooldownEntry { expiry_ms: now_ms() + 60_000, consecutive_failures: 1, last_error: None },
+                CooldownEntry {
+                    expiry_ms: now_ms() + 60_000,
+                    consecutive_failures: 1,
+                    last_error: None,
+                },
             );
         }
         let (status, _) = call(

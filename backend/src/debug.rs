@@ -158,7 +158,9 @@ async fn patch_debug(
         return forbidden_403();
     }
 
-    let raw = body.map(|Json(v)| v).unwrap_or(Value::Object(Default::default()));
+    let raw = body
+        .map(|Json(v)| v)
+        .unwrap_or(Value::Object(Default::default()));
     let Some(obj) = raw.as_object() else {
         return (
             StatusCode::BAD_REQUEST,
@@ -274,7 +276,10 @@ mod tests {
         let mut keys = HashMap::new();
         keys.insert(
             "test-key".to_string(),
-            crate::state::KeyConfig { secret: "sk-test-secret".to_string(), ..Default::default() },
+            crate::state::KeyConfig {
+                secret: "sk-test-secret".to_string(),
+                ..Default::default()
+            },
         );
         AppState::new(Some("correct-admin-key".to_string()), keys)
     }
@@ -285,7 +290,9 @@ mod tests {
         admin_header: Option<&str>,
         body: Option<Value>,
     ) -> (StatusCode, Value) {
-        let mut req = Request::builder().uri("/v0/management/debug").method(method);
+        let mut req = Request::builder()
+            .uri("/v0/management/debug")
+            .method(method);
         if let Some(h) = admin_header {
             req = req.header("x-admin-key", h);
         }
@@ -296,10 +303,18 @@ mod tests {
             }
             None => Body::empty(),
         };
-        let response = router().with_state(state).oneshot(req.body(body).unwrap()).await.unwrap();
+        let response = router()
+            .with_state(state)
+            .oneshot(req.body(body).unwrap())
+            .await
+            .unwrap();
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let json = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+        let json = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        };
         (status, json)
     }
 
@@ -381,7 +396,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["providers"], serde_json::json!(["anthropic", "openai"]));
+        assert_eq!(
+            body["providers"],
+            serde_json::json!(["anthropic", "openai"])
+        );
         assert_eq!(body["keys"], serde_json::json!(["test-key"]));
         assert_eq!(body["aliases"], serde_json::json!(["gpt-4"]));
 
@@ -429,7 +447,13 @@ mod tests {
 
     #[tokio::test]
     async fn patch_empty_body_is_a_noop() {
-        let (status, body) = call(admin_state(), "PATCH", Some("correct-admin-key"), Some(serde_json::json!({}))).await;
+        let (status, body) = call(
+            admin_state(),
+            "PATCH",
+            Some("correct-admin-key"),
+            Some(serde_json::json!({})),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["enabledGlobal"], false);
     }

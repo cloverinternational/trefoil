@@ -51,8 +51,10 @@ async fn get_settings(State(state): State<AppState>, headers: HeaderMap) -> Resp
         return resp;
     }
     let settings = state.inner.settings.read().unwrap();
-    let map: serde_json::Map<String, Value> =
-        settings.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let map: serde_json::Map<String, Value> = settings
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     Json(Value::Object(map)).into_response()
 }
 
@@ -74,7 +76,9 @@ async fn patch_settings(
 
     if let Some(dq) = body.get("default_quotas") {
         if !dq.is_null() {
-            let is_string_array = dq.as_array().is_some_and(|arr| arr.iter().all(|v| v.is_string()));
+            let is_string_array = dq
+                .as_array()
+                .is_some_and(|arr| arr.iter().all(|v| v.is_string()));
             if !is_string_array {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -88,9 +92,17 @@ async fn patch_settings(
                     .into_response();
             }
 
-            let names: Vec<&str> = dq.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            let names: Vec<&str> = dq
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
             let defined = state.inner.user_quotas.read().unwrap();
-            let unknown: Vec<&str> = names.into_iter().filter(|n| !defined.contains_key(*n)).collect();
+            let unknown: Vec<&str> = names
+                .into_iter()
+                .filter(|n| !defined.contains_key(*n))
+                .collect();
             if !unknown.is_empty() {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -176,12 +188,9 @@ mod tests {
     #[tokio::test]
     async fn patch_400s_when_default_quotas_references_unknown_name() {
         let state = admin_state();
-        state
-            .inner
-            .user_quotas
-            .write()
-            .unwrap()
-            .insert("my-quota".to_string(), crate::state::QuotaDefinition {
+        state.inner.user_quotas.write().unwrap().insert(
+            "my-quota".to_string(),
+            crate::state::QuotaDefinition {
                 quota_type: "daily".to_string(),
                 limit_type: "requests".to_string(),
                 limit: 100.0,
@@ -192,7 +201,8 @@ mod tests {
                 excluded_models: None,
                 shared: None,
                 warn_at: None,
-            });
+            },
+        );
 
         let (status, body) = call(
             state,
@@ -204,7 +214,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"]["type"], "invalid_request_error");
-        assert!(body["error"]["message"].as_str().unwrap().contains("ghost-quota"));
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ghost-quota"));
     }
 
     #[tokio::test]
@@ -306,8 +319,14 @@ mod tests {
 
     #[tokio::test]
     async fn missing_credential_gets_401() {
-        let (status, _) =
-            call(admin_state(), "GET", "/v0/management/system-settings", None, None).await;
+        let (status, _) = call(
+            admin_state(),
+            "GET",
+            "/v0/management/system-settings",
+            None,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

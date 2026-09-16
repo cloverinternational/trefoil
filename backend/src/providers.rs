@@ -25,7 +25,10 @@ use crate::state::{AdapterEntry, AppState, ProviderConfig, RawPassthroughConfig}
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v0/management/providers", axum::routing::get(list_providers))
+        .route(
+            "/v0/management/providers",
+            axum::routing::get(list_providers),
+        )
         .route(
             "/v0/management/providers/*slug",
             axum::routing::get(get_provider)
@@ -231,7 +234,10 @@ fn validate_and_build(
     };
 
     let is_oauth = ProviderConfig::is_oauth_placeholder_url(&api_base_url);
-    let api_key = body.api_key.clone().or_else(|| existing.and_then(|e| e.api_key.clone()));
+    let api_key = body
+        .api_key
+        .clone()
+        .or_else(|| existing.and_then(|e| e.api_key.clone()));
     let oauth_provider = body
         .oauth_provider
         .clone()
@@ -242,7 +248,9 @@ fn validate_and_build(
         .or_else(|| existing.and_then(|e| e.oauth_account.clone()));
 
     if api_key.is_none() && !is_oauth {
-        issues.push(ValidationIssue::root("'api_key' must be specified for provider"));
+        issues.push(ValidationIssue::root(
+            "'api_key' must be specified for provider",
+        ));
     }
     if is_oauth && oauth_provider.is_none() {
         issues.push(ValidationIssue::root(
@@ -276,21 +284,27 @@ fn validate_and_build(
     };
 
     Ok(ProviderConfig {
-        display_name: body.display_name.or_else(|| existing.and_then(|e| e.display_name.clone())),
+        display_name: body
+            .display_name
+            .or_else(|| existing.and_then(|e| e.display_name.clone())),
         api_base_url,
         api_key,
         oauth_provider,
         oauth_account,
-        enabled: body.enabled.unwrap_or_else(|| existing.map(|e| e.enabled).unwrap_or(true)),
+        enabled: body
+            .enabled
+            .unwrap_or_else(|| existing.map(|e| e.enabled).unwrap_or(true)),
         disable_cooldown: body
             .disable_cooldown
             .unwrap_or_else(|| existing.map(|e| e.disable_cooldown).unwrap_or(false)),
         stall_cooldown: body
             .stall_cooldown
             .unwrap_or_else(|| existing.map(|e| e.stall_cooldown).unwrap_or(false)),
-        allow_100_percent_utilization: body
-            .allow_100_percent_utilization
-            .unwrap_or_else(|| existing.map(|e| e.allow_100_percent_utilization).unwrap_or(false)),
+        allow_100_percent_utilization: body.allow_100_percent_utilization.unwrap_or_else(|| {
+            existing
+                .map(|e| e.allow_100_percent_utilization)
+                .unwrap_or(false)
+        }),
         discount: body.discount.or_else(|| existing.and_then(|e| e.discount)),
         estimate_tokens: body
             .estimate_tokens
@@ -305,7 +319,9 @@ fn validate_and_build(
             .auto_compat
             .unwrap_or_else(|| existing.map(|e| e.auto_compat).unwrap_or(false)),
         adapter,
-        model_autosync: existing.map(|e| e.model_autosync.clone()).unwrap_or_default(),
+        model_autosync: existing
+            .map(|e| e.model_autosync.clone())
+            .unwrap_or_default(),
         raw_passthrough,
     })
 }
@@ -313,11 +329,14 @@ fn validate_and_build(
 /// Mirrors `validateRawProviderSlug`: `/^[a-z0-9][a-z0-9._-]{0,62}$/`.
 fn is_slug_safe(slug: &str) -> bool {
     let mut chars = slug.chars();
-    let Some(first) = chars.next() else { return false };
+    let Some(first) = chars.next() else {
+        return false;
+    };
     if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
         return false;
     }
-    let rest_ok = chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-');
+    let rest_ok = chars
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-');
     rest_ok && slug.len() <= 63
 }
 
@@ -350,8 +369,11 @@ async fn get_provider(
     let providers = state.inner.providers.read().unwrap();
     match providers.get(&slug) {
         Some(config) => Json(config.clone()).into_response(),
-        None => ApiError::Simple(StatusCode::NOT_FOUND, format!("Provider '{slug}' not found"))
-            .into_response(),
+        None => ApiError::Simple(
+            StatusCode::NOT_FOUND,
+            format!("Provider '{slug}' not found"),
+        )
+        .into_response(),
     }
 }
 
@@ -382,7 +404,12 @@ async fn put_provider(
                 .into_response();
         }
     }
-    state.inner.providers.write().unwrap().insert(slug.clone(), config);
+    state
+        .inner
+        .providers
+        .write()
+        .unwrap()
+        .insert(slug.clone(), config);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
@@ -396,13 +423,19 @@ async fn patch_provider(
         return e.into_response();
     }
     if !raw.is_object() {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Object body is required".to_string())
-            .into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Object body is required".to_string(),
+        )
+        .into_response();
     }
 
     let Some(existing) = state.inner.providers.read().unwrap().get(&slug).cloned() else {
-        return ApiError::Simple(StatusCode::NOT_FOUND, format!("Provider '{slug}' not found"))
-            .into_response();
+        return ApiError::Simple(
+            StatusCode::NOT_FOUND,
+            format!("Provider '{slug}' not found"),
+        )
+        .into_response();
     };
 
     let body: ProviderBody = match serde_json::from_value(raw) {
@@ -423,7 +456,12 @@ async fn patch_provider(
                 .into_response();
         }
     }
-    state.inner.providers.write().unwrap().insert(slug.clone(), merged);
+    state
+        .inner
+        .providers
+        .write()
+        .unwrap()
+        .insert(slug.clone(), merged);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
@@ -611,7 +649,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["error"], "Raw passthrough requires a single slug-safe provider ID");
+        assert_eq!(
+            body["error"],
+            "Raw passthrough requires a single slug-safe provider ID"
+        );
     }
 
     #[tokio::test]
@@ -697,7 +738,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, serde_json::json!({ "success": true, "provider": "gone" }));
+        assert_eq!(
+            body,
+            serde_json::json!({ "success": true, "provider": "gone" })
+        );
     }
 
     #[tokio::test]
@@ -725,14 +769,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_credential_gets_401() {
-        let (status, _) = call(
-            admin_state(),
-            "GET",
-            "/v0/management/providers",
-            None,
-            None,
-        )
-        .await;
+        let (status, _) = call(admin_state(), "GET", "/v0/management/providers", None, None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

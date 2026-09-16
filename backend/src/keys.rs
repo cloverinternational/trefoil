@@ -26,7 +26,10 @@ pub fn router() -> Router<AppState> {
         .route("/v0/management/keys", get(list_keys))
         .route(
             "/v0/management/keys/:name",
-            get(get_key).put(put_key).patch(patch_key).delete(delete_key),
+            get(get_key)
+                .put(put_key)
+                .patch(patch_key)
+                .delete(delete_key),
         )
         .route("/v0/management/keys/:name/disable", post(disable_key))
 }
@@ -171,11 +174,8 @@ async fn get_key(
             config,
         })
         .into_response(),
-        None => ApiError::Simple(
-            StatusCode::NOT_FOUND,
-            format!("API key '{name}' not found"),
-        )
-        .into_response(),
+        None => ApiError::Simple(StatusCode::NOT_FOUND, format!("API key '{name}' not found"))
+            .into_response(),
     }
 }
 
@@ -196,8 +196,11 @@ async fn put_key(
         .into_response();
     }
     if !raw.is_object() {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Object body is required".to_string())
-            .into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Object body is required".to_string(),
+        )
+        .into_response();
     }
 
     let existing = state.inner.keys.read().unwrap().get(&name).cloned();
@@ -253,7 +256,12 @@ async fn put_key(
                 .into_response();
         }
     }
-    state.inner.keys.write().unwrap().insert(name.clone(), config);
+    state
+        .inner
+        .keys
+        .write()
+        .unwrap()
+        .insert(name.clone(), config);
 
     Json(serde_json::json!({ "success": true, "name": name })).into_response()
 }
@@ -268,8 +276,11 @@ async fn patch_key(
         return e.into_response();
     }
     if !raw.is_object() {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Object body is required".to_string())
-            .into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Object body is required".to_string(),
+        )
+        .into_response();
     }
     if has_expiry_fields(&raw) {
         return ApiError::Simple(
@@ -280,11 +291,8 @@ async fn patch_key(
     }
 
     let Some(existing) = state.inner.keys.read().unwrap().get(&name).cloned() else {
-        return ApiError::Simple(
-            StatusCode::NOT_FOUND,
-            format!("API key '{name}' not found"),
-        )
-        .into_response();
+        return ApiError::Simple(StatusCode::NOT_FOUND, format!("API key '{name}' not found"))
+            .into_response();
     };
 
     let body: KeyBody = match serde_json::from_value(raw) {
@@ -316,7 +324,12 @@ async fn patch_key(
                 .into_response();
         }
     }
-    state.inner.keys.write().unwrap().insert(name.clone(), merged);
+    state
+        .inner
+        .keys
+        .write()
+        .unwrap()
+        .insert(name.clone(), merged);
 
     Json(serde_json::json!({ "success": true, "name": name })).into_response()
 }
@@ -348,11 +361,8 @@ async fn disable_key(
         return e.into_response();
     }
     let Some(mut existing) = state.inner.keys.read().unwrap().get(&name).cloned() else {
-        return ApiError::Simple(
-            StatusCode::NOT_FOUND,
-            format!("API key '{name}' not found"),
-        )
-        .into_response();
+        return ApiError::Simple(StatusCode::NOT_FOUND, format!("API key '{name}' not found"))
+            .into_response();
     };
     if existing.expires_at.is_none() {
         return ApiError::Simple(
@@ -369,7 +379,12 @@ async fn disable_key(
         }
     }
 
-    state.inner.keys.write().unwrap().insert(name.clone(), existing);
+    state
+        .inner
+        .keys
+        .write()
+        .unwrap()
+        .insert(name.clone(), existing);
 
     Json(serde_json::json!({ "success": true, "name": name })).into_response()
 }

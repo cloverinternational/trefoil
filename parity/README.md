@@ -19,10 +19,13 @@ ported endpoints, byte-for-byte on status code and structural JSON equality.
    ```
 2. Start Trefoil:
    ```
+   DATABASE_URL=postgres://trefoil:trefoil@127.0.0.1:5432/trefoil \
    ADMIN_KEY=correct-admin-key ./target/debug/trefoil-backend
    ```
-   (its `main.rs` already seeds an in-memory "test-key"/"sk-test-secret" key
-   matching the fixture above).
+   Trefoil loads its API keys, providers, aliases, quotas, settings, and
+   cooldowns from PostgreSQL. Provision the fixture key in Trefoil's database
+   before running the harness, or use the management PUT endpoint with the
+   admin key.
 3. Run the harness:
    ```
    PLEXUS_BASE_URL=http://127.0.0.1:4100 TREFOIL_BASE_URL=http://127.0.0.1:8080 \

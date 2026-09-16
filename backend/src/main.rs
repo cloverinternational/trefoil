@@ -14,28 +14,35 @@ async fn main() {
         eprintln!("failed to load API keys from PostgreSQL: {error}");
         std::process::exit(1);
     });
-    let providers = database::load_providers(&pool).await.unwrap_or_else(|error| {
-        eprintln!("failed to load providers from PostgreSQL: {error}");
-        std::process::exit(1);
-    });
+    let providers = database::load_providers(&pool)
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("failed to load providers from PostgreSQL: {error}");
+            std::process::exit(1);
+        });
     let aliases = database::load_aliases(&pool).await.unwrap_or_else(|error| {
         eprintln!("failed to load model aliases from PostgreSQL: {error}");
         std::process::exit(1);
     });
-    let user_quotas = database::load_user_quotas(&pool).await.unwrap_or_else(|error| {
-        eprintln!("failed to load user quotas from PostgreSQL: {error}");
-        std::process::exit(1);
-    });
-    let settings = database::load_settings(&pool).await.unwrap_or_else(|error| {
-        eprintln!("failed to load system settings from PostgreSQL: {error}");
-        std::process::exit(1);
-    });
-    let cooldowns = database::load_cooldowns(&pool).await.unwrap_or_else(|error| {
-        eprintln!("failed to load provider cooldowns from PostgreSQL: {error}");
-        std::process::exit(1);
-    });
-    let state = AppState::new(std::env::var("ADMIN_KEY").ok(), keys)
-        .with_database(pool);
+    let user_quotas = database::load_user_quotas(&pool)
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("failed to load user quotas from PostgreSQL: {error}");
+            std::process::exit(1);
+        });
+    let settings = database::load_settings(&pool)
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("failed to load system settings from PostgreSQL: {error}");
+            std::process::exit(1);
+        });
+    let cooldowns = database::load_cooldowns(&pool)
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("failed to load provider cooldowns from PostgreSQL: {error}");
+            std::process::exit(1);
+        });
+    let state = AppState::new(std::env::var("ADMIN_KEY").ok(), keys).with_database(pool);
     *state.inner.providers.write().unwrap() = providers;
     *state.inner.aliases.write().unwrap() = aliases;
     *state.inner.user_quotas.write().unwrap() = user_quotas;

@@ -31,8 +31,14 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v0/management/self/me", axum::routing::get(get_me))
-        .route("/v0/management/self/rotate", axum::routing::post(rotate_secret))
-        .route("/v0/management/self/comment", axum::routing::patch(update_comment))
+        .route(
+            "/v0/management/self/rotate",
+            axum::routing::post(rotate_secret),
+        )
+        .route(
+            "/v0/management/self/comment",
+            axum::routing::patch(update_comment),
+        )
         .route(
             "/v0/management/self/debug/toggle",
             axum::routing::post(toggle_debug),
@@ -66,7 +72,10 @@ struct KeyNameQuery {
 /// Resolves the key name a self-service action should operate on. Limited
 /// principals always operate on their own key; admins must supply
 /// `?keyName=`.
-fn resolve_target(principal: &Principal, key_name_query: Option<String>) -> Result<String, Response> {
+fn resolve_target(
+    principal: &Principal,
+    key_name_query: Option<String>,
+) -> Result<String, Response> {
     match principal {
         Principal::Limited { key_name, .. } => Ok(key_name.clone()),
         Principal::Admin => key_name_query.ok_or_else(|| {
@@ -91,8 +100,13 @@ async fn get_me(State(state): State<AppState>, headers: HeaderMap) -> Response {
         Principal::Admin => Json(serde_json::json!({ "role": "admin" })).into_response(),
         Principal::Limited { key_name, config } => {
             let global = *state.inner.debug_enabled_global.read().unwrap();
-            let debug_enabled =
-                global || state.inner.debug_enabled_keys.read().unwrap().contains(&key_name);
+            let debug_enabled = global
+                || state
+                    .inner
+                    .debug_enabled_keys
+                    .read()
+                    .unwrap()
+                    .contains(&key_name);
             Json(serde_json::json!({
                 "role": "limited",
                 "keyName": key_name,
@@ -141,7 +155,11 @@ async fn rotate_secret(
     };
     if let Some(pool) = &state.inner.database {
         if let Err(error) = crate::database::upsert_key(pool, &key_name, &rotated).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": error.to_string() }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response();
         }
     }
 
@@ -199,7 +217,9 @@ async fn update_comment(
         Err(resp) => return resp,
     };
 
-    let comment_str = comment_value.as_ref().and_then(|v| v.as_str().map(String::from));
+    let comment_str = comment_value
+        .as_ref()
+        .and_then(|v| v.as_str().map(String::from));
     let updated = {
         let mut keys = state.inner.keys.write().unwrap();
         let Some(existing) = keys.get_mut(&key_name) else {
@@ -214,7 +234,11 @@ async fn update_comment(
     };
     if let Some(pool) = &state.inner.database {
         if let Err(error) = crate::database::upsert_key(pool, &key_name, &updated).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": error.to_string() }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response();
         }
     }
 
@@ -233,8 +257,7 @@ async fn update_comment(
             None => Value::Null,
         };
     }
-    Json(response)
-    .into_response()
+    Json(response).into_response()
 }
 
 fn json_type_name(v: &Value) -> &'static str {
@@ -312,7 +335,13 @@ async fn toggle_debug(
     }
 
     let global = *state.inner.debug_enabled_global.read().unwrap();
-    let now_enabled = global || state.inner.debug_enabled_keys.read().unwrap().contains(&key_name);
+    let now_enabled = global
+        || state
+            .inner
+            .debug_enabled_keys
+            .read()
+            .unwrap()
+            .contains(&key_name);
     Json(serde_json::json!({
         "keyName": key_name,
         "enabled": now_enabled,
@@ -354,7 +383,11 @@ async fn get_quota(
             .unwrap()
             .get("default_quotas")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     };
 
@@ -388,7 +421,10 @@ mod tests {
         let mut keys = HashMap::new();
         keys.insert(
             "test-key".to_string(),
-            crate::state::KeyConfig { secret: "sk-test-secret".to_string(), ..Default::default() },
+            crate::state::KeyConfig {
+                secret: "sk-test-secret".to_string(),
+                ..Default::default()
+            },
         );
         AppState::new(Some("correct-admin-key".to_string()), keys)
     }
@@ -428,14 +464,28 @@ mod tests {
 
     #[tokio::test]
     async fn me_returns_admin_role() {
-        let (status, body) = call(admin_state(), "GET", "/v0/management/self/me", Some("correct-admin-key"), None).await;
+        let (status, body) = call(
+            admin_state(),
+            "GET",
+            "/v0/management/self/me",
+            Some("correct-admin-key"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({ "role": "admin" }));
     }
 
     #[tokio::test]
     async fn me_returns_limited_metadata() {
-        let (status, body) = call(admin_state(), "GET", "/v0/management/self/me", Some("sk-test-secret"), None).await;
+        let (status, body) = call(
+            admin_state(),
+            "GET",
+            "/v0/management/self/me",
+            Some("sk-test-secret"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["role"], "limited");
         assert_eq!(body["keyName"], "test-key");
@@ -451,16 +501,33 @@ mod tests {
     #[tokio::test]
     async fn rotate_as_limited_replaces_own_secret() {
         let state = admin_state();
-        let (status, body) = call(state.clone(), "POST", "/v0/management/self/rotate", Some("sk-test-secret"), None).await;
+        let (status, body) = call(
+            state.clone(),
+            "POST",
+            "/v0/management/self/rotate",
+            Some("sk-test-secret"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let new_secret = body["secret"].as_str().unwrap().to_string();
         assert_ne!(new_secret, "sk-test-secret");
-        assert_eq!(state.inner.keys.read().unwrap()["test-key"].secret, new_secret);
+        assert_eq!(
+            state.inner.keys.read().unwrap()["test-key"].secret,
+            new_secret
+        );
     }
 
     #[tokio::test]
     async fn rotate_as_admin_requires_key_name() {
-        let (status, body) = call(admin_state(), "POST", "/v0/management/self/rotate", Some("correct-admin-key"), None).await;
+        let (status, body) = call(
+            admin_state(),
+            "POST",
+            "/v0/management/self/rotate",
+            Some("correct-admin-key"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body["error"].as_str().unwrap().contains("keyName"));
     }
@@ -491,7 +558,10 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["comment"], "hi");
-        assert_eq!(state.inner.keys.read().unwrap()["test-key"].comment, Some("hi".to_string()));
+        assert_eq!(
+            state.inner.keys.read().unwrap()["test-key"].comment,
+            Some("hi".to_string())
+        );
 
         let (status, body) = call(
             state.clone(),
@@ -551,7 +621,12 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["enabled"], true);
-        assert!(state.inner.debug_enabled_keys.read().unwrap().contains("test-key"));
+        assert!(state
+            .inner
+            .debug_enabled_keys
+            .read()
+            .unwrap()
+            .contains("test-key"));
 
         let (status, body) = call(
             state.clone(),
@@ -563,7 +638,12 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["enabled"], false);
-        assert!(!state.inner.debug_enabled_keys.read().unwrap().contains("test-key"));
+        assert!(!state
+            .inner
+            .debug_enabled_keys
+            .read()
+            .unwrap()
+            .contains("test-key"));
     }
 
     #[tokio::test]
@@ -595,7 +675,14 @@ mod tests {
 
     #[tokio::test]
     async fn quota_returns_no_quota_assigned_shape() {
-        let (status, body) = call(admin_state(), "GET", "/v0/management/self/quota", Some("sk-test-secret"), None).await;
+        let (status, body) = call(
+            admin_state(),
+            "GET",
+            "/v0/management/self/quota",
+            Some("sk-test-secret"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["key"], "test-key");
         assert_eq!(body["quotaName"], Value::Null);
@@ -614,26 +701,45 @@ mod tests {
             },
         );
         let state = AppState::new(Some("correct-admin-key".to_string()), keys);
-        let (_, body) = call(state, "GET", "/v0/management/self/quota", Some("sk-test-secret"), None).await;
+        let (_, body) = call(
+            state,
+            "GET",
+            "/v0/management/self/quota",
+            Some("sk-test-secret"),
+            None,
+        )
+        .await;
         assert_eq!(body["quotaName"], "my-quota");
     }
 
     #[tokio::test]
     async fn quota_falls_back_to_default_quotas_when_key_has_none() {
         let state = admin_state();
-        state
-            .inner
-            .settings
-            .write()
-            .unwrap()
-            .insert("default_quotas".to_string(), serde_json::json!(["fallback-q"]));
-        let (_, body) = call(state, "GET", "/v0/management/self/quota", Some("sk-test-secret"), None).await;
+        state.inner.settings.write().unwrap().insert(
+            "default_quotas".to_string(),
+            serde_json::json!(["fallback-q"]),
+        );
+        let (_, body) = call(
+            state,
+            "GET",
+            "/v0/management/self/quota",
+            Some("sk-test-secret"),
+            None,
+        )
+        .await;
         assert_eq!(body["quotaName"], "fallback-q");
     }
 
     #[tokio::test]
     async fn quota_as_admin_requires_key_name() {
-        let (status, _) = call(admin_state(), "GET", "/v0/management/self/quota", Some("correct-admin-key"), None).await;
+        let (status, _) = call(
+            admin_state(),
+            "GET",
+            "/v0/management/self/quota",
+            Some("correct-admin-key"),
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }

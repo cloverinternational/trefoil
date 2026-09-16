@@ -21,7 +21,10 @@ use crate::state::{AppState, QuotaDefinition};
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v0/management/user-quotas", axum::routing::get(list_quotas))
+        .route(
+            "/v0/management/user-quotas",
+            axum::routing::get(list_quotas),
+        )
         .route(
             "/v0/management/user-quotas/:name",
             axum::routing::get(get_quota)
@@ -59,7 +62,9 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), Response> 
 /// Mirrors the PUT route's slug check: `/^[a-z0-9][a-z0-9-_]{1,62}$/`.
 fn is_valid_quota_name(name: &str) -> bool {
     let mut chars = name.chars();
-    let Some(first) = chars.next() else { return false };
+    let Some(first) = chars.next() else {
+        return false;
+    };
     if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
         return false;
     }
@@ -93,7 +98,9 @@ fn validate_quota(value: &Value) -> Result<QuotaDefinition, Vec<Value>> {
         })),
     }
 
-    let limit_type = obj.and_then(|o| o.get("limitType")).and_then(|v| v.as_str());
+    let limit_type = obj
+        .and_then(|o| o.get("limitType"))
+        .and_then(|v| v.as_str());
     match limit_type {
         Some("requests") | Some("tokens") | Some("cost") => {}
         _ => issues.push(serde_json::json!({
@@ -144,7 +151,11 @@ fn validate_quota(value: &Value) -> Result<QuotaDefinition, Vec<Value>> {
     let string_array = |key: &str| -> Option<Vec<String>> {
         obj.and_then(|o| o.get(key))
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
     };
 
     Ok(QuotaDefinition {
@@ -190,7 +201,10 @@ async fn get_quota(
         }
         None => (
             StatusCode::NOT_FOUND,
-            Json(error_body(format!("Quota not found: {name}"), "not_found_error")),
+            Json(error_body(
+                format!("Quota not found: {name}"),
+                "not_found_error",
+            )),
         )
             .into_response(),
     }
@@ -240,8 +254,14 @@ async fn put_quota(
                 .into_response();
         }
     }
-    state.inner.user_quotas.write().unwrap().insert(name.clone(), quota);
-    Json(serde_json::json!({ "success": true, "name": name, "quota": response_value })).into_response()
+    state
+        .inner
+        .user_quotas
+        .write()
+        .unwrap()
+        .insert(name.clone(), quota);
+    Json(serde_json::json!({ "success": true, "name": name, "quota": response_value }))
+        .into_response()
 }
 
 async fn patch_quota(
@@ -257,7 +277,10 @@ async fn patch_quota(
     let Some(existing) = state.inner.user_quotas.read().unwrap().get(&name).cloned() else {
         return (
             StatusCode::NOT_FOUND,
-            Json(error_body(format!("Quota not found: {name}"), "not_found_error")),
+            Json(error_body(
+                format!("Quota not found: {name}"),
+                "not_found_error",
+            )),
         )
             .into_response();
     };
@@ -293,8 +316,14 @@ async fn patch_quota(
                 .into_response();
         }
     }
-    state.inner.user_quotas.write().unwrap().insert(name.clone(), quota);
-    Json(serde_json::json!({ "success": true, "name": name, "quota": response_value })).into_response()
+    state
+        .inner
+        .user_quotas
+        .write()
+        .unwrap()
+        .insert(name.clone(), quota);
+    Json(serde_json::json!({ "success": true, "name": name, "quota": response_value }))
+        .into_response()
 }
 
 async fn delete_quota(
@@ -309,7 +338,10 @@ async fn delete_quota(
     if !state.inner.user_quotas.read().unwrap().contains_key(&name) {
         return (
             StatusCode::NOT_FOUND,
-            Json(error_body(format!("Quota not found: {name}"), "not_found_error")),
+            Json(error_body(
+                format!("Quota not found: {name}"),
+                "not_found_error",
+            )),
         )
             .into_response();
     }
@@ -333,7 +365,10 @@ async fn delete_quota(
     if !keys_using_quota.is_empty() || used_as_default {
         let mut reasons = Vec::new();
         if !keys_using_quota.is_empty() {
-            reasons.push(format!("assigned to the following keys: {}", keys_using_quota.join(", ")));
+            reasons.push(format!(
+                "assigned to the following keys: {}",
+                keys_using_quota.join(", ")
+            ));
         }
         if used_as_default {
             reasons.push("referenced by the 'default_quotas' system setting".to_string());
@@ -341,7 +376,10 @@ async fn delete_quota(
         return (
             StatusCode::CONFLICT,
             Json(error_body(
-                format!("Cannot delete quota '{name}'. It is {}.", reasons.join(" and ")),
+                format!(
+                    "Cannot delete quota '{name}'. It is {}.",
+                    reasons.join(" and ")
+                ),
                 "conflict_error",
             )),
         )
@@ -568,12 +606,10 @@ mod tests {
             Some(serde_json::json!({ "type": "daily", "limitType": "requests", "limit": 100 })),
         )
         .await;
-        state
-            .inner
-            .settings
-            .write()
-            .unwrap()
-            .insert("default_quotas".to_string(), serde_json::json!(["my-quota"]));
+        state.inner.settings.write().unwrap().insert(
+            "default_quotas".to_string(),
+            serde_json::json!(["my-quota"]),
+        );
 
         let (status, _) = call(
             state,
@@ -665,7 +701,14 @@ mod tests {
 
     #[tokio::test]
     async fn missing_credential_gets_401() {
-        let (status, _) = call(admin_state(), "GET", "/v0/management/user-quotas", None, None).await;
+        let (status, _) = call(
+            admin_state(),
+            "GET",
+            "/v0/management/user-quotas",
+            None,
+            None,
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

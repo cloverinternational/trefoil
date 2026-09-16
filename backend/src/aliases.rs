@@ -32,7 +32,10 @@ pub fn router() -> Router<AppState> {
                 .put(put_alias)
                 .patch(patch_alias),
         )
-        .route("/v0/management/models", axum::routing::delete(delete_all_aliases))
+        .route(
+            "/v0/management/models",
+            axum::routing::delete(delete_all_aliases),
+        )
         .route(
             "/v0/management/models/*slug",
             axum::routing::delete(delete_alias),
@@ -62,7 +65,11 @@ impl ValidationIssue {
         }
     }
 
-    fn invalid_value(path: Vec<Value>, message: impl Into<String>, values: Vec<&'static str>) -> Self {
+    fn invalid_value(
+        path: Vec<Value>,
+        message: impl Into<String>,
+        values: Vec<&'static str>,
+    ) -> Self {
         Self {
             message: message.into(),
             path,
@@ -185,7 +192,11 @@ fn normalize_legacy_targets(body: &ModelBody) -> Option<Vec<ModelTargetGroupBody
     body.targets.as_ref().map(|targets| {
         vec![ModelTargetGroupBody {
             name: "default".to_string(),
-            selector: Some(body.selector.clone().unwrap_or_else(|| "random".to_string())),
+            selector: Some(
+                body.selector
+                    .clone()
+                    .unwrap_or_else(|| "random".to_string()),
+            ),
             targets: targets.clone(),
         }]
     })
@@ -267,7 +278,9 @@ fn validate_and_build(
         }
         groups
     } else {
-        existing.map(|e| e.target_groups.clone()).unwrap_or_default()
+        existing
+            .map(|e| e.target_groups.clone())
+            .unwrap_or_default()
     };
 
     for group in &target_groups {
@@ -324,13 +337,27 @@ fn validate_and_build(
         sticky_session: body
             .sticky_session
             .unwrap_or_else(|| existing.map(|e| e.sticky_session).unwrap_or(true)),
-        preferred_api: body.preferred_api.or_else(|| existing.and_then(|e| e.preferred_api.clone())),
-        model_type: body.model_type.or_else(|| existing.and_then(|e| e.model_type.clone())),
-        advanced: body.advanced.or_else(|| existing.and_then(|e| e.advanced.clone())),
-        metadata: body.metadata.or_else(|| existing.and_then(|e| e.metadata.clone())),
-        pi_model: body.pi_model.or_else(|| existing.and_then(|e| e.pi_model.clone())),
-        extra_body: body.extra_body.or_else(|| existing.and_then(|e| e.extra_body.clone())),
-        compaction: body.compaction.or_else(|| existing.and_then(|e| e.compaction.clone())),
+        preferred_api: body
+            .preferred_api
+            .or_else(|| existing.and_then(|e| e.preferred_api.clone())),
+        model_type: body
+            .model_type
+            .or_else(|| existing.and_then(|e| e.model_type.clone())),
+        advanced: body
+            .advanced
+            .or_else(|| existing.and_then(|e| e.advanced.clone())),
+        metadata: body
+            .metadata
+            .or_else(|| existing.and_then(|e| e.metadata.clone())),
+        pi_model: body
+            .pi_model
+            .or_else(|| existing.and_then(|e| e.pi_model.clone())),
+        extra_body: body
+            .extra_body
+            .or_else(|| existing.and_then(|e| e.extra_body.clone())),
+        compaction: body
+            .compaction
+            .or_else(|| existing.and_then(|e| e.compaction.clone())),
     })
 }
 
@@ -340,7 +367,9 @@ fn validate_and_build(
 fn assert_no_alias_ref_cycles(models: &HashMap<String, ModelConfig>) -> Result<(), String> {
     let mut canonical_by_slug: HashMap<String, String> = HashMap::new();
     for (slug, config) in models {
-        canonical_by_slug.entry(slug.clone()).or_insert_with(|| slug.clone());
+        canonical_by_slug
+            .entry(slug.clone())
+            .or_insert_with(|| slug.clone());
         for nickname in &config.additional_aliases {
             canonical_by_slug
                 .entry(nickname.clone())
@@ -357,7 +386,12 @@ fn assert_no_alias_ref_cycles(models: &HashMap<String, ModelConfig>) -> Result<(
             for target in &group.targets {
                 if target.enabled {
                     if let Some(alias) = &target.alias {
-                        refs.push(canonical_by_slug.get(alias).cloned().unwrap_or_else(|| alias.clone()));
+                        refs.push(
+                            canonical_by_slug
+                                .get(alias)
+                                .cloned()
+                                .unwrap_or_else(|| alias.clone()),
+                        );
                     }
                 }
             }
@@ -379,7 +413,10 @@ fn assert_no_alias_ref_cycles(models: &HashMap<String, ModelConfig>) -> Result<(
                 let cycle_start = path.iter().position(|s| s == slug).unwrap_or(0);
                 let mut cycle: Vec<String> = path[cycle_start..].to_vec();
                 cycle.push(slug.to_string());
-                return Err(format!("Alias reference cycle detected: {}", cycle.join(" -> ")));
+                return Err(format!(
+                    "Alias reference cycle detected: {}",
+                    cycle.join(" -> ")
+                ));
             }
             visiting.insert(slug.to_string());
             path.push(slug.to_string());
@@ -419,7 +456,8 @@ async fn get_alias(
             value["slug"] = Value::String(slug);
             Json(value).into_response()
         }
-        None => ApiError::Simple(StatusCode::NOT_FOUND, format!("Alias '{slug}' not found")).into_response(),
+        None => ApiError::Simple(StatusCode::NOT_FOUND, format!("Alias '{slug}' not found"))
+            .into_response(),
     }
 }
 
@@ -446,8 +484,11 @@ async fn put_alias(
         let mut candidate = aliases.clone();
         candidate.insert(slug.clone(), config.clone());
         if let Err(_message) = assert_no_alias_ref_cycles(&candidate) {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
-                .into_response();
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+            .into_response();
         }
     }
 
@@ -458,7 +499,12 @@ async fn put_alias(
         }
     }
 
-    state.inner.aliases.write().unwrap().insert(slug.clone(), config);
+    state
+        .inner
+        .aliases
+        .write()
+        .unwrap()
+        .insert(slug.clone(), config);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
@@ -472,12 +518,16 @@ async fn patch_alias(
         return e.into_response();
     }
     if !raw.is_object() {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Object body is required".to_string())
-            .into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Object body is required".to_string(),
+        )
+        .into_response();
     }
 
     let Some(existing) = state.inner.aliases.read().unwrap().get(&slug).cloned() else {
-        return ApiError::Simple(StatusCode::NOT_FOUND, format!("Alias '{slug}' not found")).into_response();
+        return ApiError::Simple(StatusCode::NOT_FOUND, format!("Alias '{slug}' not found"))
+            .into_response();
     };
 
     let body: ModelBody = match serde_json::from_value(raw) {
@@ -494,8 +544,11 @@ async fn patch_alias(
         let mut candidate = aliases.clone();
         candidate.insert(slug.clone(), merged.clone());
         if let Err(_message) = assert_no_alias_ref_cycles(&candidate) {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
-                .into_response();
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+            .into_response();
         }
     }
 
@@ -506,7 +559,12 @@ async fn patch_alias(
         }
     }
 
-    state.inner.aliases.write().unwrap().insert(slug.clone(), merged);
+    state
+        .inner
+        .aliases
+        .write()
+        .unwrap()
+        .insert(slug.clone(), merged);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
@@ -661,10 +719,7 @@ mod tests {
         )
         .await;
         assert_eq!(body["additional_aliases"], serde_json::json!(["nick"]));
-        assert_eq!(
-            body["target_groups"][0]["targets"][0]["model"],
-            "gpt-4"
-        );
+        assert_eq!(body["target_groups"][0]["targets"][0]["model"], "gpt-4");
     }
 
     #[tokio::test]
