@@ -99,15 +99,27 @@ async fn chat_completions(
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_millis() as i64)
                 .unwrap_or_default();
-            match crate::database::request_quota_exceeded(pool, key_name, &quota_names, now_ms)
-                .await
-            {
-                Ok(Some((quota, limit, used))) => {
-                    return error_response(
-                        axum::http::StatusCode::TOO_MANY_REQUESTS,
-                        &format!("Quota '{quota}' exceeded ({used}/{limit} requests)"),
-                        "quota_exceeded",
-                    )
+            match crate::database::request_quota_windows(pool, &quota_names, now_ms).await {
+                Ok(windows) => {
+                    for (quota, limit, start, end) in windows {
+                        match crate::database::reserve_request_quota(
+                            pool, key_name, &quota, limit, start, now_ms,
+                        )
+                        .await
+                        {
+                            Ok(None) => {}
+                            Ok(Some(current_usage)) => {
+                                return quota_exceeded_response(&quota, limit, current_usage, end);
+                            }
+                            Err(error) => {
+                                return error_response(
+                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    &error.to_string(),
+                                    "server_error",
+                                )
+                            }
+                        }
+                    }
                 }
                 Err(error) => {
                     return error_response(
@@ -116,7 +128,6 @@ async fn chat_completions(
                         "server_error",
                     )
                 }
-                Ok(None) => {}
             }
         }
     }
@@ -272,6 +283,43 @@ fn error_response(status: axum::http::StatusCode, message: &str, error_type: &st
     (
         status,
         Json(serde_json::json!({ "error": { "message": message, "type": error_type } })),
+    )
+        .into_response()
+}
+
+/// Matches Plexus's `buildQuotaExceededBody` shape exactly (only the single
+/// most-constrained quota is reported here; Trefoil doesn't yet aggregate
+/// multiple simultaneously-blocking quotas into `blocking_quotas`, so that
+/// array always has exactly one entry -- a documented partial-parity gap).
+fn quota_exceeded_response(
+    quota_name: &str,
+    limit: i32,
+    current_usage: i64,
+    resets_at_ms: i64,
+) -> Response {
+    let resets_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(resets_at_ms)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_default();
+    (
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        Json(serde_json::json!({
+            "error": {
+                "message": format!("Quota exceeded: {quota_name} limit of {limit} reached"),
+                "type": "quota_exceeded",
+                "quota_name": quota_name,
+                "current_usage": current_usage,
+                "limit": limit,
+                "resets_at": resets_at,
+                "blocking_quotas": [{
+                    "quotaName": quota_name,
+                    "limitType": "requests",
+                    "limit": limit,
+                    "currentUsage": current_usage,
+                    "remaining": (limit as i64 - current_usage).max(0),
+                    "resetsAt": resets_at,
+                }],
+            }
+        })),
     )
         .into_response()
 }

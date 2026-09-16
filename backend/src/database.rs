@@ -685,41 +685,29 @@ fn calendar_window_start_ms(quota_type: &str, now_ms: i64) -> Option<i64> {
     }
 }
 
-pub async fn request_quota_exceeded(
-    pool: &PgPool,
-    key_name: &str,
-    quota_names: &[String],
-    now_ms: i64,
-) -> Result<Option<(String, i32, i64)>, sqlx::Error> {
-    for quota_name in quota_names {
-        let Some(row) = sqlx::query("SELECT quota_type::text, limit_type::text, limit_value, duration FROM user_quota_definitions WHERE name = $1")
-            .bind(quota_name).fetch_optional(pool).await? else { continue };
-        let quota_type: String = row.try_get("quota_type")?;
-        let limit: i32 = row.try_get("limit_value")?;
-        if row.try_get::<String, _>("limit_type")? != "requests" {
-            continue;
-        }
-        let duration: Option<String> = row.try_get("duration")?;
-        let window_start = match quota_type.as_str() {
-            "rolling" => now_ms - parse_duration_ms(duration.as_deref()).unwrap_or(0),
-            "daily" | "weekly" | "monthly" => match calendar_window_start_ms(&quota_type, now_ms) {
-                Some(start) => start,
-                None => continue,
-            },
-            _ => continue,
-        };
-        let used: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM request_usage WHERE api_key = $1 AND start_time >= $2 AND response_status = 'success'",
-        )
-        .bind(key_name)
-        .bind(window_start)
-        .fetch_one(pool)
-        .await?;
-        if used >= i64::from(limit) {
-            return Ok(Some((quota_name.clone(), limit, used)));
+/// End (epoch ms, exclusive) of the calendar window that started at
+/// `window_start_ms`, matching Plexus's `QuotaEnforcer.getWindowEnd`:
+/// daily is +24h, weekly is +7d, monthly is the 1st of the following
+/// UTC month (not a fixed 30/31-day add, so it stays correct across
+/// month-length boundaries).
+fn calendar_window_end_ms(quota_type: &str, window_start_ms: i64) -> i64 {
+    use chrono::{Datelike, TimeZone, Utc};
+    match quota_type {
+        "daily" => window_start_ms + 24 * 60 * 60 * 1000,
+        "weekly" => window_start_ms + 7 * 24 * 60 * 60 * 1000,
+        _ => {
+            let start = Utc.timestamp_millis_opt(window_start_ms).single().unwrap();
+            let (year, month) = if start.month() == 12 {
+                (start.year() + 1, 1)
+            } else {
+                (start.year(), start.month() + 1)
+            };
+            Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0)
+                .single()
+                .unwrap()
+                .timestamp_millis()
         }
     }
-    Ok(None)
 }
 
 fn parse_duration_ms(value: Option<&str>) -> Option<i64> {
@@ -733,6 +721,69 @@ fn parse_duration_ms(value: Option<&str>) -> Option<i64> {
         _ => return None,
     };
     number.checked_mul(multiplier)
+}
+
+pub async fn reserve_request_quota(
+    pool: &PgPool,
+    key_name: &str,
+    quota_name: &str,
+    limit: i32,
+    window_start: i64,
+    now_ms: i64,
+) -> Result<Option<i64>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let current: Option<f32> = sqlx::query_scalar(
+        "SELECT current_usage FROM quota_state WHERE key_name = $1 AND quota_name = $2 FOR UPDATE",
+    )
+    .bind(key_name)
+    .bind(quota_name)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let current_usage = f64::from(current.unwrap_or(0.0));
+    if current_usage >= f64::from(limit) {
+        tx.rollback().await?;
+        return Ok(Some(current_usage.round() as i64));
+    }
+    sqlx::query(
+        "INSERT INTO quota_state (key_name, quota_name, limit_type, current_usage, last_updated, window_start)
+         VALUES ($1,$2,'requests',1,$3,$4)
+         ON CONFLICT (key_name, quota_name) DO UPDATE SET current_usage = quota_state.current_usage + 1, last_updated = EXCLUDED.last_updated, window_start = EXCLUDED.window_start",
+    )
+    .bind(key_name).bind(quota_name).bind(now_ms).bind(window_start)
+    .execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(None)
+}
+
+pub async fn request_quota_windows(
+    pool: &PgPool,
+    quota_names: &[String],
+    now_ms: i64,
+) -> Result<Vec<(String, i32, i64, i64)>, sqlx::Error> {
+    let mut windows = Vec::new();
+    for name in quota_names {
+        let Some(row) = sqlx::query("SELECT quota_type::text, limit_type::text, limit_value, duration FROM user_quota_definitions WHERE name = $1")
+            .bind(name).fetch_optional(pool).await? else { continue };
+        if row.try_get::<String, _>("limit_type")? != "requests" {
+            continue;
+        }
+        let kind: String = row.try_get("quota_type")?;
+        let limit: i32 = row.try_get("limit_value")?;
+        let duration: Option<String> = row.try_get("duration")?;
+        let (start, end) = match kind.as_str() {
+            "rolling" => {
+                let duration_ms = parse_duration_ms(duration.as_deref()).unwrap_or(0);
+                (now_ms - duration_ms, now_ms + duration_ms)
+            }
+            "daily" | "weekly" | "monthly" => match calendar_window_start_ms(&kind, now_ms) {
+                Some(start) => (start, calendar_window_end_ms(&kind, start)),
+                None => continue,
+            },
+            _ => continue,
+        };
+        windows.push((name.clone(), limit, start, end));
+    }
+    Ok(windows)
 }
 
 #[cfg(test)]
