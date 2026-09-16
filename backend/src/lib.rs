@@ -1,5 +1,6 @@
 pub mod aliases;
 pub mod auth;
+pub mod concurrency;
 pub mod config_routes;
 pub mod cooldowns;
 pub mod database;
@@ -27,6 +28,7 @@ pub fn app(state: AppState) -> Router {
         .merge(auth::router())
         .merge(aliases::router())
         .merge(config_routes::router())
+        .merge(concurrency::router())
         .merge(cooldowns::router())
         .merge(debug::router())
         .merge(errors::router())

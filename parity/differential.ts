@@ -1009,6 +1009,15 @@ const QUOTA_CHECKER_TYPE_CASES: KeysCase[] = [
   { name: 'GET quota-checker-types rejects missing credential', method: 'GET', path: '/v0/management/quota-checker-types' },
 ];
 
+const CONCURRENCY_CASES: KeysCase[] = [
+  { name: 'GET concurrency live returns current snapshot', method: 'GET', path: '/v0/management/concurrency', adminHeader: ADMIN_KEY },
+  { name: 'GET concurrency historical provider timeline', method: 'GET', path: '/v0/management/concurrency?mode=timeline&timeRange=custom&startDate=1970-01-01&endDate=1970-01-02&groupBy=provider', adminHeader: ADMIN_KEY },
+  { name: 'GET concurrency historical model timeline', method: 'GET', path: '/v0/management/concurrency?mode=timeline&timeRange=custom&startDate=1970-01-01&endDate=1970-01-02&groupBy=model', adminHeader: ADMIN_KEY },
+  { name: 'GET concurrency rejects invalid custom dates', method: 'GET', path: '/v0/management/concurrency?mode=timeline&timeRange=custom&startDate=bad&endDate=worse', adminHeader: ADMIN_KEY },
+  { name: 'GET concurrency rejects limited key', method: 'GET', path: '/v0/management/concurrency', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET concurrency rejects missing credential', method: 'GET', path: '/v0/management/concurrency' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1249,6 +1258,7 @@ async function main() {
   failures += await runCases(PERFORMANCE_CASES);
   failures += await runCases(CONFIG_SNAPSHOT_CASES);
   failures += await runCases(CONFIG_EXPORT_CASES);
+  failures += await runCases(CONCURRENCY_CASES);
   failures += await runCases(VISION_CACHE_CASES);
   failures += await runCases(OAUTH_PROVIDER_CASES);
   failures += await runCases(QUOTA_CHECKER_TYPE_CASES);
@@ -1298,6 +1308,7 @@ async function main() {
     PERFORMANCE_CASES.length +
     CONFIG_SNAPSHOT_CASES.length +
     CONFIG_EXPORT_CASES.length +
+    CONCURRENCY_CASES.length +
     VISION_CACHE_CASES.length +
     OAUTH_PROVIDER_CASES.length +
     QUOTA_CHECKER_TYPE_CASES.length +
