@@ -872,6 +872,16 @@ const FAILOVER_COOLDOWN_CASES: KeysCase[] = [
   { name: 'PATCH config/cooldown cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/cooldown', adminHeader: ADMIN_KEY, body: { initialMinutes: 2, maxMinutes: 300 } },
 ];
 
+const CAPTURE_TRACE_CASES: KeysCase[] = [
+  { name: 'GET capture-trace-on-error returns current value', method: 'GET', path: '/v0/management/config/capture-trace-on-error', adminHeader: ADMIN_KEY },
+  { name: 'PATCH capture-trace-on-error enables capture', method: 'PATCH', path: '/v0/management/config/capture-trace-on-error', adminHeader: ADMIN_KEY, body: { enabled: true } },
+  { name: 'GET capture-trace-on-error reflects PATCH', method: 'GET', path: '/v0/management/config/capture-trace-on-error', adminHeader: ADMIN_KEY },
+  { name: 'PATCH capture-trace-on-error rejects string', method: 'PATCH', path: '/v0/management/config/capture-trace-on-error', adminHeader: ADMIN_KEY, body: { enabled: 'true' } },
+  { name: 'PATCH capture-trace-on-error rejects missing field', method: 'PATCH', path: '/v0/management/config/capture-trace-on-error', adminHeader: ADMIN_KEY, body: {} },
+  { name: 'GET capture-trace-on-error rejects limited key', method: 'GET', path: '/v0/management/config/capture-trace-on-error', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'PATCH capture-trace-on-error cleanup restores false', method: 'PATCH', path: '/v0/management/config/capture-trace-on-error', adminHeader: ADMIN_KEY, body: { enabled: false } },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1102,6 +1112,7 @@ async function main() {
   failures += await runCases(MCP_ENABLED_CASES);
   failures += await runCases(EXPLORATION_RATE_CASES);
   failures += await runCases(FAILOVER_COOLDOWN_CASES);
+  failures += await runCases(CAPTURE_TRACE_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1138,6 +1149,7 @@ async function main() {
     MCP_ENABLED_CASES.length +
     EXPLORATION_RATE_CASES.length +
     FAILOVER_COOLDOWN_CASES.length +
+    CAPTURE_TRACE_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

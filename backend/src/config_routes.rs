@@ -43,6 +43,10 @@ pub fn router() -> Router<AppState> {
             "/v0/management/config/cooldown",
             axum::routing::get(get_cooldown).patch(patch_cooldown),
         )
+        .route(
+            "/v0/management/config/capture-trace-on-error",
+            axum::routing::get(get_capture_trace_on_error).patch(patch_capture_trace_on_error),
+        )
 }
 
 fn config_value(state: &AppState, key: &str, default: serde_json::Value) -> serde_json::Value {
@@ -181,6 +185,71 @@ async fn patch_cooldown(
     }
     state.inner.settings.write().unwrap().extend(entries);
     get_cooldown(State(state), headers).await
+}
+
+fn capture_trace_on_error(state: &AppState) -> bool {
+    state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get("debug.captureOnError")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+async fn get_capture_trace_on_error(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(serde_json::json!({ "enabled": capture_trace_on_error(&state) })).into_response()
+}
+
+async fn patch_capture_trace_on_error(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(object) = body.as_object() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Object body is required" })),
+        )
+            .into_response();
+    };
+    let Some(enabled) = object.get("enabled").and_then(serde_json::Value::as_bool) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "enabled must be a boolean" })),
+        )
+            .into_response();
+    };
+    if let Some(pool) = &state.inner.database {
+        let entries = serde_json::Map::from_iter([(
+            "debug.captureOnError".to_string(),
+            serde_json::json!(enabled),
+        )]);
+        if crate::database::upsert_settings_bulk(pool, &entries)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal server error" })),
+            )
+                .into_response();
+        }
+    }
+    state
+        .inner
+        .settings
+        .write()
+        .unwrap()
+        .insert("debug.captureOnError".into(), serde_json::json!(enabled));
+    Json(serde_json::json!({ "enabled": enabled })).into_response()
 }
 
 #[allow(clippy::result_large_err)]
@@ -880,5 +949,65 @@ mod tests {
             serde_json::from_slice(&invalid.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         assert_eq!(body["error"], "initialMinutes must be at least 0.1");
+    }
+
+    #[tokio::test]
+    async fn capture_trace_defaults_false_and_patch_round_trips() {
+        let state = fixture();
+        let get = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/v0/management/config/capture-trace-on-error")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body, serde_json::json!({ "enabled": false }));
+
+        let patch = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/capture-trace-on-error")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&patch.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body, serde_json::json!({ "enabled": true }));
+    }
+
+    #[tokio::test]
+    async fn capture_trace_rejects_missing_non_boolean_and_array() {
+        for (body, expected_error) in [
+            (r#"{}"#, "enabled must be a boolean"),
+            (r#"{"enabled":"true"}"#, "enabled must be a boolean"),
+            (r#"{"enabled":null}"#, "enabled must be a boolean"),
+            (r#"[]"#, "Object body is required"),
+        ] {
+            let response = router()
+                .with_state(fixture())
+                .oneshot(
+                    Request::patch("/v0/management/config/capture-trace-on-error")
+                        .header("x-admin-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response_body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(response_body["error"], expected_error);
+        }
     }
 }
