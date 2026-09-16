@@ -35,6 +35,152 @@ pub fn router() -> Router<AppState> {
             "/v0/management/config/exploration-rate",
             axum::routing::get(get_exploration_rate).patch(patch_exploration_rate),
         )
+        .route(
+            "/v0/management/config/failover",
+            axum::routing::get(get_failover).patch(patch_failover),
+        )
+        .route(
+            "/v0/management/config/cooldown",
+            axum::routing::get(get_cooldown).patch(patch_cooldown),
+        )
+}
+
+fn config_value(state: &AppState, key: &str, default: serde_json::Value) -> serde_json::Value {
+    state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get(key)
+        .cloned()
+        .unwrap_or(default)
+}
+
+async fn get_failover(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let retryable_status_codes: Vec<i32> = (100..=599)
+        .filter(|code| !(200..=299).contains(code) && *code != 413 && *code != 422)
+        .collect();
+    Json(serde_json::json!({
+        "enabled": config_value(&state, "failover.enabled", serde_json::json!(true)),
+        "retryableStatusCodes": config_value(
+            &state,
+            "failover.retryableStatusCodes",
+            serde_json::json!(retryable_status_codes),
+        ),
+        "retryableErrors": config_value(
+            &state,
+            "failover.retryableErrors",
+            serde_json::json!(["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"]),
+        ),
+    }))
+    .into_response()
+}
+
+async fn patch_failover(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(object) = body.as_object() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Object body is required"})),
+        )
+            .into_response();
+    };
+    let mut entries = serde_json::Map::new();
+    for key in ["enabled", "retryableStatusCodes", "retryableErrors"] {
+        if let Some(value) = object.get(key) {
+            entries.insert(format!("failover.{key}"), value.clone());
+        }
+    }
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_settings_bulk(pool, &entries)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error":"Internal server error"})),
+            )
+                .into_response();
+        }
+    }
+    state.inner.settings.write().unwrap().extend(entries);
+    get_failover(State(state), headers).await
+}
+
+async fn get_cooldown(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(serde_json::json!({
+        "initialMinutes": config_value(
+            &state,
+            "cooldown.initialMinutes",
+            serde_json::json!(2),
+        ),
+        "maxMinutes": config_value(
+            &state,
+            "cooldown.maxMinutes",
+            serde_json::json!(300),
+        ),
+    }))
+    .into_response()
+}
+
+async fn patch_cooldown(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(object) = body.as_object() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Object body is required"})),
+        )
+            .into_response();
+    };
+    let mut entries = serde_json::Map::new();
+    for key in ["initialMinutes", "maxMinutes"] {
+        if let Some(value) = object.get(key) {
+            let Some(number) =
+                js_number(value).filter(|number| number.is_finite() && *number >= 0.1)
+            else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("{key} must be at least 0.1")
+                    })),
+                )
+                    .into_response();
+            };
+            entries.insert(format!("cooldown.{key}"), serde_json::json!(number));
+        }
+    }
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_settings_bulk(pool, &entries)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error":"Internal server error"})),
+            )
+                .into_response();
+        }
+    }
+    state.inner.settings.write().unwrap().extend(entries);
+    get_cooldown(State(state), headers).await
 }
 
 #[allow(clippy::result_large_err)]
@@ -629,5 +775,110 @@ mod tests {
                     .unwrap();
             assert_eq!(response_body["error"], expected_error);
         }
+    }
+
+    #[tokio::test]
+    async fn failover_defaults_and_patch_round_trip_recognized_fields() {
+        let state = fixture();
+        let get = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/v0/management/config/failover")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let get_body: serde_json::Value =
+            serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(get_body["enabled"], true);
+        assert_eq!(
+            get_body["retryableErrors"],
+            serde_json::json!(["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"])
+        );
+        assert_eq!(
+            get_body["retryableStatusCodes"].as_array().unwrap().len(),
+            398
+        );
+        assert!(!get_body["retryableStatusCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(413)));
+
+        let patch = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/failover")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"enabled":false,"retryableStatusCodes":[503],"ignored":"value"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&patch.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["retryableStatusCodes"], serde_json::json!([503]));
+        assert!(body.get("ignored").is_none());
+    }
+
+    #[tokio::test]
+    async fn cooldown_defaults_coercion_and_validation_match_plexus() {
+        let state = fixture();
+        let get = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/v0/management/config/cooldown")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "initialMinutes": 2, "maxMinutes": 300 })
+        );
+
+        let patch = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::patch("/v0/management/config/cooldown")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"initialMinutes":"0.5","maxMinutes":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&patch.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "initialMinutes": 0.5, "maxMinutes": 1.0 })
+        );
+
+        let invalid = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/cooldown")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"initialMinutes":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&invalid.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["error"], "initialMinutes must be at least 0.1");
     }
 }

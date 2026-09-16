@@ -857,6 +857,21 @@ const EXPLORATION_RATE_CASES: KeysCase[] = [
   { name: 'PATCH config/exploration-rate cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/exploration-rate', adminHeader: ADMIN_KEY, body: { performanceExplorationRate: 0.05, latencyExplorationRate: 0.05, e2ePerformanceExplorationRate: 0.05 } },
 ];
 
+const FAILOVER_COOLDOWN_CASES: KeysCase[] = [
+  { name: 'GET config/failover returns policy', method: 'GET', path: '/v0/management/config/failover', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/failover disables failover', method: 'PATCH', path: '/v0/management/config/failover', adminHeader: ADMIN_KEY, body: { enabled: false } },
+  { name: 'GET config/failover reflects PATCH', method: 'GET', path: '/v0/management/config/failover', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/failover rejects non-object body', method: 'PATCH', path: '/v0/management/config/failover', adminHeader: ADMIN_KEY, body: [] },
+  { name: 'GET config/failover rejects limited key', method: 'GET', path: '/v0/management/config/failover', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'PATCH config/failover cleanup restores enabled', method: 'PATCH', path: '/v0/management/config/failover', adminHeader: ADMIN_KEY, body: { enabled: true } },
+  { name: 'GET config/cooldown returns policy', method: 'GET', path: '/v0/management/config/cooldown', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/cooldown applies numeric coercion', method: 'PATCH', path: '/v0/management/config/cooldown', adminHeader: ADMIN_KEY, body: { initialMinutes: '0.5', maxMinutes: true } },
+  { name: 'GET config/cooldown reflects PATCH', method: 'GET', path: '/v0/management/config/cooldown', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/cooldown rejects null', method: 'PATCH', path: '/v0/management/config/cooldown', adminHeader: ADMIN_KEY, body: { initialMinutes: null } },
+  { name: 'GET config/cooldown rejects limited key', method: 'GET', path: '/v0/management/config/cooldown', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'PATCH config/cooldown cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/cooldown', adminHeader: ADMIN_KEY, body: { initialMinutes: 2, maxMinutes: 300 } },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1086,6 +1101,7 @@ async function main() {
   failures += await runCases(TIMEOUT_CONFIG_CASES);
   failures += await runCases(MCP_ENABLED_CASES);
   failures += await runCases(EXPLORATION_RATE_CASES);
+  failures += await runCases(FAILOVER_COOLDOWN_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1121,6 +1137,7 @@ async function main() {
     TIMEOUT_CONFIG_CASES.length +
     MCP_ENABLED_CASES.length +
     EXPLORATION_RATE_CASES.length +
+    FAILOVER_COOLDOWN_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
