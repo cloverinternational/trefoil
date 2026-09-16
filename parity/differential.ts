@@ -925,6 +925,16 @@ const BACKGROUND_EXPLORATION_CASES: KeysCase[] = [
   { name: 'PATCH background-exploration cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/background-exploration', adminHeader: ADMIN_KEY, body: { enabled: false, stalenessThresholdSeconds: 600, workerConcurrency: 2 } },
 ];
 
+const TRUSTED_PROXIES_CASES: KeysCase[] = [
+  { name: 'GET trusted-proxies returns defaults', method: 'GET', path: '/v0/management/config/trusted-proxies', adminHeader: ADMIN_KEY },
+  { name: 'PATCH trusted-proxies normalizes valid rules', method: 'PATCH', path: '/v0/management/config/trusted-proxies', adminHeader: ADMIN_KEY, body: { trustedProxies: [' 127.0.0.1 ', '', '2001:db8::/32'] } },
+  { name: 'GET trusted-proxies reflects PATCH', method: 'GET', path: '/v0/management/config/trusted-proxies', adminHeader: ADMIN_KEY },
+  { name: 'PATCH trusted-proxies rejects invalid rule', method: 'PATCH', path: '/v0/management/config/trusted-proxies', adminHeader: ADMIN_KEY, body: { trustedProxies: ['bad'] } },
+  { name: 'PATCH trusted-proxies rejects wrong shape', method: 'PATCH', path: '/v0/management/config/trusted-proxies', adminHeader: ADMIN_KEY, body: { trustedProxies: 'x' } },
+  { name: 'GET trusted-proxies rejects limited key', method: 'GET', path: '/v0/management/config/trusted-proxies', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'PATCH trusted-proxies cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/trusted-proxies', adminHeader: ADMIN_KEY, body: { trustedProxies: ['0.0.0.0/0', '::/0'] } },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1160,6 +1170,7 @@ async function main() {
   failures += await runCases(VISION_FALLTHROUGH_CASES);
   failures += await runCases(LOGGING_CASES);
   failures += await runCases(BACKGROUND_EXPLORATION_CASES);
+  failures += await runCases(TRUSTED_PROXIES_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1201,6 +1212,7 @@ async function main() {
     VISION_FALLTHROUGH_CASES.length +
     LOGGING_CASES.length +
     BACKGROUND_EXPLORATION_CASES.length +
+    TRUSTED_PROXIES_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

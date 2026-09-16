@@ -59,6 +59,128 @@ pub fn router() -> Router<AppState> {
             "/v0/management/config/background-exploration",
             axum::routing::get(get_background_exploration).patch(patch_background_exploration),
         )
+        .route(
+            "/v0/management/config/trusted-proxies",
+            axum::routing::get(get_trusted_proxies).patch(patch_trusted_proxies),
+        )
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum IpFamily {
+    V4,
+    V6,
+}
+
+fn parse_ip(value: &str) -> Option<(IpFamily, u128)> {
+    match value.trim().parse::<std::net::IpAddr>().ok()? {
+        std::net::IpAddr::V4(ip) => Some((IpFamily::V4, u32::from(ip) as u128)),
+        std::net::IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(|mapped| (IpFamily::V4, u32::from(mapped) as u128))
+            .or_else(|| Some((IpFamily::V6, u128::from(ip)))),
+    }
+}
+
+fn valid_ip_rule(rule: &str) -> bool {
+    let rule = rule.trim();
+    if rule.is_empty() || rule.contains('%') || rule.starts_with('[') {
+        return false;
+    }
+    if let Some((address, prefix)) = rule.split_once('/') {
+        let Some((family, _)) = parse_ip(address) else {
+            return false;
+        };
+        let Ok(prefix) = prefix.parse::<u16>() else {
+            return false;
+        };
+        return prefix <= if family == IpFamily::V4 { 32 } else { 128 };
+    }
+    if let Some((left, right)) = rule.split_once('-') {
+        let Some((family, low)) = parse_ip(left) else {
+            return false;
+        };
+        if family == IpFamily::V4
+            && !right.contains('.')
+            && right.chars().all(|c| c.is_ascii_digit())
+        {
+            let Ok(octet) = right.parse::<u16>() else {
+                return false;
+            };
+            if octet > 255 {
+                return false;
+            }
+            let high = (low & !0xff) | u128::from(octet);
+            return high >= low;
+        }
+        let Some((high_family, high)) = parse_ip(right) else {
+            return false;
+        };
+        return family == high_family && high >= low;
+    }
+    parse_ip(rule).is_some()
+}
+
+fn trusted_proxies(state: &AppState) -> serde_json::Value {
+    config_value(
+        state,
+        "trustedProxies",
+        serde_json::json!(["0.0.0.0/0", "::/0"]),
+    )
+}
+
+async fn get_trusted_proxies(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(serde_json::json!({ "trustedProxies": trusted_proxies(&state) })).into_response()
+}
+
+async fn patch_trusted_proxies(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(object) = body.as_object() else {
+        return bad_request("Object body is required");
+    };
+    let Some(values) = object
+        .get("trustedProxies")
+        .and_then(serde_json::Value::as_array)
+        .filter(|values| values.iter().all(serde_json::Value::is_string))
+    else {
+        return bad_request("trustedProxies must be an array of strings");
+    };
+    let normalized: Vec<String> = values
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if let Some(invalid) = normalized.iter().find(|value| !valid_ip_rule(value)) {
+        return bad_request(&format!(
+            "Invalid IP rule: {invalid}. Use IPv4/IPv6, CIDR (a.b.c.d/n, ::/n), or a range (a.b.c.d-N or addr-addr)."
+        ));
+    }
+    let value = serde_json::json!(normalized);
+    let entries = serde_json::Map::from_iter([("trustedProxies".into(), value.clone())]);
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_settings_bulk(pool, &entries)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal server error" })),
+            )
+                .into_response();
+        }
+    }
+    state.inner.settings.write().unwrap().extend(entries);
+    Json(serde_json::json!({ "trustedProxies": value })).into_response()
 }
 
 fn background_exploration_body(state: &AppState) -> serde_json::Value {
@@ -1487,6 +1609,111 @@ mod tests {
             let response_body: serde_json::Value =
                 serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                     .unwrap();
+            assert_eq!(response_body["error"], expected_error);
+        }
+    }
+
+    #[test]
+    fn trusted_proxy_rule_validation_matches_reference_cases() {
+        for valid in [
+            "192.168.1.10",
+            "10.0.0.0/8",
+            "10.1.0.10-20",
+            "10.1.0.10-10.1.0.20",
+            "::1",
+            "2001:db8::/32",
+            "2001:db8::1-2001:db8::5",
+        ] {
+            assert!(valid_ip_rule(valid), "expected valid: {valid}");
+        }
+        for invalid in [
+            "999.1.1.1",
+            "1.2.3",
+            "10.0.0.0/33",
+            "::/129",
+            "1.2.3.4-300",
+            "10.1.0.20-10",
+            "10.1.0.20-10.1.0.10",
+            "10.0.0.1-2001:db8::1",
+            "203.0.113.10:443",
+            "[2001:db8::1]:8443",
+            "fe80::1%eth0",
+            "not-an-ip",
+        ] {
+            assert!(!valid_ip_rule(invalid), "expected invalid: {invalid}");
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_proxies_defaults_normalizes_and_persists() {
+        let state = fixture();
+        let get = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/v0/management/config/trusted-proxies")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "trustedProxies": ["0.0.0.0/0", "::/0"] })
+        );
+
+        let patch = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/trusted-proxies")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"trustedProxies":[" 127.0.0.1 ","","2001:db8::/32"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&patch.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "trustedProxies": ["127.0.0.1", "2001:db8::/32"] })
+        );
+    }
+
+    #[tokio::test]
+    async fn trusted_proxies_rejects_invalid_rules_and_shapes() {
+        for (body, expected_error) in [
+            (
+                r#"{"trustedProxies":["bad"]}"#,
+                "Invalid IP rule: bad. Use IPv4/IPv6, CIDR (a.b.c.d/n, ::/n), or a range (a.b.c.d-N or addr-addr).",
+            ),
+            (
+                r#"{"trustedProxies":"x"}"#,
+                "trustedProxies must be an array of strings",
+            ),
+            (r#"[]"#, "Object body is required"),
+        ] {
+            let response = router()
+                .with_state(fixture())
+                .oneshot(
+                    Request::patch("/v0/management/config/trusted-proxies")
+                        .header("x-admin-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response_body: serde_json::Value = serde_json::from_slice(
+                &response.into_body().collect().await.unwrap().to_bytes(),
+            )
+            .unwrap();
             assert_eq!(response_body["error"], expected_error);
         }
     }
