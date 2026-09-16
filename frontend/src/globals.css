@@ -1,0 +1,56 @@
+/* Trimmed subset of Plexus packages/frontend/src/globals.css: kept only the
+ * theme tokens and utilities actually referenced by the ported Login,
+ * Dashboard, and Button components. Extend as more UI is ported. */
+@import "tailwindcss";
+@source "../src/**/*.{tsx,ts,jsx,js}";
+
+@theme {
+  --color-bg-deep: #000000;
+
+  --color-primary: #F59E0B;
+  --color-secondary: #FBBF24;
+  --color-danger: #EF4444;
+
+  --color-text: #F8FAFC;
+  --color-text-secondary: #94A3B8;
+  --color-text-muted: #64748B;
+
+  --color-border: #1E293B;
+  --color-border-2: #334155;
+
+  --font-heading: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-body: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --duration-fast: 150ms;
+}
+
+@utility glass-bg {
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+@utility amber-grad-text {
+  background: linear-gradient(135deg, #FBBF24 0%, #F59E0B 60%, #D97706 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@utility animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg-deep);
+  color: var(--color-text);
+  font-family: var(--font-body);
+}
