@@ -160,6 +160,7 @@ pub struct AppStateInner {
     pub aliases: RwLock<HashMap<String, ModelConfig>>,
     pub user_quotas: RwLock<HashMap<String, QuotaDefinition>>,
     pub settings: RwLock<HashMap<String, Value>>,
+    pub cooldowns: RwLock<HashMap<(String, String), CooldownEntry>>,
 }
 
 impl AppState {
@@ -172,9 +173,24 @@ impl AppState {
                 aliases: RwLock::new(HashMap::new()),
                 user_quotas: RwLock::new(HashMap::new()),
                 settings: RwLock::new(HashMap::new()),
+                cooldowns: RwLock::new(HashMap::new()),
             }),
         }
     }
+}
+
+/// An active provider (or provider/model) cooldown entry.
+///
+/// Mirrors `CooldownManager`'s in-memory `CooldownEntry`
+/// (`packages/backend/src/services/runtime/cooldown-manager.ts`). Trefoil
+/// keeps cooldowns in memory only (no DB persistence) — Plexus's DB-backed
+/// persistence is an implementation detail invisible to the management API
+/// contract this crate ports.
+#[derive(Debug, Clone)]
+pub struct CooldownEntry {
+    pub expiry_ms: i64,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
 }
 
 /// A user quota definition.

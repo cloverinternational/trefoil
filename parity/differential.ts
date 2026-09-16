@@ -575,6 +575,60 @@ const SYSTEM_SETTINGS_CASES: KeysCase[] = [
   },
 ];
 
+// Cases mirror cooldowns.ts. Cooldowns can only be populated by real
+// provider failures (no management-API "create" path exists), so these
+// cases exercise the empty-list, auth-scoping (GET is readable by any
+// valid principal; DELETE is admin-only), and idempotent-delete contracts.
+const COOLDOWNS_CASES: KeysCase[] = [
+  {
+    name: 'GET cooldowns (empty) is readable by admin',
+    method: 'GET',
+    path: '/v0/management/cooldowns',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'GET cooldowns (empty) is readable by a limited key',
+    method: 'GET',
+    path: '/v0/management/cooldowns',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'missing credential gets 401 on cooldowns route',
+    method: 'GET',
+    path: '/v0/management/cooldowns',
+  },
+  {
+    name: 'wrong credential gets 401 on cooldowns route',
+    method: 'GET',
+    path: '/v0/management/cooldowns',
+    adminHeader: 'wrong-key',
+  },
+  {
+    name: 'DELETE all cooldowns as a limited key -> 403',
+    method: 'DELETE',
+    path: '/v0/management/cooldowns',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'DELETE all cooldowns as admin succeeds (idempotent on empty state)',
+    method: 'DELETE',
+    path: '/v0/management/cooldowns',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'DELETE by provider succeeds (idempotent, no matching entries)',
+    method: 'DELETE',
+    path: `/v0/management/cooldowns/no-such-provider-${runId}`,
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'DELETE by provider+model succeeds (idempotent, no matching entries)',
+    method: 'DELETE',
+    path: `/v0/management/cooldowns/no-such-provider-${runId}?model=no-such-model`,
+    adminHeader: ADMIN_KEY,
+  },
+];
+
 async function runCases(cases: KeysCase[]): Promise<number> {
   let failures = 0;
   for (const testCase of cases) {
@@ -623,6 +677,7 @@ async function main() {
   failures += await runCases(ALIASES_CASES);
   failures += await runCases(USER_QUOTAS_CASES);
   failures += await runCases(SYSTEM_SETTINGS_CASES);
+  failures += await runCases(COOLDOWNS_CASES);
 
   const total =
     CASES.length +
@@ -630,7 +685,8 @@ async function main() {
     PROVIDERS_CASES.length +
     ALIASES_CASES.length +
     USER_QUOTAS_CASES.length +
-    SYSTEM_SETTINGS_CASES.length;
+    SYSTEM_SETTINGS_CASES.length +
+    COOLDOWNS_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
     process.exit(1);
