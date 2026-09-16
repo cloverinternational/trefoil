@@ -249,7 +249,7 @@ async fn chat_completions(
                         Some(&provider_slug),
                         Some(&model),
                         if status.is_success() {
-                            "streaming"
+                            "success"
                         } else {
                             "error"
                         },

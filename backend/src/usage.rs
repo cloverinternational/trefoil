@@ -144,8 +144,8 @@ async fn summary_usage(State(state): State<AppState>, headers: HeaderMap) -> Res
     };
     // Matches Plexus's aggregateSelection.errors definition exactly: a row
     // counts as an error when response_status is NULL or anything other
-    // than the literal string 'success' (so e.g. Trefoil's own "streaming"
-    // status also counts, same as Plexus's default-to-error stance).
+    // than the literal string 'success'. Accepted streaming responses are
+    // initially successful; full terminal stream inspection is not yet ported.
     let query = if scope.is_some() {
         sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input_tokens, coalesce(sum(tokens_output),0)::bigint AS output_tokens, coalesce(sum(cost_total),0)::real AS total_cost FROM request_usage WHERE api_key = $1").bind(scope.unwrap()).fetch_one(pool).await
     } else {
