@@ -847,6 +847,16 @@ const MCP_ENABLED_CASES: KeysCase[] = [
   { name: 'PATCH config/mcp-enabled cleanup restores true', method: 'PATCH', path: '/v0/management/config/mcp-enabled', adminHeader: ADMIN_KEY, body: { enabled: true } },
 ];
 
+const EXPLORATION_RATE_CASES: KeysCase[] = [
+  { name: 'GET config/exploration-rate returns current values', method: 'GET', path: '/v0/management/config/exploration-rate', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/exploration-rate applies JS numeric coercions', method: 'PATCH', path: '/v0/management/config/exploration-rate', adminHeader: ADMIN_KEY, body: { performanceExplorationRate: '0.2', latencyExplorationRate: true, e2ePerformanceExplorationRate: null } },
+  { name: 'GET config/exploration-rate reflects PATCH', method: 'GET', path: '/v0/management/config/exploration-rate', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/exploration-rate rejects out-of-range value', method: 'PATCH', path: '/v0/management/config/exploration-rate', adminHeader: ADMIN_KEY, body: { performanceExplorationRate: 1.1 } },
+  { name: 'PATCH config/exploration-rate rejects non-object body', method: 'PATCH', path: '/v0/management/config/exploration-rate', adminHeader: ADMIN_KEY, body: [] },
+  { name: 'GET config/exploration-rate rejects limited key', method: 'GET', path: '/v0/management/config/exploration-rate', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'PATCH config/exploration-rate cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/exploration-rate', adminHeader: ADMIN_KEY, body: { performanceExplorationRate: 0.05, latencyExplorationRate: 0.05, e2ePerformanceExplorationRate: 0.05 } },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1075,6 +1085,7 @@ async function main() {
   failures += await runCases(CONFIG_STATUS_CASES);
   failures += await runCases(TIMEOUT_CONFIG_CASES);
   failures += await runCases(MCP_ENABLED_CASES);
+  failures += await runCases(EXPLORATION_RATE_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1109,6 +1120,7 @@ async function main() {
     CONFIG_STATUS_CASES.length +
     TIMEOUT_CONFIG_CASES.length +
     MCP_ENABLED_CASES.length +
+    EXPLORATION_RATE_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

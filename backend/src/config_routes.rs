@@ -31,6 +31,10 @@ pub fn router() -> Router<AppState> {
             "/v0/management/config/mcp-enabled",
             axum::routing::get(get_mcp_enabled).patch(patch_mcp_enabled),
         )
+        .route(
+            "/v0/management/config/exploration-rate",
+            axum::routing::get(get_exploration_rate).patch(patch_exploration_rate),
+        )
 }
 
 #[allow(clippy::result_large_err)]
@@ -214,6 +218,111 @@ async fn patch_mcp_enabled(
         .unwrap()
         .insert("mcpEnabled".into(), serde_json::json!(enabled));
     Json(serde_json::json!({ "enabled": enabled })).into_response()
+}
+
+const EXPLORATION_FIELDS: [&str; 3] = [
+    "performanceExplorationRate",
+    "latencyExplorationRate",
+    "e2ePerformanceExplorationRate",
+];
+
+fn js_number(value: &serde_json::Value) -> Option<f64> {
+    match value {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                Some(0.0)
+            } else {
+                value.parse().ok()
+            }
+        }
+        serde_json::Value::Bool(value) => Some(if *value { 1.0 } else { 0.0 }),
+        serde_json::Value::Null => Some(0.0),
+        _ => None,
+    }
+}
+
+fn exploration_value(state: &AppState, key: &str) -> f64 {
+    state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get(key)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.05)
+}
+
+fn exploration_body(state: &AppState) -> serde_json::Value {
+    serde_json::json!({
+        "performanceExplorationRate": exploration_value(state, "performanceExplorationRate"),
+        "latencyExplorationRate": exploration_value(state, "latencyExplorationRate"),
+        "e2ePerformanceExplorationRate": exploration_value(state, "e2ePerformanceExplorationRate"),
+    })
+}
+
+async fn get_exploration_rate(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(exploration_body(&state)).into_response()
+}
+
+async fn patch_exploration_rate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(object) = body.as_object() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Object body is required" })),
+        )
+            .into_response();
+    };
+
+    let mut updates = serde_json::Map::new();
+    for key in EXPLORATION_FIELDS {
+        let Some(raw) = object.get(key) else {
+            continue;
+        };
+        let Some(value) =
+            js_number(raw).filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+        else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("{key} must be a number between 0 and 1")
+                })),
+            )
+                .into_response();
+        };
+        updates.insert(key.to_string(), serde_json::json!(value));
+    }
+
+    if !updates.is_empty() {
+        if let Some(pool) = &state.inner.database {
+            if crate::database::upsert_settings_bulk(pool, &updates)
+                .await
+                .is_err()
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "Internal server error" })),
+                )
+                    .into_response();
+            }
+        }
+        let mut settings = state.inner.settings.write().unwrap();
+        for (key, value) in updates {
+            settings.insert(key, value);
+        }
+    }
+    Json(exploration_body(&state)).into_response()
 }
 
 #[cfg(test)]
@@ -426,6 +535,87 @@ mod tests {
                 .with_state(fixture())
                 .oneshot(
                     Request::patch("/v0/management/config/mcp-enabled")
+                        .header("x-admin-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response_body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(response_body["error"], expected_error);
+        }
+    }
+
+    #[tokio::test]
+    async fn exploration_rate_defaults_and_coercions_match_javascript_number() {
+        let state = fixture();
+        let get = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/v0/management/config/exploration-rate")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let get_body: serde_json::Value =
+            serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            get_body,
+            serde_json::json!({
+                "performanceExplorationRate": 0.05,
+                "latencyExplorationRate": 0.05,
+                "e2ePerformanceExplorationRate": 0.05,
+            })
+        );
+
+        let patch = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/exploration-rate")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"performanceExplorationRate":"0.2","latencyExplorationRate":true,"e2ePerformanceExplorationRate":null}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let patch_body: serde_json::Value =
+            serde_json::from_slice(&patch.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(
+            patch_body,
+            serde_json::json!({
+                "performanceExplorationRate": 0.2,
+                "latencyExplorationRate": 1.0,
+                "e2ePerformanceExplorationRate": 0.0,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn exploration_rate_rejects_out_of_range_and_non_object() {
+        for (body, expected_error) in [
+            (
+                r#"{"performanceExplorationRate":1.1}"#,
+                "performanceExplorationRate must be a number between 0 and 1",
+            ),
+            (
+                r#"{"latencyExplorationRate":-0.1}"#,
+                "latencyExplorationRate must be a number between 0 and 1",
+            ),
+            (r#"[]"#, "Object body is required"),
+        ] {
+            let response = router()
+                .with_state(fixture())
+                .oneshot(
+                    Request::patch("/v0/management/config/exploration-rate")
                         .header("x-admin-key", "admin")
                         .header("content-type", "application/json")
                         .body(Body::from(body))
