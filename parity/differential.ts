@@ -1051,6 +1051,13 @@ const COMPACTION_CASES: KeysCase[] = [
   { name: 'PATCH config/compaction cleanup clears fields', method: 'PATCH', path: '/v0/management/config/compaction', adminHeader: ADMIN_KEY, body: { enabled: null, strategy: null, minTokens: null, native: null, headroom: null } },
 ];
 
+const QUOTA_DISCOVERY_CASES: KeysCase[] = [
+  { name: 'GET quota-checkers returns known types and no configured checkers', method: 'GET', path: '/v0/management/quota-checkers', adminHeader: ADMIN_KEY },
+  { name: 'GET quota-checkers rejects limited key', method: 'GET', path: '/v0/management/quota-checkers', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET quotas returns no scheduler results', method: 'GET', path: '/v0/management/quotas', adminHeader: ADMIN_KEY },
+  { name: 'GET quotas rejects missing credential', method: 'GET', path: '/v0/management/quotas' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1299,6 +1306,7 @@ async function main() {
   failures += await runCases(OAUTH_STATUS_CASES);
   failures += await runCases(OAUTH_DELETE_CASES);
   failures += await runCases(COMPACTION_CASES);
+  failures += await runCases(QUOTA_DISCOVERY_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1353,6 +1361,7 @@ async function main() {
     OAUTH_STATUS_CASES.length +
     OAUTH_DELETE_CASES.length +
     COMPACTION_CASES.length +
+    QUOTA_DISCOVERY_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

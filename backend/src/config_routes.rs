@@ -77,6 +77,11 @@ pub fn router() -> Router<AppState> {
             axum::routing::get(quota_checker_types),
         )
         .route(
+            "/v0/management/quota-checkers",
+            axum::routing::get(quota_checkers),
+        )
+        .route("/v0/management/quotas", axum::routing::get(quota_results))
+        .route(
             "/v0/management/pi/providers",
             axum::routing::get(pi_providers),
         )
@@ -362,7 +367,12 @@ async fn quota_checker_types(State(state): State<AppState>, headers: HeaderMap) 
     // Plexus builds this from its checker registry. Trefoil does not yet run
     // provider quota checkers, so discovery mirrors the pinned reference
     // revision's registry for management-client compatibility.
-    let types = serde_json::json!([
+    let types = checker_types();
+    Json(serde_json::json!({ "types": types, "count": 30 })).into_response()
+}
+
+fn checker_types() -> serde_json::Value {
+    serde_json::json!([
         {"type":"naga","displayName":"Naga"},
         {"type":"synthetic","displayName":"Synthetic"},
         {"type":"nanogpt","displayName":"NanoGPT"},
@@ -393,8 +403,34 @@ async fn quota_checker_types(State(state): State<AppState>, headers: HeaderMap) 
         {"type":"deepseek","displayName":"DeepSeek"},
         {"type":"sakana","displayName":"Sakana"},
         {"type":"cline","displayName":"Cline"}
-    ]);
-    Json(serde_json::json!({ "types": types, "count": 30 })).into_response()
+    ])
+}
+
+async fn quota_checkers(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let known_types = checker_types()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|definition| {
+            serde_json::json!({
+                "type": definition["type"],
+                "displayName": definition["displayName"],
+                "custom": false,
+            })
+        })
+        .collect::<Vec<_>>();
+    // Provider quota-checker config and scheduling are not yet implemented.
+    Json(serde_json::json!({ "knownTypes": known_types, "configured": [] })).into_response()
+}
+
+async fn quota_results(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(serde_json::json!([])).into_response()
 }
 
 async fn clear_vision_descriptor_cache(
@@ -2290,6 +2326,41 @@ mod tests {
             body["types"][29],
             serde_json::json!({ "type": "cline", "displayName": "Cline" })
         );
+    }
+
+    #[tokio::test]
+    async fn quota_checker_and_result_discovery_are_truthfully_empty() {
+        let checkers = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::get("/v0/management/quota-checkers")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&checkers.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["knownTypes"].as_array().unwrap().len(), 30);
+        assert_eq!(body["knownTypes"][0]["custom"], false);
+        assert_eq!(body["configured"], serde_json::json!([]));
+
+        let results = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::get("/v0/management/quotas")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&results.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body, serde_json::json!([]));
     }
 
     #[tokio::test]
