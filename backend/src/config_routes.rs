@@ -1,8 +1,9 @@
-//! Initial management config surface: resource-count status and timeout.
+//! Initial management config surface: status, timeout, and MCP enablement.
 //!
 //! Ports `GET /v0/management/config/status` and `GET`/`PATCH
-//! `/v0/management/config/timeout` from Plexus. MCP server management is not
-//! yet ported, so `mcpServerCount` is currently zero.
+//! `/v0/management/config/timeout` and `/v0/management/config/mcp-enabled`
+//! from Plexus. MCP server management is not yet ported, so
+//! `mcpServerCount` is currently zero.
 
 use axum::{
     extract::State,
@@ -25,6 +26,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v0/management/config/timeout",
             axum::routing::get(get_timeout).patch(patch_timeout),
+        )
+        .route(
+            "/v0/management/config/mcp-enabled",
+            axum::routing::get(get_mcp_enabled).patch(patch_mcp_enabled),
         )
 }
 
@@ -145,6 +150,70 @@ async fn patch_timeout(
     }
 
     Json(serde_json::json!({ "defaultSeconds": timeout_seconds(&state) })).into_response()
+}
+
+fn mcp_enabled(state: &AppState) -> bool {
+    state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get("mcpEnabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+}
+
+async fn get_mcp_enabled(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(serde_json::json!({ "enabled": mcp_enabled(&state) })).into_response()
+}
+
+async fn patch_mcp_enabled(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(object) = body.as_object() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Object body is required" })),
+        )
+            .into_response();
+    };
+    let Some(enabled) = object.get("enabled").and_then(serde_json::Value::as_bool) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "enabled must be a boolean" })),
+        )
+            .into_response();
+    };
+
+    if let Some(pool) = &state.inner.database {
+        let entries =
+            serde_json::Map::from_iter([("mcpEnabled".to_string(), serde_json::json!(enabled))]);
+        if crate::database::upsert_settings_bulk(pool, &entries)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Internal server error" })),
+            )
+                .into_response();
+        }
+    }
+    state
+        .inner
+        .settings
+        .write()
+        .unwrap()
+        .insert("mcpEnabled".into(), serde_json::json!(enabled));
+    Json(serde_json::json!({ "enabled": enabled })).into_response()
 }
 
 #[cfg(test)]
@@ -297,6 +366,66 @@ mod tests {
                 .with_state(fixture())
                 .oneshot(
                     Request::patch("/v0/management/config/timeout")
+                        .header("x-admin-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response_body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(response_body["error"], expected_error);
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_enabled_defaults_true_and_patch_round_trips() {
+        let state = fixture();
+        let get = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/v0/management/config/mcp-enabled")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let get_body: serde_json::Value =
+            serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(get_body, serde_json::json!({ "enabled": true }));
+
+        let patch = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/mcp-enabled")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let patch_body: serde_json::Value =
+            serde_json::from_slice(&patch.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(patch_body, serde_json::json!({ "enabled": false }));
+    }
+
+    #[tokio::test]
+    async fn mcp_enabled_patch_rejects_missing_non_boolean_and_array() {
+        for (body, expected_error) in [
+            (r#"{}"#, "enabled must be a boolean"),
+            (r#"{"enabled":"false"}"#, "enabled must be a boolean"),
+            (r#"{"enabled":null}"#, "enabled must be a boolean"),
+            (r#"[]"#, "Object body is required"),
+        ] {
+            let response = router()
+                .with_state(fixture())
+                .oneshot(
+                    Request::patch("/v0/management/config/mcp-enabled")
                         .header("x-admin-key", "admin")
                         .header("content-type", "application/json")
                         .body(Body::from(body))
