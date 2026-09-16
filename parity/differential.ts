@@ -642,6 +642,124 @@ const COOLDOWNS_CASES: KeysCase[] = [
   },
 ];
 
+// Cases mirror debug.ts (GET/PATCH /v0/management/debug). The global toggle
+// and provider/key/alias filter sets are process-wide singleton state (no
+// per-run fixture), so every mutating case ends by restoring a known-clean
+// state before the next case runs, and the very last case resets
+// everything back to defaults so this slice doesn't leak state into a
+// later run of the harness against the same live servers.
+const DEBUG_CASES: KeysCase[] = [
+  {
+    name: 'GET debug (clean state) as admin',
+    method: 'GET',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'GET debug (clean state) as a limited key',
+    method: 'GET',
+    path: '/v0/management/debug',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'missing credential gets 401 on debug route',
+    method: 'GET',
+    path: '/v0/management/debug',
+  },
+  {
+    name: 'PATCH debug as a limited key -> 403',
+    method: 'PATCH',
+    path: '/v0/management/debug',
+    adminHeader: LIMITED_KEY_SECRET,
+    body: { enabled: true },
+  },
+  {
+    name: 'missing credential gets 401 on PATCH debug',
+    method: 'PATCH',
+    path: '/v0/management/debug',
+    body: { enabled: true },
+  },
+  {
+    name: 'PATCH debug rejects a non-boolean enabled',
+    method: 'PATCH',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+    body: { enabled: 'yes' },
+  },
+  {
+    name: 'PATCH debug rejects a non-array providers',
+    method: 'PATCH',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+    body: { providers: 'not-an-array' },
+  },
+  {
+    name: 'PATCH debug rejects a non-string entry in keys',
+    method: 'PATCH',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+    body: { keys: [123] },
+  },
+  {
+    name: 'PATCH debug enables the global toggle',
+    method: 'PATCH',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+    body: { enabled: true },
+  },
+  {
+    name: 'GET debug reflects the global toggle as admin',
+    method: 'GET',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'GET debug reflects the global toggle for a limited key',
+    method: 'GET',
+    path: '/v0/management/debug',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'PATCH debug sets providers/keys/aliases filters',
+    method: 'PATCH',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+    body: { providers: [`prov-${runId}`], keys: ['test-key'], aliases: [`alias-${runId}`] },
+  },
+  {
+    name: 'GET debug reflects the filters as admin',
+    method: 'GET',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'GET debug reflects the per-key filter for the matching limited key',
+    method: 'GET',
+    path: '/v0/management/debug',
+    adminHeader: LIMITED_KEY_SECRET,
+  },
+  {
+    name: 'PATCH debug clears providers/keys/aliases with explicit null',
+    method: 'PATCH',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+    body: { providers: null, keys: null, aliases: null },
+  },
+  {
+    name: 'GET debug reflects the cleared filters',
+    method: 'GET',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+  },
+  {
+    name: 'PATCH debug cleanup: disable the global toggle (must run last against this shared state)',
+    method: 'PATCH',
+    path: '/v0/management/debug',
+    adminHeader: ADMIN_KEY,
+    body: { enabled: false },
+  },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -863,6 +981,7 @@ async function main() {
   failures += await runCases(USER_QUOTAS_CASES);
   failures += await runCases(SYSTEM_SETTINGS_CASES);
   failures += await runCases(COOLDOWNS_CASES);
+  failures += await runCases(DEBUG_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -893,6 +1012,7 @@ async function main() {
     USER_QUOTAS_CASES.length +
     SYSTEM_SETTINGS_CASES.length +
     COOLDOWNS_CASES.length +
+    DEBUG_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
