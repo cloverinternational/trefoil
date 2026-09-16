@@ -650,14 +650,139 @@ pub async fn record_request_usage(
     .map(|_| ())
 }
 
+/// Calendar window start (UTC, epoch ms) for daily/weekly/monthly quota
+/// types, matching Plexus's `QuotaEnforcer.getWindowStart` exactly: daily
+/// is UTC midnight, weekly is the most recent UTC Monday midnight, monthly
+/// is the 1st of the current UTC month. The naive `now_ms % period_ms`
+/// approach used previously anchors weekly windows to the Unix epoch
+/// (1970-01-01, a Thursday) instead of Monday, and treats every month as
+/// a fixed 30 days instead of a real calendar month.
+fn calendar_window_start_ms(quota_type: &str, now_ms: i64) -> Option<i64> {
+    use chrono::{Datelike, TimeZone, Utc};
+    let now = Utc.timestamp_millis_opt(now_ms).single()?;
+    match quota_type {
+        "daily" => Some(now.date_naive().and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis()),
+        "weekly" => {
+            let days_since_monday = now.weekday().num_days_from_monday() as i64;
+            Some(
+                (now.date_naive() - chrono::Duration::days(days_since_monday))
+                    .and_hms_opt(0, 0, 0)?
+                    .and_utc()
+                    .timestamp_millis(),
+            )
+        }
+        "monthly" => Some(
+            Utc.with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+                .single()?
+                .timestamp_millis(),
+        ),
+        _ => None,
+    }
+}
+
+pub async fn request_quota_exceeded(
+    pool: &PgPool,
+    key_name: &str,
+    quota_names: &[String],
+    now_ms: i64,
+) -> Result<Option<(String, i32, i64)>, sqlx::Error> {
+    for quota_name in quota_names {
+        let Some(row) = sqlx::query("SELECT quota_type::text, limit_type::text, limit_value, duration FROM user_quota_definitions WHERE name = $1")
+            .bind(quota_name).fetch_optional(pool).await? else { continue };
+        let quota_type: String = row.try_get("quota_type")?;
+        let limit: i32 = row.try_get("limit_value")?;
+        if row.try_get::<String, _>("limit_type")? != "requests" {
+            continue;
+        }
+        let duration: Option<String> = row.try_get("duration")?;
+        let window_start = match quota_type.as_str() {
+            "rolling" => now_ms - parse_duration_ms(duration.as_deref()).unwrap_or(0),
+            "daily" | "weekly" | "monthly" => match calendar_window_start_ms(&quota_type, now_ms) {
+                Some(start) => start,
+                None => continue,
+            },
+            _ => continue,
+        };
+        let used: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM request_usage WHERE api_key = $1 AND start_time >= $2 AND response_status = 'success'",
+        )
+        .bind(key_name)
+        .bind(window_start)
+        .fetch_one(pool)
+        .await?;
+        if used >= i64::from(limit) {
+            return Ok(Some((quota_name.clone(), limit, used)));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_duration_ms(value: Option<&str>) -> Option<i64> {
+    let value = value?.trim();
+    let split = value.len().checked_sub(1)?;
+    let number: i64 = value[..split].parse().ok()?;
+    let multiplier = match &value[split..] {
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => return None,
+    };
+    number.checked_mul(multiplier)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{connect, delete_key, load_keys, migrate, upsert_key, DEFAULT_MAX_CONNECTIONS};
+    use super::{
+        calendar_window_start_ms, connect, delete_key, load_keys, migrate, upsert_key,
+        DEFAULT_MAX_CONNECTIONS,
+    };
     use crate::state::KeyConfig;
 
     #[test]
     fn pool_default_is_bounded() {
         assert_eq!(DEFAULT_MAX_CONNECTIONS, 16);
+    }
+
+    #[test]
+    fn weekly_window_anchors_to_utc_monday_not_unix_epoch() {
+        // 2024-01-10 is a Wednesday; the most recent Monday is 2024-01-08.
+        let wednesday_ms = 1_704_844_800_000; // 2024-01-10T00:00:00Z
+        let expected_monday_ms = 1_704_672_000_000; // 2024-01-08T00:00:00Z
+        assert_eq!(
+            calendar_window_start_ms("weekly", wednesday_ms),
+            Some(expected_monday_ms)
+        );
+
+        // A naive `now_ms % (7 * 86_400_000)` anchors to 1970-01-01 (a
+        // Thursday), so it would NOT equal the real Monday boundary here --
+        // this assertion documents exactly the bug being fixed.
+        let naive_epoch_anchored = wednesday_ms - wednesday_ms % (7 * 86_400_000);
+        assert_ne!(naive_epoch_anchored, expected_monday_ms);
+    }
+
+    #[test]
+    fn monthly_window_is_first_of_calendar_month_not_fixed_30_days() {
+        // 2024-03-15: naive 30-day math and real calendar-month math must
+        // diverge here (Jan+Feb 2024 = 60 days, not 2*30), proving the fix
+        // isn't a no-op for months that aren't exactly 30 days apart.
+        let march_15_ms = 1_710_460_800_000; // 2024-03-15T00:00:00Z
+        let expected_march_1_ms = 1_709_251_200_000; // 2024-03-01T00:00:00Z
+        assert_eq!(
+            calendar_window_start_ms("monthly", march_15_ms),
+            Some(expected_march_1_ms)
+        );
+    }
+
+    #[test]
+    fn daily_window_is_utc_midnight() {
+        let noon_ms = 1_704_888_000_000; // 2024-01-10T12:00:00Z
+        let midnight_ms = 1_704_844_800_000; // 2024-01-10T00:00:00Z
+        assert_eq!(calendar_window_start_ms("daily", noon_ms), Some(midnight_ms));
+    }
+
+    #[test]
+    fn rolling_type_is_not_a_calendar_window() {
+        assert_eq!(calendar_window_start_ms("rolling", 1_704_888_000_000), None);
     }
 
     #[tokio::test]

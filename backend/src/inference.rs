@@ -70,8 +70,41 @@ async fn chat_completions(
     headers: HeaderMap,
     Json(mut body): Json<Value>,
 ) -> Response {
-    if let Err(response) = authenticate(&state, &headers) {
-        return response;
+    let principal = match authenticate(&state, &headers) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    if let Principal::Limited { key_name, config } = &principal {
+        if let Some(pool) = &state.inner.database {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as i64)
+                .unwrap_or_default();
+            match crate::database::request_quota_exceeded(
+                pool,
+                key_name,
+                &config.quota_names,
+                now_ms,
+            )
+            .await
+            {
+                Ok(Some((quota, limit, used))) => {
+                    return error_response(
+                        axum::http::StatusCode::TOO_MANY_REQUESTS,
+                        &format!("Quota '{quota}' exceeded ({used}/{limit} requests)"),
+                        "quota_exceeded",
+                    )
+                }
+                Err(error) => {
+                    return error_response(
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        &error.to_string(),
+                        "server_error",
+                    )
+                }
+                Ok(None) => {}
+            }
+        }
     }
     let request_id = format!(
         "trefoil-{}",
