@@ -893,6 +893,13 @@ const STALL_CONFIG_CASES: KeysCase[] = [
   { name: 'PATCH config/stall cleanup restores defaults', method: 'PATCH', path: '/v0/management/config/stall', adminHeader: ADMIN_KEY, body: { ttfbSeconds: null, ttfbBytes: 100, minBytesPerSecond: null, windowSeconds: 10, gracePeriodSeconds: 30, stallCooldown: false } },
 ];
 
+const VISION_FALLTHROUGH_CASES: KeysCase[] = [
+  { name: 'GET config/vision-fallthrough returns current object', method: 'GET', path: '/v0/management/config/vision-fallthrough', adminHeader: ADMIN_KEY },
+  { name: 'PATCH config/vision-fallthrough empty object is a no-op', method: 'PATCH', path: '/v0/management/config/vision-fallthrough', adminHeader: ADMIN_KEY, body: {} },
+  { name: 'PATCH config/vision-fallthrough rejects non-object body', method: 'PATCH', path: '/v0/management/config/vision-fallthrough', adminHeader: ADMIN_KEY, body: [] },
+  { name: 'GET config/vision-fallthrough rejects limited key', method: 'GET', path: '/v0/management/config/vision-fallthrough', adminHeader: LIMITED_KEY_SECRET },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1125,6 +1132,7 @@ async function main() {
   failures += await runCases(FAILOVER_COOLDOWN_CASES);
   failures += await runCases(CAPTURE_TRACE_CASES);
   failures += await runCases(STALL_CONFIG_CASES);
+  failures += await runCases(VISION_FALLTHROUGH_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1163,6 +1171,7 @@ async function main() {
     FAILOVER_COOLDOWN_CASES.length +
     CAPTURE_TRACE_CASES.length +
     STALL_CONFIG_CASES.length +
+    VISION_FALLTHROUGH_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);

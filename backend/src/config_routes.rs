@@ -51,6 +51,61 @@ pub fn router() -> Router<AppState> {
             "/v0/management/config/stall",
             axum::routing::get(get_stall).patch(patch_stall),
         )
+        .route(
+            "/v0/management/config/vision-fallthrough",
+            axum::routing::get(get_vision_fallthrough).patch(patch_vision_fallthrough),
+        )
+}
+
+async fn get_vision_fallthrough(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(config_value(
+        &state,
+        "vision_fallthrough",
+        serde_json::json!({}),
+    ))
+    .into_response()
+}
+
+async fn patch_vision_fallthrough(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(updates) = body.as_object() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Object body is required"})),
+        )
+            .into_response();
+    };
+    let mut merged = config_value(&state, "vision_fallthrough", serde_json::json!({}))
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    merged.extend(updates.clone());
+    let merged = serde_json::Value::Object(merged);
+    let entries =
+        serde_json::Map::from_iter([(String::from("vision_fallthrough"), merged.clone())]);
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_settings_bulk(pool, &entries)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error":"Internal server error"})),
+            )
+                .into_response();
+        }
+    }
+    state.inner.settings.write().unwrap().extend(entries);
+    Json(merged).into_response()
 }
 
 async fn get_stall(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1226,5 +1281,57 @@ mod tests {
                     .unwrap();
             assert_eq!(response_body["error"], expected_error);
         }
+    }
+
+    #[tokio::test]
+    async fn vision_fallthrough_patch_shallow_merges() {
+        let state = fixture();
+        state.inner.settings.write().unwrap().insert(
+            "vision_fallthrough".into(),
+            serde_json::json!({ "enabled": true, "model": "old" }),
+        );
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::patch("/v0/management/config/vision-fallthrough")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"new","extra":{"x":1}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "enabled": true, "model": "new", "extra": { "x": 1 }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn vision_fallthrough_rejects_non_object_body() {
+        let response = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::patch("/v0/management/config/vision-fallthrough")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"[]"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": "Object body is required" })
+        );
     }
 }
