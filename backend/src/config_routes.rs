@@ -19,6 +19,7 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/v0/management/config", axum::routing::get(config_snapshot))
         .route(
             "/v0/management/config/status",
             axum::routing::get(config_status),
@@ -63,6 +64,91 @@ pub fn router() -> Router<AppState> {
             "/v0/management/config/trusted-proxies",
             axum::routing::get(get_trusted_proxies).patch(patch_trusted_proxies),
         )
+}
+
+async fn config_snapshot(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let settings = state.inner.settings.read().unwrap();
+    let mut config: serde_json::Map<String, serde_json::Value> = settings
+        .iter()
+        .filter(|(key, _)| !key.contains('.'))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    drop(settings);
+
+    config.insert(
+        "providers".into(),
+        serde_json::to_value(state.inner.providers.read().unwrap().clone()).unwrap(),
+    );
+    config.insert(
+        "models".into(),
+        serde_json::to_value(state.inner.aliases.read().unwrap().clone()).unwrap(),
+    );
+    config.insert(
+        "keys".into(),
+        serde_json::to_value(state.inner.keys.read().unwrap().clone()).unwrap(),
+    );
+    config.insert("failover".into(), failover_body(&state));
+    config.insert("cooldown".into(), cooldown_body(&state));
+    config.insert(
+        "timeout".into(),
+        serde_json::json!({ "defaultSeconds": timeout_seconds(&state) }),
+    );
+    config.insert("stall".into(), stall_body(&state));
+    config.insert(
+        "backgroundExploration".into(),
+        background_exploration_body(&state),
+    );
+    config.insert(
+        "mcpOAuth".into(),
+        config_value(
+            &state,
+            "mcpOAuth",
+            serde_json::json!({ "enabled": false, "provider": "plexus-idp" }),
+        ),
+    );
+    // Provider quota-checker configuration is outside Trefoil's current
+    // ProviderConfig subset; expose the truthful derived empty list.
+    config.insert("quotas".into(), serde_json::json!([]));
+    let user_quotas = state.inner.user_quotas.read().unwrap();
+    if !user_quotas.is_empty() {
+        config.insert(
+            "user_quotas".into(),
+            serde_json::to_value(user_quotas.clone()).unwrap(),
+        );
+    }
+    Json(serde_json::Value::Object(config)).into_response()
+}
+
+fn failover_body(state: &AppState) -> serde_json::Value {
+    let retryable_status_codes: Vec<i32> = (100..=599)
+        .filter(|code| !(200..=299).contains(code) && *code != 413 && *code != 422)
+        .collect();
+    serde_json::json!({
+        "enabled": config_value(state, "failover.enabled", serde_json::json!(true)),
+        "retryableStatusCodes": config_value(state, "failover.retryableStatusCodes", serde_json::json!(retryable_status_codes)),
+        "retryableErrors": config_value(state, "failover.retryableErrors", serde_json::json!(["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"])),
+    })
+}
+
+fn cooldown_body(state: &AppState) -> serde_json::Value {
+    serde_json::json!({
+        "initialMinutes": config_value(state, "cooldown.initialMinutes", serde_json::json!(2)),
+        "maxMinutes": config_value(state, "cooldown.maxMinutes", serde_json::json!(300)),
+    })
+}
+
+fn stall_body(state: &AppState) -> serde_json::Value {
+    serde_json::json!({
+        "ttfbSeconds": config_value(state, "stall.ttfbSeconds", serde_json::Value::Null),
+        "ttfbBytes": config_value(state, "stall.ttfbBytes", serde_json::json!(100)),
+        "minBytesPerSecond": config_value(state, "stall.minBytesPerSecond", serde_json::Value::Null),
+        "windowSeconds": config_value(state, "stall.windowSeconds", serde_json::json!(10)),
+        "gracePeriodSeconds": config_value(state, "stall.gracePeriodSeconds", serde_json::json!(30)),
+        "stallCooldown": config_value(state, "stall.stallCooldown", serde_json::json!(false)),
+    })
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -988,6 +1074,37 @@ mod tests {
                 "mcpServerCount": 0,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn config_snapshot_flattens_settings_and_builds_structured_sections() {
+        let state = fixture();
+        {
+            let mut settings = state.inner.settings.write().unwrap();
+            settings.insert("custom".into(), serde_json::json!("value"));
+            settings.insert("timeout.defaultSeconds".into(), serde_json::json!(45));
+            settings.insert("cooldown.initialMinutes".into(), serde_json::json!(3));
+        }
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::get("/v0/management/config")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["custom"], "value");
+        assert_eq!(body["timeout"]["defaultSeconds"], 45);
+        assert_eq!(body["cooldown"]["initialMinutes"], 3);
+        assert!(body.get("system_settings").is_none());
+        assert_eq!(body["quotas"], serde_json::json!([]));
+        assert_eq!(body["providers"].as_object().unwrap().len(), 1);
+        assert_eq!(body["user_quotas"].as_object().unwrap().len(), 1);
     }
 
     #[tokio::test]

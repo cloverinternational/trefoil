@@ -69,6 +69,20 @@ function normalize(body: unknown): unknown {
 function normalizeForCase(path: string, body: unknown): unknown {
   const normalized = normalize(body);
   if (
+    path === '/v0/management/config' &&
+    normalized &&
+    typeof normalized === 'object' &&
+    !Array.isArray(normalized)
+  ) {
+    const object = normalized as Record<string, unknown>;
+    const kind = (value: unknown) =>
+      Array.isArray(value) ? 'array' : value !== null && typeof value === 'object' ? 'object' : typeof value;
+    return Object.fromEntries(
+      ['providers', 'models', 'keys', 'failover', 'cooldown', 'timeout', 'stall', 'backgroundExploration', 'mcpOAuth', 'quotas']
+        .map((key) => [key, kind(object[key])])
+    );
+  }
+  if (
     path === '/v0/management/config/status' &&
     normalized &&
     typeof normalized === 'object' &&
@@ -951,6 +965,12 @@ const PERFORMANCE_CASES: KeysCase[] = [
   { name: 'DELETE nonexistent performance model is idempotent', method: 'DELETE', path: '/v0/management/performance?model=parity-missing-performance', adminHeader: ADMIN_KEY },
 ];
 
+const CONFIG_SNAPSHOT_CASES: KeysCase[] = [
+  { name: 'GET config returns structured runtime snapshot', method: 'GET', path: '/v0/management/config', adminHeader: ADMIN_KEY },
+  { name: 'GET config rejects limited key', method: 'GET', path: '/v0/management/config', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET config rejects missing credential', method: 'GET', path: '/v0/management/config' },
+];
+
 // Cases mirror self.ts. A dedicated key fixture is used throughout instead
 // of the shared `test-key`/LIMITED_KEY_SECRET fixture, because
 // self/rotate mutates the credential in place -- reusing the shared
@@ -1189,6 +1209,7 @@ async function main() {
   failures += await runCases(TRUSTED_PROXIES_CASES);
   failures += await runCases(ERRORS_CASES);
   failures += await runCases(PERFORMANCE_CASES);
+  failures += await runCases(CONFIG_SNAPSHOT_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1233,6 +1254,7 @@ async function main() {
     TRUSTED_PROXIES_CASES.length +
     ERRORS_CASES.length +
     PERFORMANCE_CASES.length +
+    CONFIG_SNAPSHOT_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
