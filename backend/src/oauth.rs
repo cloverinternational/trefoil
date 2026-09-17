@@ -67,8 +67,10 @@ pub struct OAuthSession {
     pub auth_info: Option<serde_json::Value>,
     pub prompt: Option<serde_json::Value>,
     pub progress: Vec<serde_json::Value>,
+    pub error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub expires_at: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,8 +129,10 @@ async fn create_session(
         ),
         prompt: None,
         progress: vec![serde_json::json!({"status":"waiting"})],
+        error: None,
         created_at: now,
         updated_at: now,
+        expires_at: now + 20 * 60 * 1000,
     };
     state
         .inner
@@ -136,6 +140,18 @@ async fn create_session(
         .write()
         .unwrap()
         .insert(id, session.clone());
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_oauth_session(pool, &session)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error":"Unable to persist OAuth session"})),
+            )
+                .into_response();
+        }
+    }
     session_response(session)
 }
 
@@ -163,45 +179,70 @@ async fn update_session(
     action: &str,
     value: Option<String>,
 ) -> Response {
-    let mut sessions = state.inner.oauth_sessions.write().unwrap();
-    let Some(session) = sessions.get_mut(id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error":"OAuth session not found"})),
-        )
-            .into_response();
+    let snapshot = {
+        let mut sessions = state.inner.oauth_sessions.write().unwrap();
+        let Some(session) = sessions.get_mut(id) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error":"OAuth session not found"})),
+            )
+                .into_response();
+        };
+        if session.expires_at <= now_ms()
+            && !matches!(
+                session.status.as_str(),
+                "complete" | "cancelled" | "failed" | "expired"
+            )
+        {
+            session.status = "expired".into();
+        }
+        if matches!(
+            session.status.as_str(),
+            "complete" | "cancelled" | "failed" | "expired"
+        ) {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error":"OAuth session is no longer active"})),
+            )
+                .into_response();
+        }
+        match action {
+            "cancel" => {
+                session.status = "cancelled".into();
+                session.prompt = None;
+            }
+            "prompt" => {
+                session.status = "waiting".into();
+                session.prompt = None;
+                session
+                    .progress
+                    .push(serde_json::json!({"prompt":value,"status":"waiting"}));
+            }
+            "manual-code" => {
+                session.status = "complete".into();
+                session.auth_info = None;
+                session
+                    .progress
+                    .push(serde_json::json!({"status":"complete"}));
+            }
+            _ => unreachable!(),
+        }
+        session.updated_at = now_ms();
+        session.clone()
     };
-    if session.status == "complete" || session.status == "cancelled" || session.status == "failed" {
-        return (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error":"OAuth session is no longer active"})),
-        )
-            .into_response();
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_oauth_session(pool, &snapshot)
+            .await
+            .is_err()
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error":"Unable to persist OAuth session"})),
+            )
+                .into_response();
+        }
     }
-    let now = now_ms();
-    match action {
-        "cancel" => {
-            session.status = "cancelled".into();
-            session.prompt = None;
-        }
-        "prompt" => {
-            session.status = "waiting".into();
-            session.prompt = None;
-            session
-                .progress
-                .push(serde_json::json!({"prompt":value,"status":"waiting"}));
-        }
-        "manual-code" => {
-            session.status = "complete".into();
-            session.auth_info = None;
-            session
-                .progress
-                .push(serde_json::json!({"status":"complete"}));
-        }
-        _ => unreachable!(),
-    }
-    session.updated_at = now;
-    session_response(session.clone())
+    session_response(snapshot)
 }
 
 async fn cancel_session(

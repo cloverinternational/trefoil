@@ -11,12 +11,45 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 
+use crate::oauth::OAuthSession;
 use crate::state::{
     AdapterEntry, CooldownEntry, KeyConfig, ModelConfig, ModelTargetGroup, ProviderConfig,
     QuotaCheckerConfig, QuotaDefinition, RawPassthroughConfig,
 };
 
 pub const DEFAULT_MAX_CONNECTIONS: u32 = 16;
+
+pub async fn load_oauth_sessions(pool: &PgPool) -> Result<Vec<OAuthSession>, sqlx::Error> {
+    let rows = sqlx::query("SELECT id, provider_id, account_id, status, auth_info, prompt, progress, error, created_at, updated_at, expires_at FROM oauth_login_sessions")
+        .fetch_all(pool).await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(OAuthSession {
+                id: row.try_get("id")?,
+                provider_id: row.try_get("provider_id")?,
+                account_id: row.try_get("account_id")?,
+                status: row.try_get("status")?,
+                auth_info: row.try_get("auth_info")?,
+                prompt: row.try_get("prompt")?,
+                progress: row.try_get("progress")?,
+                error: row.try_get("error")?,
+                created_at: row.try_get("created_at")?,
+                updated_at: row.try_get("updated_at")?,
+                expires_at: row.try_get("expires_at")?,
+            })
+        })
+        .collect()
+}
+
+pub async fn upsert_oauth_session(
+    pool: &PgPool,
+    session: &OAuthSession,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO oauth_login_sessions (id,provider_id,account_id,status,auth_info,prompt,progress,error,created_at,updated_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status,auth_info=EXCLUDED.auth_info,prompt=EXCLUDED.prompt,progress=EXCLUDED.progress,error=EXCLUDED.error,updated_at=EXCLUDED.updated_at,expires_at=EXCLUDED.expires_at")
+        .bind(&session.id).bind(&session.provider_id).bind(&session.account_id).bind(&session.status).bind(&session.auth_info)
+        .bind(&session.prompt).bind(&session.progress).bind(&session.error).bind(session.created_at).bind(session.updated_at).bind(session.expires_at)
+        .execute(pool).await.map(|_| ())
+}
 
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
     PgPoolOptions::new()

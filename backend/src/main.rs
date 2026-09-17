@@ -43,6 +43,16 @@ async fn main() {
             std::process::exit(1);
         });
     let state = AppState::new(std::env::var("ADMIN_KEY").ok(), keys).with_database(pool);
+    let sessions = database::load_oauth_sessions(state.inner.database.as_ref().unwrap())
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("failed to load OAuth login sessions from PostgreSQL: {error}");
+            std::process::exit(1);
+        });
+    *state.inner.oauth_sessions.write().unwrap() = sessions
+        .into_iter()
+        .map(|session| (session.id.clone(), session))
+        .collect();
     *state.inner.providers.write().unwrap() = providers;
     *state.inner.aliases.write().unwrap() = aliases;
     *state.inner.user_quotas.write().unwrap() = user_quotas;
