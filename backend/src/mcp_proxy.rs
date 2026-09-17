@@ -251,10 +251,48 @@ async fn authenticate(state: &AppState, name: &str, incoming: &HeaderMap) -> Res
             "MCP authentication required",
         ));
     };
-    let credential = incoming
+    let bearer = incoming
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer ").or(Some(value)))
+        .and_then(|value| {
+            let (scheme, token) = value.split_once(' ')?;
+            scheme.eq_ignore_ascii_case("bearer").then_some(token)
+        })
+        .filter(|value| !value.is_empty());
+
+    // OAuth access tokens are scoped to the MCP resource they were issued for.
+    // Check them before the legacy MCP-key path, while retaining Bearer API-key
+    // compatibility for installations that use MCP keys as bearer credentials.
+    if let Some(token) = bearer {
+        let hash = hex::encode(Sha256::digest(token.as_bytes()));
+        let now = chrono::Utc::now().timestamp_millis();
+        if let Some(row) = sqlx::query(
+            "SELECT access_token, resource FROM mcp_oauth_tokens WHERE access_token_hash=$1 AND revoked_at IS NULL AND access_token_expires_at>$2",
+        )
+        .bind(&hash)
+        .bind(now)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"))?
+        {
+            let stored: String = row.try_get("access_token").unwrap_or_default();
+            let resource: String = row.try_get("resource").unwrap_or_default();
+            let expected = format!("/mcp/{name}");
+            let resource_path = url::Url::parse(&resource)
+                .ok()
+                .map(|url| url.path().to_owned());
+            let resource_matches = resource == expected
+                || resource_path.as_deref() == Some(expected.as_str());
+            let token_matches = Sha256::digest(token.as_bytes())
+                .ct_eq(Sha256::digest(stored.as_bytes()).as_ref());
+            if resource_matches && bool::from(token_matches) {
+                return Ok(());
+            }
+            return Err(error(StatusCode::UNAUTHORIZED, "Invalid MCP credentials"));
+        }
+    }
+
+    let credential = bearer
         .or_else(|| incoming.get("x-api-key").and_then(|v| v.to_str().ok()))
         .filter(|value| !value.is_empty());
     let Some(credential) = credential else {
