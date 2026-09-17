@@ -80,7 +80,7 @@ one call per verb. Not an actual gap.
 | OAuth (MCP client) | Implemented | Full authorization-code + PKCE S256 + refresh-token rotation with DB-backed consumption tracking (`oauth_server.rs`). This is materially more complete than the prior audit's "45%" estimate. |
 | Backup/restore | Implemented | Table list (`TABLES` in `backup.rs`) is an exact match to Plexus's `OPERATIONAL_TABLES` (13 tables). Gzip+tar archive format, admin-only, size-capped. |
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
-| Frontend | Partial | Trefoil now includes configuration, detailed usage, custom quota checkers, system logs, MCP management, and debug trace management, and the Errors viewer; remaining major pages include Logs, Models, MyKey, and Playground. |
+| Frontend | Partial | Trefoil now includes configuration, detailed usage, request Logs (`/logs`), custom quota checkers, system logs, MCP management, debug trace management, and the Errors viewer; remaining major pages include Models, MyKey, and Playground. |
 | Rust test suite | 173/173 passing | Green, fast (<1s). No regressions from latest commit. |
 | Differential harness | ~275 named cases in `parity/differential.ts` | Requires manually running both live servers side-by-side (Plexus TS + Trefoil against Postgres) — not wired into CI per the README; last-run status unverified in this pass. |
 

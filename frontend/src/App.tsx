@@ -16,6 +16,7 @@ import { McpManagement } from './pages/McpManagement';
 import { CustomQuotaCheckers } from './pages/CustomQuotaCheckers';
 import { Debug } from './pages/Debug';
 import { Errors } from './pages/Errors';
+import { Logs } from './pages/Logs';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { adminKey } = useAuth();
@@ -41,6 +42,7 @@ const AppRoutes = () => (
     <Route path="/system-logs" element={<ProtectedRoute><SystemLogs /></ProtectedRoute>} />
     <Route path="/debug" element={<ProtectedRoute><Debug /></ProtectedRoute>} />
     <Route path="/errors" element={<ProtectedRoute><Errors /></ProtectedRoute>} />
+    <Route path="/logs" element={<ProtectedRoute><Logs /></ProtectedRoute>} />
     <Route path="/mcp" element={<ProtectedRoute><McpManagement /></ProtectedRoute>} />
     <Route path="/providers/custom-checkers" element={<ProtectedRoute><CustomQuotaCheckers /></ProtectedRoute>} />
     <Route
