@@ -782,7 +782,7 @@ async fn images(
 async fn forward_json_api(
     state: &AppState,
     headers: &HeaderMap,
-    body: Value,
+    mut body: Value,
     path: &str,
     auth_header: &str,
     failover: bool,
@@ -805,6 +805,7 @@ async fn forward_json_api(
     if let Err(response) = enforce_request_quotas(state, &principal).await {
         return response;
     }
+    apply_native_compaction(&mut body, state);
     if let Some(config) = key_config {
         if !model_allowed(config, &model) {
             return error_response(
@@ -1577,6 +1578,7 @@ async fn chat_completions(
     if let Err(response) = enforce_request_quotas(&state, &principal).await {
         return response;
     }
+    apply_native_compaction(&mut body, &state);
     let key_config = if let Principal::Limited { config, .. } = &principal {
         if !model_allowed(config, &model) {
             return error_response(
@@ -2052,6 +2054,65 @@ fn dispatch_provider_url(value: &str) -> Result<url::Url, ()> {
     }
 }
 
+fn apply_native_compaction(body: &mut Value, state: &AppState) {
+    let settings = state.inner.settings.read().unwrap();
+    let Some(config) = settings.get("compaction").and_then(Value::as_object) else {
+        return;
+    };
+    if config.get("enabled").and_then(Value::as_bool) != Some(true)
+        || config.get("strategy").and_then(Value::as_str) != Some("native")
+    {
+        return;
+    }
+    let estimated = serde_json::to_string(body)
+        .map(|s| s.len() / 4)
+        .unwrap_or(0);
+    let threshold = config
+        .get("absoluteTriggerTokens")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    if threshold.is_none_or(|limit| estimated < limit) {
+        return;
+    }
+    let native = config.get("native").and_then(Value::as_object);
+    let arrays = native
+        .and_then(|v| v.get("maxArrayItems"))
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let strings = native
+        .and_then(|v| v.get("maxStringChars"))
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    if arrays.is_none() && strings.is_none() {
+        return;
+    }
+    compact_json_value(body, arrays, strings);
+}
+
+fn compact_json_value(value: &mut Value, arrays: Option<usize>, strings: Option<usize>) {
+    match value {
+        Value::String(text) => {
+            if let Some(limit) = strings {
+                *text = text.chars().take(limit).collect()
+            }
+        }
+        Value::Array(items) => {
+            if let Some(limit) = arrays {
+                items.truncate(limit)
+            };
+            for item in items {
+                compact_json_value(item, arrays, strings)
+            }
+        }
+        Value::Object(object) => {
+            for item in object.values_mut() {
+                compact_json_value(item, arrays, strings)
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
 fn is_retryable_upstream_status(status: axum::http::StatusCode) -> bool {
     // A 404 commonly means that a provider does not expose the requested
     // model/API route.  It is therefore failoverable just like the default
@@ -2300,6 +2361,32 @@ mod tests {
     use http_body_util::BodyExt;
     use std::collections::HashMap;
     use tower::ServiceExt;
+
+    #[test]
+    fn native_compaction_applies_configured_limits_only_when_triggered() {
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        state.inner.settings.write().unwrap().insert(
+            "compaction".into(),
+            serde_json::json!({
+                "enabled": true,
+                "strategy": "native",
+                "absoluteTriggerTokens": 1,
+                "native": {"maxArrayItems": 2, "maxStringChars": 3}
+            }),
+        );
+        let mut body = serde_json::json!({"messages":[{"content":"abcdef"}, {"content":"more"}, {"content":"last"}]});
+        apply_native_compaction(&mut body, &state);
+        assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(body["messages"][0]["content"], "abc");
+
+        state.inner.settings.write().unwrap().insert(
+            "compaction".into(),
+            serde_json::json!({"enabled": false, "strategy": "native", "absoluteTriggerTokens": 1, "native": {"maxStringChars": 1}}),
+        );
+        let mut untouched = serde_json::json!({"messages":[{"content":"abcdef"}]});
+        apply_native_compaction(&mut untouched, &state);
+        assert_eq!(untouched["messages"][0]["content"], "abcdef");
+    }
 
     #[test]
     fn anthropic_transform_preserves_turn_order_and_tool_results() {
