@@ -574,7 +574,7 @@ pub async fn upsert_cooldown(
         "INSERT INTO provider_cooldowns (provider, model, expiry, consecutive_failures, last_error, created_at)
          VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (provider, model) DO UPDATE SET
-           expiry=EXCLUDED.expiry, consecutive_failures=EXCLUDED.consecutive_failures,
+           expiry=EXCLUDED.expiry, consecutive_failures=provider_cooldowns.consecutive_failures + EXCLUDED.consecutive_failures,
            last_error=EXCLUDED.last_error",
     )
     .bind(provider)
