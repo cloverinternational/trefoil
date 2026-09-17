@@ -497,6 +497,41 @@ fn chat_to_gemini(payload: Value) -> Value {
     serde_json::json!({"candidates":candidates,"usageMetadata":{"promptTokenCount":usage.get("prompt_tokens").cloned().unwrap_or(Value::from(0)),"candidatesTokenCount":usage.get("completion_tokens").cloned().unwrap_or(Value::from(0)),"totalTokenCount":usage.get("total_tokens").cloned().unwrap_or(Value::from(0))}})
 }
 
+fn normalize_anthropic_error(payload: Value, status: axum::http::StatusCode) -> Value {
+    normalize_provider_error(payload, status, |kind| kind)
+}
+
+fn normalize_gemini_error(payload: Value, status: axum::http::StatusCode) -> Value {
+    normalize_provider_error(payload, status, |kind| match kind {
+        "INVALID_ARGUMENT" => "invalid_request_error",
+        "RESOURCE_EXHAUSTED" => "rate_limit_error",
+        "PERMISSION_DENIED" | "UNAUTHENTICATED" => "auth_error",
+        "NOT_FOUND" => "model_not_found",
+        "ABORTED" | "DEADLINE_EXCEEDED" => "timeout_error",
+        _ => "upstream_error",
+    })
+}
+
+fn normalize_provider_error<F>(payload: Value, status: axum::http::StatusCode, map_type: F) -> Value
+where
+    F: Fn(&str) -> &str,
+{
+    let Some(error) = payload.get("error").and_then(Value::as_object) else {
+        return serde_json::json!({"error":{"message":"Invalid upstream error response","type":"upstream_error","code":status.as_u16()}});
+    };
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|message| !message.is_empty())
+        .unwrap_or("Upstream provider request failed");
+    let provider_type = error
+        .get("status")
+        .and_then(Value::as_str)
+        .or_else(|| error.get("type").and_then(Value::as_str))
+        .unwrap_or("upstream_error");
+    serde_json::json!({"error":{"message":message,"type":map_type(provider_type),"code":status.as_u16()}})
+}
+
 fn anthropic_native_provider(provider: &crate::state::ProviderConfig) -> bool {
     let anthropic_host = url::Url::parse(&provider.api_base_url)
         .ok()
@@ -723,6 +758,8 @@ async fn forward_json_api(
                 let mut payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
                 if path == "/messages" && !native_anthropic && status.is_success() {
                     payload = chat_to_anthropic(payload);
+                } else if path == "/messages" && native_anthropic && !status.is_success() {
+                    payload = normalize_anthropic_error(payload, status);
                 }
                 // Retry provider failures, but preserve deterministic client errors.
                 if failover && is_retryable_upstream_status(status) {
@@ -1334,10 +1371,14 @@ async fn gemini(
                         .into_response();
                 }
                 let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
-                let payload = if native_gemini {
+                let payload = if native_gemini && !status.is_success() {
+                    normalize_gemini_error(payload, status)
+                } else if native_gemini {
                     payload
-                } else {
+                } else if status.is_success() {
                     chat_to_gemini(payload)
+                } else {
+                    payload
                 };
                 return (status, Json(payload)).into_response();
             }
@@ -2747,6 +2788,37 @@ mod tests {
             ..Default::default()
         };
         assert!(!anthropic_native_provider(&provider));
+    }
+
+    #[test]
+    fn normalizes_anthropic_errors_without_changing_message() {
+        let value = normalize_anthropic_error(
+            serde_json::json!({"type":"error","error":{"type":"invalid_request_error","message":"bad max_tokens"}}),
+            axum::http::StatusCode::BAD_REQUEST,
+        );
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        assert_eq!(value["error"]["message"], "bad max_tokens");
+        assert_eq!(value["error"]["code"], 400);
+    }
+
+    #[test]
+    fn normalizes_gemini_status_and_malformed_errors() {
+        let rate_limit = normalize_gemini_error(
+            serde_json::json!({"error":{"status":"RESOURCE_EXHAUSTED","message":"quota exceeded"}}),
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+        );
+        assert_eq!(rate_limit["error"]["type"], "rate_limit_error");
+        assert_eq!(rate_limit["error"]["code"], 429);
+
+        let malformed = normalize_gemini_error(
+            serde_json::json!({"unexpected":true}),
+            axum::http::StatusCode::BAD_GATEWAY,
+        );
+        assert_eq!(malformed["error"]["type"], "upstream_error");
+        assert_eq!(
+            malformed["error"]["message"],
+            "Invalid upstream error response"
+        );
     }
 
     fn test_stream_accounting() -> StreamAccounting {
