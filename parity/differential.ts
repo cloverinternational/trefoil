@@ -46,6 +46,15 @@ async function fetchVerify(baseUrl: string, header: string | undefined) {
   return { status: res.status, body };
 }
 
+async function ensureFixture(baseUrl: string) {
+  const response = await fetch(`${baseUrl}/v0/management/keys/test-key`, {
+    method: 'PUT',
+    headers: { 'x-admin-key': ADMIN_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ secret: LIMITED_KEY_SECRET }),
+  });
+  if (!response.ok) throw new Error(`Fixture provisioning failed at ${baseUrl}: ${response.status}`);
+}
+
 function normalize(body: unknown): unknown {
   // Most contracts have no nondeterministic fields (no timestamps/ids). The
   // one exception so far is POST /v0/management/self/rotate, whose response
@@ -1283,6 +1292,7 @@ async function runCases(cases: KeysCase[]): Promise<number> {
 
 async function main() {
   let failures = 0;
+  await Promise.all([ensureFixture(PLEXUS_BASE_URL), ensureFixture(TREFOIL_BASE_URL)]);
 
   for (const testCase of CASES) {
     const [plexus, trefoil] = await Promise.all([
