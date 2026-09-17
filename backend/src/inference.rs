@@ -340,10 +340,11 @@ async fn messages(
 /// request, while native Anthropic endpoints continue to receive the request
 /// unchanged.
 fn anthropic_native_provider(provider: &crate::state::ProviderConfig) -> bool {
-    provider
-        .api_base_url
-        .to_ascii_lowercase()
-        .contains("anthropic.com")
+    let anthropic_host = url::Url::parse(&provider.api_base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "anthropic.com" || host.ends_with(".anthropic.com"));
+    anthropic_host
         || provider
             .oauth_provider
             .as_deref()
@@ -385,14 +386,18 @@ fn anthropic_to_chat(mut body: Value) -> Value {
                     _ => text.push(block),
                 }
             }
-            if !tool_results.is_empty() {
-                messages.extend(tool_results);
+            // A tool result belongs after the assistant tool call it answers.
+            // Do not prepend it to the current user turn: that produces an
+            // invalid OpenAI sequence (tool -> user) for Anthropic's normal
+            // assistant-tool_use / user-tool_result exchange.
+            if !text.is_empty() || !tool_calls.is_empty() {
+                let mut converted = serde_json::json!({"role": role, "content": if text.len() == 1 { text.remove(0) } else { Value::Array(text) }});
+                if !tool_calls.is_empty() {
+                    converted["tool_calls"] = Value::Array(tool_calls);
+                }
+                messages.push(converted);
             }
-            let mut converted = serde_json::json!({"role": role, "content": if text.len() == 1 { text.remove(0) } else { Value::Array(text) }});
-            if !tool_calls.is_empty() {
-                converted["tool_calls"] = Value::Array(tool_calls);
-            }
-            messages.push(converted);
+            messages.extend(tool_results);
         }
     }
     body["messages"] = Value::Array(messages);
@@ -417,11 +422,23 @@ fn chat_to_anthropic(payload: Value) -> Value {
         .and_then(|a| a.first())
         .and_then(|c| c.get("message"));
     let mut content = Vec::new();
-    if let Some(text) = message
-        .and_then(|m| m.get("content"))
-        .and_then(Value::as_str)
-    {
-        content.push(serde_json::json!({"type":"text", "text": text}));
+    if let Some(value) = message.and_then(|m| m.get("content")) {
+        match value {
+            Value::String(text) => content.push(serde_json::json!({"type":"text", "text": text})),
+            Value::Array(blocks) => {
+                for block in blocks {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("text") => content.push(block.clone()),
+                        Some("output_text") => content.push(serde_json::json!({
+                            "type": "text",
+                            "text": block.get("text").cloned().unwrap_or(Value::String(String::new()))
+                        })),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
     }
     if let Some(calls) = message
         .and_then(|m| m.get("tool_calls"))
@@ -429,12 +446,12 @@ fn chat_to_anthropic(payload: Value) -> Value {
     {
         for call in calls {
             let function = call.get("function").unwrap_or(&Value::Null);
-            let input = function
-                .get("arguments")
-                .and_then(Value::as_str)
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or(Value::Null);
-            content.push(serde_json::json!({"type":"tool_use", "id":call.get("id"), "name":function.get("name"), "input":input}));
+            let input = match function.get("arguments") {
+                Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
+                Some(value) => value.clone(),
+                None => Value::Object(Default::default()),
+            };
+            content.push(serde_json::json!({"type":"tool_use", "id":call.get("id").cloned().unwrap_or(Value::String("tool_call".into())), "name":function.get("name").cloned().unwrap_or(Value::String("unknown".into())), "input":input}));
         }
     }
     let finish = payload
@@ -450,7 +467,7 @@ fn chat_to_anthropic(payload: Value) -> Value {
     };
     serde_json::json!({"id": payload.get("id"), "type":"message", "role":"assistant", "content":content,
         "model":payload.get("model"), "stop_reason":stop_reason, "stop_sequence":null,
-        "usage":{"input_tokens":payload["usage"]["prompt_tokens"], "output_tokens":payload["usage"]["completion_tokens"]}})
+        "usage":{"input_tokens":payload.get("usage").and_then(|u| u.get("prompt_tokens")).cloned().unwrap_or(Value::from(0)), "output_tokens":payload.get("usage").and_then(|u| u.get("completion_tokens")).cloned().unwrap_or(Value::from(0))}})
 }
 
 async fn images(
@@ -2509,6 +2526,59 @@ mod tests {
     use http_body_util::BodyExt;
     use std::collections::HashMap;
     use tower::ServiceExt;
+
+    #[test]
+    fn anthropic_transform_preserves_turn_order_and_tool_results() {
+        let body = serde_json::json!({
+            "model": "claude",
+            "system": "be concise",
+            "messages": [
+                {"role":"user","content":"call a tool"},
+                {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{"q":"rust"}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"found"}]}
+            ],
+            "tools": [{"name":"lookup","description":"lookup","input_schema":{"type":"object"}}]
+        });
+        let chat = anthropic_to_chat(body);
+        let messages = chat["messages"].as_array().unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|m| m["role"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["system", "user", "assistant", "tool"]
+        );
+        assert_eq!(messages[3]["tool_call_id"], "call_1");
+        assert_eq!(chat["tools"][0]["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn chat_transform_handles_array_text_raw_arguments_and_missing_usage() {
+        let payload = serde_json::json!({"id":"x","model":"m","choices":[{"finish_reason":"tool_calls","message":{
+            "content":[{"type":"text","text":"hello"}],
+            "tool_calls":[{"id":"call_1","function":{"name":"lookup","arguments":{"q":"rust"}}}]
+        }}]});
+        let anthropic = chat_to_anthropic(payload);
+        assert_eq!(
+            anthropic["content"][0],
+            serde_json::json!({"type":"text","text":"hello"})
+        );
+        assert_eq!(anthropic["content"][1]["input"]["q"], "rust");
+        assert_eq!(anthropic["stop_reason"], "tool_use");
+        assert_eq!(
+            anthropic["usage"],
+            serde_json::json!({"input_tokens":0,"output_tokens":0})
+        );
+    }
+
+    #[test]
+    fn anthropic_detection_does_not_match_anthropic_lookalike_hosts() {
+        let provider = crate::state::ProviderConfig {
+            api_base_url: "https://anthropic.com.attacker.test/v1".into(),
+            ..Default::default()
+        };
+        assert!(!anthropic_native_provider(&provider));
+    }
 
     fn test_stream_accounting() -> StreamAccounting {
         StreamAccounting {
