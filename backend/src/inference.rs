@@ -335,6 +335,124 @@ async fn messages(
     forward_json_api(&state, &headers, body, "/messages", "x-api-key", true).await
 }
 
+/// Anthropic's wire protocol is deliberately kept at the edge.  Providers
+/// which expose an OpenAI-compatible endpoint receive the equivalent chat
+/// request, while native Anthropic endpoints continue to receive the request
+/// unchanged.
+fn anthropic_native_provider(provider: &crate::state::ProviderConfig) -> bool {
+    provider
+        .api_base_url
+        .to_ascii_lowercase()
+        .contains("anthropic.com")
+        || provider
+            .oauth_provider
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("anthropic"))
+}
+
+fn anthropic_to_chat(mut body: Value) -> Value {
+    let mut messages = Vec::new();
+    if let Some(system) = body.get("system").cloned() {
+        let content = match system {
+            Value::String(text) => Value::String(text),
+            other => other,
+        };
+        messages.push(serde_json::json!({"role":"system", "content": content}));
+    }
+    if let Some(input) = body.get("messages").and_then(Value::as_array) {
+        for message in input {
+            let role = message
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("user");
+            let content = message.get("content").cloned().unwrap_or(Value::Null);
+            let blocks = content.as_array().cloned().unwrap_or_else(|| vec![content]);
+            let mut text = Vec::new();
+            let mut tool_calls = Vec::new();
+            let mut tool_results = Vec::new();
+            for block in blocks {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => if let Some(value) = block.get("text") { text.push(value.clone()); },
+                    Some("tool_use") => tool_calls.push(serde_json::json!({
+                        "id": block.get("id").cloned().unwrap_or(Value::String("tool_call".into())),
+                        "type": "function",
+                        "function": {"name": block.get("name"), "arguments": serde_json::to_string(block.get("input").unwrap_or(&Value::Null)).unwrap_or_else(|_| "{}".into())}
+                    })),
+                    Some("tool_result") => tool_results.push(serde_json::json!({
+                        "role": "tool", "tool_call_id": block.get("tool_use_id"),
+                        "content": block.get("content").cloned().unwrap_or(Value::Null)
+                    })),
+                    _ => text.push(block),
+                }
+            }
+            if !tool_results.is_empty() {
+                messages.extend(tool_results);
+            }
+            let mut converted = serde_json::json!({"role": role, "content": if text.len() == 1 { text.remove(0) } else { Value::Array(text) }});
+            if !tool_calls.is_empty() {
+                converted["tool_calls"] = Value::Array(tool_calls);
+            }
+            messages.push(converted);
+        }
+    }
+    body["messages"] = Value::Array(messages);
+    if let Some(max) = body.get("max_tokens").cloned() {
+        body["max_tokens"] = max;
+    }
+    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        body["tools"] = Value::Array(tools.iter().map(|tool| serde_json::json!({
+            "type":"function", "function": {
+                "name": tool.get("name"), "description": tool.get("description"),
+                "parameters": tool.get("input_schema").cloned().unwrap_or_else(|| serde_json::json!({"type":"object"}))
+            }
+        })).collect());
+    }
+    body
+}
+
+fn chat_to_anthropic(payload: Value) -> Value {
+    let message = payload
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("message"));
+    let mut content = Vec::new();
+    if let Some(text) = message
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_str)
+    {
+        content.push(serde_json::json!({"type":"text", "text": text}));
+    }
+    if let Some(calls) = message
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(Value::as_array)
+    {
+        for call in calls {
+            let function = call.get("function").unwrap_or(&Value::Null);
+            let input = function
+                .get("arguments")
+                .and_then(Value::as_str)
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(Value::Null);
+            content.push(serde_json::json!({"type":"tool_use", "id":call.get("id"), "name":function.get("name"), "input":input}));
+        }
+    }
+    let finish = payload
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(Value::as_str);
+    let stop_reason = match finish {
+        Some("tool_calls") => "tool_use",
+        Some("length") => "max_tokens",
+        _ => "end_turn",
+    };
+    serde_json::json!({"id": payload.get("id"), "type":"message", "role":"assistant", "content":content,
+        "model":payload.get("model"), "stop_reason":stop_reason, "stop_sequence":null,
+        "usage":{"input_tokens":payload["usage"]["prompt_tokens"], "output_tokens":payload["usage"]["completion_tokens"]}})
+}
+
 async fn images(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -409,6 +527,11 @@ async fn forward_json_api(
         };
         let mut request_body = original_body.clone();
         request_body["model"] = Value::String(upstream_model.clone());
+        let native_anthropic = path == "/messages" && anthropic_native_provider(&provider);
+        if path == "/messages" && !native_anthropic {
+            request_body = anthropic_to_chat(request_body);
+            request_body["model"] = Value::String(upstream_model.clone());
+        }
         let mut request = client
             .post(format!("{}{}", base.as_str().trim_end_matches('/'), path))
             .json(&request_body);
@@ -422,7 +545,10 @@ async fn forward_json_api(
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
-                let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                let mut payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                if path == "/messages" && !native_anthropic && status.is_success() {
+                    payload = chat_to_anthropic(payload);
+                }
                 // Retry provider failures, but preserve deterministic client errors.
                 if failover && is_retryable_upstream_status(status) {
                     register_provider_failure(
