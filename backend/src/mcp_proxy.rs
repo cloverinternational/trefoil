@@ -118,7 +118,7 @@ fn valid_name(name: &str) -> bool {
 async fn config(
     state: &AppState,
     name: &str,
-) -> Result<(String, bool, HashMap<String, String>), Response> {
+) -> Result<(String, bool, HashMap<String, String>, i32, String, i64, i64), Response> {
     if !valid_name(name) {
         return Err(error(StatusCode::BAD_REQUEST, "Invalid MCP server name"));
     }
@@ -126,7 +126,7 @@ async fn config(
         return Err(error(StatusCode::NOT_FOUND, "MCP server not found"));
     };
     let row =
-        sqlx::query("SELECT upstream_url, enabled, mode, headers FROM mcp_servers WHERE name=$1")
+        sqlx::query("SELECT id, upstream_url, enabled, mode, headers, auth_scheme, rate_limit_cooldown_ms, quota_cooldown_ms FROM mcp_servers WHERE name=$1")
             .bind(name)
             .fetch_optional(pool)
             .await
@@ -151,7 +151,97 @@ async fn config(
     let headers = raw
         .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
         .unwrap_or_default();
-    Ok((url, enabled, headers))
+    Ok((
+        url,
+        enabled,
+        headers,
+        row.try_get("id").unwrap_or_default(),
+        row.try_get("auth_scheme").unwrap_or_default(),
+        i64::from(
+            row.try_get::<i32, _>("rate_limit_cooldown_ms")
+                .unwrap_or(60_000),
+        ),
+        i64::from(
+            row.try_get::<i32, _>("quota_cooldown_ms")
+                .unwrap_or(86_400_000),
+        ),
+    ))
+}
+
+#[derive(Debug, Clone)]
+struct UpstreamKey {
+    id: i32,
+    key: String,
+}
+
+fn select_round_robin(last: Option<i32>, keys: &[UpstreamKey]) -> Option<&UpstreamKey> {
+    if keys.is_empty() {
+        return None;
+    }
+    let index = last
+        .and_then(|id| keys.iter().position(|key| key.id == id))
+        .map_or(0, |index| (index + 1) % keys.len());
+    keys.get(index)
+}
+
+async fn active_upstream_keys(
+    state: &AppState,
+    server_id: i32,
+) -> Result<Vec<UpstreamKey>, Response> {
+    let Some(pool) = &state.inner.database else {
+        return Ok(Vec::new());
+    };
+    let rows = sqlx::query("SELECT id, key FROM mcp_keys WHERE mcp_server_id=$1 AND is_active=true AND (cooldown_until IS NULL OR cooldown_until <= NOW()) ORDER BY id")
+        .bind(server_id).fetch_all(pool).await
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| UpstreamKey {
+            id: row.try_get("id").unwrap_or_default(),
+            key: row.try_get("key").unwrap_or_default(),
+        })
+        .collect())
+}
+
+async fn cooldown_key(state: &AppState, key_id: i32, cooldown_ms: i64) {
+    if let Some(pool) = &state.inner.database {
+        let _ = sqlx::query("UPDATE mcp_keys SET cooldown_until=$1, updated_at=NOW() WHERE id=$2")
+            .bind(chrono::Utc::now().naive_utc() + chrono::Duration::milliseconds(cooldown_ms))
+            .bind(key_id)
+            .execute(pool)
+            .await;
+    }
+}
+
+fn inject_upstream_auth(
+    headers: &HashMap<String, String>,
+    scheme: &str,
+    key: &str,
+) -> HashMap<String, String> {
+    if scheme.trim().is_empty() || key.is_empty() {
+        return headers.clone();
+    }
+    let mut output = headers.clone();
+    let normalized = scheme.to_ascii_lowercase();
+    let header_name = if normalized == "bearer" {
+        "authorization"
+    } else {
+        normalized.as_str()
+    };
+    output.retain(|name, _| name.to_ascii_lowercase() != header_name);
+    output.insert(
+        if normalized == "bearer" {
+            "Authorization".into()
+        } else {
+            scheme.into()
+        },
+        if normalized == "bearer" {
+            format!("Bearer {key}")
+        } else {
+            key.into()
+        },
+    );
+    output
 }
 
 async fn authenticate(state: &AppState, name: &str, incoming: &HeaderMap) -> Result<(), Response> {
@@ -289,10 +379,11 @@ async fn post(
     if let Err(response) = authenticate(&state, &name, &headers).await {
         return response;
     }
-    let (url, _, configured) = match config(&state, &name).await {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
+    let (url, _, configured, server_id, auth_scheme, rate_cooldown, quota_cooldown) =
+        match config(&state, &name).await {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
     if body.is_empty() {
         return error(StatusCode::BAD_REQUEST, "Request body is required");
     }
@@ -302,14 +393,66 @@ async fn post(
     };
     let started = chrono::Utc::now().timestamp_millis();
     let request_id = format!("mcp-{started}-{}", rand::random::<u64>());
-    let response = forward(
-        reqwest::Method::POST,
-        url.clone(),
-        headers,
-        configured,
-        Some(body),
-    )
-    .await;
+    let keys = match active_upstream_keys(&state, server_id).await {
+        Ok(keys) => keys,
+        Err(response) => return response,
+    };
+    let attempts = keys.len().max(1);
+    let mut response = None;
+    for attempt in 0..attempts {
+        let last = state
+            .inner
+            .mcp_key_round_robin
+            .read()
+            .unwrap()
+            .get(&server_id)
+            .copied();
+        let key = select_round_robin(last, &keys);
+        if let Some(key) = key {
+            state
+                .inner
+                .mcp_key_round_robin
+                .write()
+                .unwrap()
+                .insert(server_id, key.id);
+        }
+        let request_headers = key.map_or_else(
+            || configured.clone(),
+            |key| inject_upstream_auth(&configured, &auth_scheme, &key.key),
+        );
+        let current = forward(
+            reqwest::Method::POST,
+            url.clone(),
+            headers.clone(),
+            request_headers,
+            Some(body.clone()),
+        )
+        .await;
+        let status = current.status();
+        if !matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::PAYMENT_REQUIRED
+        ) || key.is_none()
+        {
+            response = Some(current);
+            break;
+        }
+        cooldown_key(
+            &state,
+            key.unwrap().id,
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                rate_cooldown
+            } else {
+                quota_cooldown
+            },
+        )
+        .await;
+        response = Some(current);
+        if attempt + 1 == attempts {
+            break;
+        }
+    }
+    let response = response.expect("MCP request always attempts once");
     if let Some(pool) = &state.inner.database {
         record_request(
             pool,
@@ -336,7 +479,7 @@ async fn get(
     if let Err(response) = authenticate(&state, &name, &headers).await {
         return response;
     }
-    let (mut url, _, configured) = match config(&state, &name).await {
+    let (mut url, _, configured, _, _, _, _) = match config(&state, &name).await {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -373,7 +516,7 @@ async fn delete(
     if let Err(response) = authenticate(&state, &name, &headers).await {
         return response;
     }
-    let (url, _, configured) = match config(&state, &name).await {
+    let (url, _, configured, _, _, _, _) = match config(&state, &name).await {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -406,7 +549,8 @@ async fn delete(
 
 #[cfg(test)]
 mod tests {
-    use super::safe_configured_header;
+    use super::{inject_upstream_auth, safe_configured_header, select_round_robin, UpstreamKey};
+    use std::collections::HashMap;
 
     #[test]
     fn rejects_hop_by_hop_and_routing_headers() {
@@ -426,5 +570,38 @@ mod tests {
         assert!(safe_configured_header("authorization"));
         assert!(safe_configured_header("x-api-key"));
         assert!(safe_configured_header("mcp-session-id"));
+    }
+
+    #[test]
+    fn selects_keys_in_stable_round_robin_order() {
+        let keys = vec![
+            UpstreamKey {
+                id: 1,
+                key: "first".into(),
+            },
+            UpstreamKey {
+                id: 2,
+                key: "second".into(),
+            },
+        ];
+        assert_eq!(select_round_robin(None, &keys).unwrap().id, 1);
+        assert_eq!(select_round_robin(Some(1), &keys).unwrap().id, 2);
+        assert_eq!(select_round_robin(Some(2), &keys).unwrap().id, 1);
+    }
+
+    #[test]
+    fn injects_configured_auth_without_leaking_old_auth() {
+        let mut headers = HashMap::from([(String::from("authorization"), String::from("old"))]);
+        headers.insert("content-type".into(), "application/json".into());
+        let result = inject_upstream_auth(&headers, "bearer", "new");
+        assert_eq!(
+            result.get("Authorization"),
+            Some(&String::from("Bearer new"))
+        );
+        assert!(!result.contains_key("authorization"));
+        assert_eq!(
+            result.get("content-type"),
+            Some(&String::from("application/json"))
+        );
     }
 }
