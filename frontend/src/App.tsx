@@ -6,6 +6,7 @@ import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
 import { Providers } from './pages/Providers';
 import { ModelAliases } from './pages/ModelAliases';
+import { ApiKeys } from './pages/ApiKeys';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -23,6 +24,7 @@ const AppRoutes = () => (
     <Route path="/login" element={<Login />} />
     <Route path="/providers" element={<ProtectedRoute><Providers /></ProtectedRoute>} />
     <Route path="/aliases" element={<ProtectedRoute><ModelAliases /></ProtectedRoute>} />
+    <Route path="/keys" element={<ProtectedRoute><ApiKeys /></ProtectedRoute>} />
     <Route
       path="/"
       element={

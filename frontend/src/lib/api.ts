@@ -181,3 +181,48 @@ export async function deleteAlias(slug: string): Promise<void> {
   });
   if (!response.ok) throw new Error('Unable to delete model alias');
 }
+
+export interface ApiKeyConfig {
+  secret?: string;
+  comment?: string | null;
+  quotas?: string[];
+  allowedProviders?: string[];
+  allowedModels?: string[];
+  excludedProviders?: string[];
+  excludedModels?: string[];
+  allowRawPassthrough?: boolean;
+  allowedIps?: string[];
+  expiresAt?: number;
+  disabledAt?: number;
+}
+
+export async function getKeys(): Promise<Record<string, ApiKeyConfig>> {
+  const response = await fetch('/v0/management/keys', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load API keys');
+  return response.json();
+}
+
+export async function saveKey(name: string, key: Record<string, unknown>, editing: boolean): Promise<void> {
+  const response = await fetch(`/v0/management/keys/${encodeURIComponent(name)}`, {
+    method: editing ? 'PATCH' : 'PUT',
+    headers: { ...authHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify(key),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || 'Unable to save API key');
+  }
+}
+
+export async function deleteKey(name: string): Promise<void> {
+  const response = await fetch(`/v0/management/keys/${encodeURIComponent(name)}`, { method: 'DELETE', headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to delete API key');
+}
+
+export async function disableKey(name: string): Promise<void> {
+  const response = await fetch(`/v0/management/keys/${encodeURIComponent(name)}/disable`, { method: 'POST', headers: authHeaders() });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || 'Unable to disable API key');
+  }
+}
