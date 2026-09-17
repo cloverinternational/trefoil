@@ -93,3 +93,39 @@ export async function getRecentUsage(limit = 8): Promise<UsageRecord[]> {
   const body = (await response.json()) as { data?: UsageRecord[] };
   return Array.isArray(body.data) ? body.data : [];
 }
+
+export interface ProviderConfig {
+  display_name?: string;
+  api_base_url: string;
+  api_key?: string;
+  oauth_provider?: string;
+  oauth_account?: string;
+  enabled: boolean;
+  disable_cooldown: boolean;
+  stall_cooldown: boolean;
+  discount?: number;
+  adapter?: { name: string; enabled: boolean }[];
+}
+
+export async function getProviders(): Promise<Record<string, ProviderConfig>> {
+  const response = await fetch('/v0/management/providers', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load providers');
+  return response.json();
+}
+
+export async function saveProvider(name: string, provider: Record<string, unknown>): Promise<void> {
+  const response = await fetch(`/v0/management/providers/${encodeURIComponent(name)}`, {
+    method: 'PUT', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(provider),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || 'Unable to save provider');
+  }
+}
+
+export async function deleteProvider(name: string): Promise<void> {
+  const response = await fetch(`/v0/management/providers/${encodeURIComponent(name)}`, {
+    method: 'DELETE', headers: authHeaders(),
+  });
+  if (!response.ok) throw new Error('Unable to delete provider');
+}
