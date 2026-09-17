@@ -20,6 +20,7 @@ futures-util = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 flate2 = "1"
 tar = "0.4"
+csv = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

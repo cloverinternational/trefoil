@@ -13,7 +13,7 @@ use sqlx::PgPool;
 /// Field set also covers what `KeyConfigSchema`
 /// (`packages/backend/src/config.ts`) accepts/persists for
 /// `/v0/management/keys/:name` CRUD (see `backend/src/keys.rs`).
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct KeyConfig {
     pub secret: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,7 +83,7 @@ fn default_auth() -> String {
 /// Plexus's `ProviderConfigSchema` (`packages/backend/src/config.ts`).
 /// OAuth-provider-config, quota_checker, model_autosync, and compaction
 /// fields are intentionally deferred to a later parity slice.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
@@ -114,7 +114,7 @@ pub struct ProviderConfig {
     pub raw_passthrough: Option<RawPassthroughConfig>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelAutosync {
     pub enabled: bool,
     #[serde(rename = "intervalMinutes")]

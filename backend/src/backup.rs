@@ -5,6 +5,7 @@
 //! preserving every column (including columns added by later migrations).
 
 use axum::{
+    body::Bytes,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -13,6 +14,7 @@ use axum::{
 use flate2::{write::GzEncoder, Compression};
 use serde::Deserialize;
 use sqlx::Row;
+use std::collections::HashMap;
 use std::io::Write;
 use tar::Builder;
 
@@ -43,7 +45,196 @@ struct BackupQuery {
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v0/management/backup", axum::routing::get(export))
+    Router::new()
+        .route("/v0/management/backup", axum::routing::get(export))
+        .route("/v0/management/restore", axum::routing::post(restore))
+}
+
+const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
+const MAX_ENTRY_BYTES: u64 = 128 * 1024 * 1024;
+
+async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    match resolve_principal(
+        &state,
+        headers.get("x-admin-key").and_then(|v| v.to_str().ok()),
+    ) {
+        Some(Principal::Admin) => {}
+        Some(Principal::Limited { .. }) => {
+            return (StatusCode::FORBIDDEN, "Admin privileges required").into_response()
+        }
+        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+    }
+    if body.len() > MAX_BACKUP_BYTES {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "Backup is too large").into_response();
+    }
+    let Some(pool) = &state.inner.database else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Restore requires a database",
+        )
+            .into_response();
+    };
+    let result = if headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .contains("json")
+    {
+        let value: serde_json::Value = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(_) => return (StatusCode::BAD_REQUEST, "Invalid backup JSON").into_response(),
+        };
+        restore_config(pool, &state, &value)
+            .await
+            .map(|_| serde_json::json!({"success":true,"config":true}))
+    } else {
+        restore_archive(pool, &state, &body)
+            .await
+            .map(|n| serde_json::json!({"success":true,"restored":n}))
+    };
+    match result {
+        Ok(value) => axum::Json(value).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, format!("Invalid backup: {error}")).into_response(),
+    }
+}
+
+async fn restore_archive(
+    pool: &sqlx::PgPool,
+    state: &AppState,
+    input: &[u8],
+) -> Result<HashMap<String, u64>, String> {
+    use flate2::read::GzDecoder;
+    let mut archive = tar::Archive::new(GzDecoder::new(input));
+    let mut files = HashMap::new();
+    for item in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = item.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.to_path_buf();
+        let name = path.to_str().ok_or("invalid archive path")?.to_string();
+        if path.components().count() != 1
+            || !(name == "manifest.json"
+                || name == "config.json"
+                || TABLES.iter().any(|t| name == format!("{t}.csv.gz")))
+            || entry.size() > MAX_ENTRY_BYTES
+            || files.contains_key(&name)
+        {
+            return Err("unsafe, unknown, duplicate, or oversized archive entry".into());
+        }
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut data).map_err(|e| e.to_string())?;
+        files.insert(name, data);
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(
+        files
+            .get("manifest.json")
+            .ok_or("manifest.json is required")?,
+    )
+    .map_err(|_| "invalid manifest")?;
+    if manifest.get("plexus_backup") != Some(&serde_json::Value::Bool(true))
+        || manifest.get("version").and_then(|v| v.as_i64()) != Some(1)
+    {
+        return Err("unsupported backup version".into());
+    }
+    let config: serde_json::Value =
+        serde_json::from_slice(files.get("config.json").ok_or("config.json is required")?)
+            .map_err(|_| "invalid config")?;
+    let mut parsed = HashMap::new();
+    for table in TABLES {
+        if let Some(data) = files.get(&format!("{table}.csv.gz")) {
+            parsed.insert(*table, parse_csv(data)?);
+        }
+    }
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for table in TABLES.iter().rev() {
+        sqlx::query(&format!("DELETE FROM {table}"))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let mut counts = HashMap::new();
+    for table in TABLES {
+        let rows = parsed.remove(table).unwrap_or_default();
+        for row in &rows {
+            sqlx::query(&format!(
+                "INSERT INTO {table} SELECT * FROM jsonb_populate_record(NULL::{table}, $1::jsonb)"
+            ))
+            .bind(serde_json::to_string(row).unwrap())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("{table}: {e}"))?;
+        }
+        counts.insert((*table).to_string(), rows.len() as u64);
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    restore_config(pool, state, &config).await?;
+    Ok(counts)
+}
+
+fn parse_csv(data: &[u8]) -> Result<Vec<serde_json::Map<String, serde_json::Value>>, String> {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+    let mut text = String::new();
+    GzDecoder::new(data)
+        .read_to_string(&mut text)
+        .map_err(|_| "invalid compressed CSV")?;
+    let mut reader = csv::Reader::from_reader(text.as_bytes());
+    let headers = reader.headers().map_err(|_| "invalid CSV headers")?.clone();
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        let record = record.map_err(|_| "invalid CSV row")?;
+        if record.len() != headers.len() {
+            return Err("CSV column mismatch".into());
+        }
+        let mut row = serde_json::Map::new();
+        for (key, value) in headers.iter().zip(record.iter()) {
+            row.insert(
+                key.into(),
+                if value == "\\N" {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_str(value)
+                        .unwrap_or_else(|_| serde_json::Value::String(value.into()))
+                },
+            );
+        }
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+async fn restore_config(
+    pool: &sqlx::PgPool,
+    state: &AppState,
+    envelope: &serde_json::Value,
+) -> Result<(), String> {
+    let data = envelope.get("data").ok_or("missing data")?;
+    let providers: HashMap<String, crate::state::ProviderConfig> =
+        serde_json::from_value(data.get("providers").cloned().ok_or("missing providers")?)
+            .map_err(|_| "invalid providers")?;
+    let aliases: HashMap<String, crate::state::ModelConfig> =
+        serde_json::from_value(data.get("models").cloned().ok_or("missing models")?)
+            .map_err(|_| "invalid models")?;
+    let keys: HashMap<String, crate::state::KeyConfig> =
+        serde_json::from_value(data.get("keys").cloned().ok_or("missing keys")?)
+            .map_err(|_| "invalid keys")?;
+    for (name, config) in &keys {
+        crate::database::upsert_key(pool, name, config)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    for (name, config) in &providers {
+        crate::database::upsert_provider(pool, name, config)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    for (name, config) in &aliases {
+        crate::database::upsert_alias(pool, name, config)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    *state.inner.keys.write().unwrap() = keys;
+    *state.inner.providers.write().unwrap() = providers;
+    *state.inner.aliases.write().unwrap() = aliases;
+    Ok(())
 }
 
 async fn export(
