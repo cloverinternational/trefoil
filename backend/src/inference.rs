@@ -338,7 +338,7 @@ async fn get_response(
         .await
     {
         Ok(Some(Some(value))) => Json(
-            serde_json::from_str::<Value>(&value).unwrap_or_else(|_| serde_json::json!({"id":id})),
+            serde_json::from_str::<Value>(&value).unwrap_or_else(|_| serde_json::json!({"id": id})),
         )
         .into_response(),
         _ => error_response(
