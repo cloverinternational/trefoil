@@ -129,3 +129,55 @@ export async function deleteProvider(name: string): Promise<void> {
   });
   if (!response.ok) throw new Error('Unable to delete provider');
 }
+
+export interface ModelTarget {
+  provider?: string;
+  model?: string;
+  alias?: string;
+  enabled?: boolean;
+}
+
+export interface ModelTargetGroup {
+  name: string;
+  selector: string;
+  targets: ModelTarget[];
+}
+
+export interface ModelAlias {
+  priority?: string;
+  target_groups?: ModelTargetGroup[];
+  additional_aliases?: string[];
+  use_image_fallthrough?: boolean;
+  enforce_limits?: boolean;
+  sticky_session?: boolean;
+  type?: string;
+}
+
+export async function getAliases(): Promise<Record<string, ModelAlias>> {
+  const response = await fetch('/v0/management/aliases', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load model aliases');
+  return response.json();
+}
+
+async function aliasRequest(slug: string, method: 'PUT' | 'PATCH', body: ModelAlias): Promise<void> {
+  const response = await fetch(`/v0/management/aliases/${encodeURIComponent(slug)}`, {
+    method,
+    headers: { ...authHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || 'Unable to save model alias');
+  }
+}
+
+export function saveAlias(slug: string, alias: ModelAlias, editing: boolean): Promise<void> {
+  return aliasRequest(slug, editing ? 'PATCH' : 'PUT', alias);
+}
+
+export async function deleteAlias(slug: string): Promise<void> {
+  const response = await fetch(`/v0/management/models/${encodeURIComponent(slug)}`, {
+    method: 'DELETE', headers: authHeaders(),
+  });
+  if (!response.ok) throw new Error('Unable to delete model alias');
+}
