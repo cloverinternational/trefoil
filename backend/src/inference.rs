@@ -348,6 +348,40 @@ async fn messages(
     forward_json_api(&state, &headers, body, "/messages", "x-api-key", true).await
 }
 
+/// Gemini uses the same routing/retry dispatcher as the other JSON surfaces;
+/// only its native URL and edge transforms differ.
+async fn gemini(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(model_action): Path<String>,
+    Json(mut body): Json<Value>,
+) -> Response {
+    let Some((model, action)) = model_action.split_once(':') else {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Model action is required",
+            "invalid_request_error",
+        );
+    };
+    if action != "generateContent" && action != "streamGenerateContent" {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Unsupported Gemini action",
+            "invalid_request_error",
+        );
+    }
+    body["model"] = Value::String(model.to_owned());
+    forward_json_api(
+        &state,
+        &headers,
+        body,
+        &format!("/v1beta/models/{{model}}:{action}"),
+        "x-goog-api-key",
+        true,
+    )
+    .await
+}
+
 /// Anthropic's wire protocol is deliberately kept at the edge.  Providers
 /// which expose an OpenAI-compatible endpoint receive the equivalent chat
 /// request, while native Anthropic endpoints continue to receive the request
@@ -775,12 +809,21 @@ async fn forward_json_api(
         let mut request_body = original_body.clone();
         request_body["model"] = Value::String(upstream_model.clone());
         let native_anthropic = path == "/messages" && anthropic_native_provider(&provider);
+        let native_gemini = path.starts_with("/v1beta/models/")
+            && gemini_native_provider(&provider_slug, &provider);
         if path == "/messages" && !native_anthropic {
             request_body = anthropic_to_chat(request_body);
             request_body["model"] = Value::String(upstream_model.clone());
+        } else if path.starts_with("/v1beta/models/") && !native_gemini {
+            request_body = gemini_to_chat(request_body, &upstream_model);
         }
+        let request_path = path.replace("{model}", &upstream_model);
         let mut request = client
-            .post(format!("{}{}", base.as_str().trim_end_matches('/'), path))
+            .post(format!(
+                "{}{}",
+                base.as_str().trim_end_matches('/'),
+                request_path
+            ))
             .json(&request_body);
         if let Some(key) = provider.api_key {
             request = if auth_header == "x-api-key" {
@@ -792,8 +835,51 @@ async fn forward_json_api(
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
+                if original_body
+                    .get("stream")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    && (native_gemini || native_anthropic)
+                {
+                    let content_type = response
+                        .headers()
+                        .get("content-type")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("text/event-stream");
+                    return axum::http::Response::builder()
+                        .status(status)
+                        .header("content-type", content_type)
+                        .body(accounted_sse_body(
+                            response.bytes_stream(),
+                            StreamAccounting {
+                                pool: state.inner.database.clone(),
+                                event_sender: state.inner.usage_events.clone(),
+                                request_id: new_request_id(),
+                                key_name: None,
+                                provider: provider_slug.clone(),
+                                model: model.clone(),
+                                api_type: if native_gemini { "gemini" } else { "messages" }.into(),
+                                start_time: now_ms(),
+                                input_tokens: None,
+                                output_tokens: None,
+                                cost: None,
+                                terminal_on_usage: native_gemini,
+                                stream_success: status.is_success(),
+                                finalized: false,
+                            },
+                        ))
+                        .expect("valid streaming response")
+                        .into_response();
+                }
                 let mut payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
-                if path == "/messages" && !native_anthropic && status.is_success() {
+                if path.starts_with("/v1beta/models/") && native_gemini && !status.is_success() {
+                    payload = normalize_gemini_error(payload, status);
+                } else if path.starts_with("/v1beta/models/")
+                    && !native_gemini
+                    && status.is_success()
+                {
+                    payload = chat_to_gemini(payload);
+                } else if path == "/messages" && !native_anthropic && status.is_success() {
                     payload = chat_to_anthropic(payload);
                 } else if path == "/messages" && native_anthropic && !status.is_success() {
                     payload = normalize_anthropic_error(payload, status);
@@ -1319,130 +1405,6 @@ async fn muse_models(State(state): State<AppState>, headers: HeaderMap) -> Respo
         .map(|id| serde_json::json!({"id":id,"object":"model","created":0,"owned_by":"meta","metadata":{"muse-code":{"name":id,"reasoning":false,"temperature":true,"tool_call":true,"attachment":false,"modalities":{"input":["text"],"output":["text"]}}}}))
         .collect::<Vec<_>>();
     Json(serde_json::json!({"object":"list","data":data})).into_response()
-}
-
-async fn gemini(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(model_action): Path<String>,
-    Json(body): Json<Value>,
-) -> Response {
-    if let Err(response) = authenticate(&state, &headers) {
-        return response;
-    }
-    let Some((model, action)) = model_action.split_once(':') else {
-        return error_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            "Model action is required",
-            "invalid_request_error",
-        );
-    };
-    if action != "generateContent" && action != "streamGenerateContent" {
-        return error_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            "Unsupported Gemini action",
-            "invalid_request_error",
-        );
-    }
-    let mut last_error = None;
-    for _ in 0..2 {
-        let (provider_slug, upstream_model) = resolve_target(&state, model, None);
-        let Some(provider) = state
-            .inner
-            .providers
-            .read()
-            .unwrap()
-            .get(&provider_slug)
-            .cloned()
-        else {
-            return error_response(
-                axum::http::StatusCode::NOT_FOUND,
-                "No provider configured for model",
-                "model_not_found",
-            );
-        };
-        let native_gemini = gemini_native_provider(&provider_slug, &provider);
-        let outbound_body = if native_gemini {
-            body.clone()
-        } else {
-            gemini_to_chat(body.clone(), &upstream_model)
-        };
-        let mut request = reqwest::Client::new()
-            .post(format!(
-                "{}/v1beta/models/{}:{}",
-                provider.api_base_url.trim_end_matches('/'),
-                upstream_model,
-                action
-            ))
-            .json(&outbound_body);
-        if let Some(key) = provider.api_key {
-            request = request.header("x-goog-api-key", key);
-        }
-        match request.send().await {
-            Ok(response) => {
-                let status = response.status();
-                if action == "streamGenerateContent" {
-                    return axum::http::Response::builder()
-                        .status(status)
-                        .header(
-                            "content-type",
-                            response
-                                .headers()
-                                .get("content-type")
-                                .and_then(|v| v.to_str().ok())
-                                .unwrap_or("text/event-stream"),
-                        )
-                        .body(accounted_sse_body(
-                            response.bytes_stream(),
-                            StreamAccounting {
-                                pool: state.inner.database.clone(),
-                                event_sender: state.inner.usage_events.clone(),
-                                request_id: new_request_id(),
-                                key_name: None,
-                                provider: provider_slug.clone(),
-                                model: model.to_owned(),
-                                api_type: "gemini".to_owned(),
-                                start_time: now_ms(),
-                                input_tokens: None,
-                                output_tokens: None,
-                                cost: None,
-                                terminal_on_usage: true,
-                                stream_success: status.is_success(),
-                                finalized: false,
-                            },
-                        ))
-                        .unwrap()
-                        .into_response();
-                }
-                let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
-                let payload = if native_gemini && !status.is_success() {
-                    normalize_gemini_error(payload, status)
-                } else if native_gemini {
-                    payload
-                } else if status.is_success() {
-                    chat_to_gemini(payload)
-                } else {
-                    payload
-                };
-                return (status, Json(payload)).into_response();
-            }
-            Err(error) => {
-                register_provider_failure(
-                    &state,
-                    &provider_slug,
-                    &upstream_model,
-                    error.to_string(),
-                )
-                .await;
-                last_error = Some(error.to_string());
-            }
-        }
-    }
-    error_response(
-        axum::http::StatusCode::BAD_GATEWAY,
-        &last_error.unwrap_or_else(|| "upstream error".into()),
-        "upstream_error",
-    )
 }
 
 async fn completions(
