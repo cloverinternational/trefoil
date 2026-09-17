@@ -77,7 +77,7 @@ To port:
 - [ ] Extract a single `dispatch()` entry point that all inference routes
       call, parameterized by API type (chat/completions/embeddings/
       messages/responses/images/speech/transcriptions/gemini).
-- [ ] Full ordered-target iteration: try every enabled, non-cooling-down
+- [x] Full ordered-target iteration: try every enabled, non-cooling-down
       target in an alias's target group (not just the first), with
       per-attempt retry-policy from `FailoverPolicySchema`
       (`retryableStatusCodes`, `retryableErrors`).
@@ -87,7 +87,7 @@ To port:
 - [ ] Cancellation propagation (client disconnect aborts the upstream
       request) — verify this exists uniformly across all 9 API types, not
       just the ones tested so far.
-- [ ] Consolidate the 4 near-duplicate "try provider, on retryable status
+- [x] Consolidate the 4 near-duplicate "try provider, on retryable status
       try fallback" blocks in `inference.rs` (chat/completions/embeddings/
       messages each hand-roll this) into one shared function.
 
@@ -192,7 +192,7 @@ how Plexus's `configuration.ts` shim wraps its own REST route handlers.
 - [x] `plexus_key`: wrap `keys.rs` list/get/put/patch/delete/disable.
 - [x] `plexus_quota`: wrap `user_quotas.rs` + `quota_management.rs`
       (list/get/put/patch/delete/status/clear/recompute).
-- [ ] `plexus_quota_checker`: wrap `config_routes.rs` checker_types + (new)
+- [x] `plexus_quota_checker`: wrap `config_routes.rs` checker_types + (new)
       per-checker routes from item #4.
 - [x] `plexus_mcp_gateway`: wrap `mcp.rs` server CRUD.
 - [x] `plexus_settings`: wrap `system_settings.rs` get.
@@ -348,12 +348,17 @@ fixtures per `parity/README.md`, not wired into CI).
 ## Current verified status
 
 - **Backend tests:** 174 passing.
+- **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
 - **Frontend:** dashboard, providers, aliases, keys, quotas, usage, and configuration pages build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.
 - **Observability:** Prometheus metrics, usage SSE, and system-log SSE routes are implemented.
 
 The checklist is capability-based: a checked route means the route exists and has real behavior, not that every Plexus edge case or frontend test has been ported.
+
+## Latest progress
+
+The completed work is recorded above; unchecked items remain intentionally open until directly verified by tests or source comparison. The current strongest remaining work items are manual probe, provider OAuth-specific flows/masking, custom built-in checkers, MCP shim edge cases, frontend depth/tests, and differential CI.
 
 ## Suggested order of attack
 
