@@ -1661,6 +1661,11 @@ async fn record_basic_usage(
             start_time,
         )
         .await;
+        let history = serde_json::json!([{"index":1,"provider":provider,"model":model,"apiType":api_type,"status":if status == "success" { "success" } else { "failed" },"reason":if status == "success" { "Request completed successfully" } else { "Request failed" },"retryable":false}]);
+        let _ = crate::database::update_request_attempts(
+            pool, request_id, 1, provider, model, &history,
+        )
+        .await;
     }
 }
 

@@ -687,6 +687,51 @@ pub async fn update_request_attempts(
         .execute(pool).await.map(|_| ())
 }
 
+/// Persist the complete, ordered provider-attempt history for a request.
+/// The JSON column is deliberately append-only from the caller's perspective:
+/// a retry updates the same usage row, so a restart or later usage read sees
+/// the exact attempts that led to the terminal result.
+pub async fn record_request_attempt(
+    pool: &PgPool,
+    request_id: &str,
+    attempts: &[serde_json::Value],
+    final_provider: &str,
+    final_model: &str,
+) -> Result<(), sqlx::Error> {
+    let history = serde_json::Value::Array(attempts.to_vec());
+    update_request_attempts(
+        pool,
+        request_id,
+        attempts.len() as i32,
+        final_provider,
+        final_model,
+        &history,
+    )
+    .await
+}
+
+/// Insert or refresh one attempt without duplicating it during recovery.
+pub async fn insert_inference_attempt(
+    pool: &PgPool,
+    request_id: &str,
+    attempt_index: i32,
+    provider: &str,
+    model: &str,
+    api_type: Option<&str>,
+    status: &str,
+    reason: Option<&str>,
+    status_code: Option<i32>,
+    retryable: bool,
+    headers: Option<&serde_json::Value>,
+    started_at: i64,
+    completed_at: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO inference_attempts (request_id,attempt_index,provider,model,api_type,status,reason,status_code,retryable,provider_response_headers,started_at,completed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (request_id,attempt_index) DO UPDATE SET status=EXCLUDED.status,reason=EXCLUDED.reason,status_code=EXCLUDED.status_code,retryable=EXCLUDED.retryable,provider_response_headers=EXCLUDED.provider_response_headers,completed_at=EXCLUDED.completed_at")
+        .bind(request_id).bind(attempt_index).bind(provider).bind(model).bind(api_type)
+        .bind(status).bind(reason).bind(status_code).bind(if retryable { 1 } else { 0 })
+        .bind(headers).bind(started_at).bind(completed_at).execute(pool).await.map(|_| ())
+}
+
 /// Calendar window start (UTC, epoch ms) for daily/weekly/monthly quota
 /// types, matching Plexus's `QuotaEnforcer.getWindowStart` exactly: daily
 /// is UTC midnight, weekly is the most recent UTC Monday midnight, monthly
