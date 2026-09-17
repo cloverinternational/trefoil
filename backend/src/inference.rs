@@ -727,8 +727,11 @@ async fn forward_json_api(
     let client = reqwest::Client::new();
     let original_body = body.clone();
     let mut attempted = None;
-    for _ in 0..=usize::from(failover) {
-        let (provider_slug, upstream_model) = resolve_target(state, &model, key_config);
+    let targets = inference_targets(state, &model, key_config);
+    for (attempt, (provider_slug, upstream_model)) in targets.enumerate() {
+        if !failover && attempt > 0 {
+            break;
+        }
         if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
             return error_response(
                 axum::http::StatusCode::FORBIDDEN,
@@ -2718,71 +2721,111 @@ fn quota_exceeded_response(blocked: &[(String, i32, i64, i64)]) -> Response {
         .into_response()
 }
 
+/// Iterate through every eligible target in configured priority order.
+///
+/// Alias targets are expanded depth-first at their position in a group,
+/// while disabled, unknown, disallowed, and cooling-down concrete targets are
+/// omitted.  Keeping this ordering in one place prevents each inference route
+/// from implementing subtly different failover behavior.
+struct InferenceTargetIter {
+    targets: std::vec::IntoIter<(String, String)>,
+}
+
+impl Iterator for InferenceTargetIter {
+    type Item = (String, String);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.targets.next()
+    }
+}
+
+fn inference_targets(
+    state: &AppState,
+    model: &str,
+    key_config: Option<&crate::state::KeyConfig>,
+) -> InferenceTargetIter {
+    let providers = state.inner.providers.read().unwrap();
+    let cooldowns = state.inner.cooldowns.read().unwrap();
+    let aliases = state.inner.aliases.read().unwrap();
+    let now = now_ms();
+    let mut targets = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+
+    fn expand(
+        name: &str,
+        aliases: &std::collections::HashMap<String, crate::state::ModelConfig>,
+        providers: &std::collections::HashMap<String, crate::state::ProviderConfig>,
+        cooldowns: &std::collections::HashMap<(String, String), crate::state::CooldownEntry>,
+        key_config: Option<&crate::state::KeyConfig>,
+        now: i64,
+        visited: &mut std::collections::HashSet<String>,
+        output: &mut Vec<(String, String)>,
+    ) {
+        if !visited.insert(name.to_owned()) {
+            return;
+        }
+        let Some(alias) = aliases.get(name) else {
+            return;
+        };
+        for group in &alias.target_groups {
+            let mut indexes: Vec<usize> = (0..group.targets.len()).collect();
+            if group.selector == "random" && indexes.len() > 1 {
+                let offset = (now.unsigned_abs() as usize) % indexes.len();
+                indexes.rotate_left(offset);
+            }
+            for index in indexes {
+                let target = &group.targets[index];
+                if !target.enabled {
+                    continue;
+                }
+                if let (Some(provider), Some(target_model)) = (&target.provider, &target.model) {
+                    if providers.contains_key(provider)
+                        && key_config.is_none_or(|config| provider_allowed(config, provider))
+                        && !cooldown_is_active(cooldowns, provider, target_model, now)
+                    {
+                        output.push((provider.clone(), target_model.clone()));
+                    }
+                } else if let Some(next) = &target.alias {
+                    expand(
+                        next, aliases, providers, cooldowns, key_config, now, visited, output,
+                    );
+                }
+            }
+        }
+        visited.remove(name);
+    }
+
+    if let Some((provider, target_model)) = model.split_once('/') {
+        if providers.contains_key(provider) {
+            targets.push((provider.to_owned(), target_model.to_owned()));
+        }
+    } else if providers.contains_key(model) {
+        targets.push((model.to_owned(), model.to_owned()));
+    } else {
+        expand(
+            model,
+            &aliases,
+            &providers,
+            &cooldowns,
+            key_config,
+            now,
+            &mut visited,
+            &mut targets,
+        );
+    }
+    InferenceTargetIter {
+        targets: targets.into_iter(),
+    }
+}
+
 fn resolve_target(
     state: &AppState,
     model: &str,
     key_config: Option<&crate::state::KeyConfig>,
 ) -> (String, String) {
-    if let Some((provider, name)) = model.split_once('/') {
-        if state.inner.providers.read().unwrap().contains_key(provider) {
-            return (provider.to_string(), name.to_string());
-        }
-    }
-    if state.inner.providers.read().unwrap().contains_key(model) {
-        return (model.to_string(), model.to_string());
-    }
-
-    let mut current = model.to_string();
-    let mut visited = std::collections::HashSet::new();
-    for _ in 0..16 {
-        if !visited.insert(current.clone()) {
-            break;
-        }
-        let Some(alias) = state.inner.aliases.read().unwrap().get(&current).cloned() else {
-            break;
-        };
-        let now = now_ms();
-        let providers = state.inner.providers.read().unwrap();
-        let cooldowns = state.inner.cooldowns.read().unwrap();
-        for group in &alias.target_groups {
-            let mut candidates: Vec<_> = group
-                .targets
-                .iter()
-                .filter(|target| {
-                    let (Some(provider), Some(target_model)) = (&target.provider, &target.model)
-                    else {
-                        return false;
-                    };
-                    target.enabled
-                        && providers.contains_key(provider)
-                        && key_config.is_none_or(|config| provider_allowed(config, provider))
-                        && !cooldown_is_active(&cooldowns, provider, target_model, now)
-                })
-                .collect();
-            if group.selector == "random" && candidates.len() > 1 {
-                let index = (now.unsigned_abs() as usize) % candidates.len();
-                candidates.rotate_left(index);
-            }
-            if let Some(target) = candidates.into_iter().next() {
-                if let (Some(provider), Some(target_model)) = (&target.provider, &target.model) {
-                    return (provider.clone(), target_model.clone());
-                }
-            }
-            if let Some(next) = group
-                .targets
-                .iter()
-                .find(|target| target.enabled && target.alias.is_some())
-                .and_then(|target| target.alias.clone())
-            {
-                current = next;
-                break;
-            }
-        }
-        if !state.inner.aliases.read().unwrap().contains_key(&current) {
-            break;
-        }
-    }
-    (model.to_string(), model.to_string())
+    inference_targets(state, model, key_config)
+        .next()
+        .unwrap_or_else(|| (model.to_owned(), model.to_owned()))
 }
 
 fn provider_allowed(config: &crate::state::KeyConfig, provider: &str) -> bool {
