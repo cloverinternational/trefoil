@@ -15,7 +15,10 @@ use axum::{
     response::{IntoResponse, Response},
     Json, Router,
 };
+use rand::{distributions::Alphanumeric, Rng};
 use serde::Deserialize;
+use serde::Serialize;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -33,11 +36,110 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/v0/management/oauth/sessions/:id",
-            axum::routing::get(session_not_found),
+            axum::routing::get(get_session),
         )
+        .route(
+            "/v0/management/oauth/sessions",
+            axum::routing::post(create_session),
+        )
+        .route(
+            "/v0/management/oauth/sessions/:id/cancel",
+            axum::routing::post(cancel_session),
+        )
+        .route(
+            "/v0/management/oauth/sessions/:id/prompt",
+            axum::routing::post(prompt_session),
+        )
+        .route(
+            "/v0/management/oauth/sessions/:id/manual-code",
+            axum::routing::post(manual_code),
+        )
+        .route("/v0/management/oauth/models", axum::routing::get(models))
 }
 
-async fn session_not_found(
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthSession {
+    pub id: String,
+    pub provider_id: String,
+    pub account_id: String,
+    pub status: String,
+    pub auth_info: Option<serde_json::Value>,
+    pub prompt: Option<serde_json::Value>,
+    pub progress: Vec<serde_json::Value>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateSession {
+    provider_id: String,
+    account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionInput {
+    value: String,
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+fn session_response(session: OAuthSession) -> Response {
+    Json(serde_json::json!({"data": session})).into_response()
+}
+fn session_id() -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect()
+}
+
+async fn create_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateSession>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    if body.provider_id.trim().is_empty() || body.account_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"providerId and accountId are required"})),
+        )
+            .into_response();
+    }
+    let now = now_ms();
+    let id = session_id();
+    let session = OAuthSession {
+        id: id.clone(),
+        provider_id: body.provider_id.clone(),
+        account_id: body.account_id,
+        status: "waiting".into(),
+        auth_info: Some(
+            serde_json::json!({"url": format!("https://auth.invalid/{}/{}", body.provider_id, id), "instructions":"Open the authorization URL to continue."}),
+        ),
+        prompt: None,
+        progress: vec![serde_json::json!({"status":"waiting"})],
+        created_at: now,
+        updated_at: now,
+    };
+    state
+        .inner
+        .oauth_sessions
+        .write()
+        .unwrap()
+        .insert(id, session.clone());
+    session_response(session)
+}
+
+async fn get_session(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -45,12 +147,126 @@ async fn session_not_found(
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    let _ = id;
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({"error":"OAuth session not found"})),
-    )
-        .into_response()
+    match state.inner.oauth_sessions.read().unwrap().get(&id).cloned() {
+        Some(session) => session_response(session),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"OAuth session not found"})),
+        )
+            .into_response(),
+    }
+}
+
+async fn update_session(
+    state: &AppState,
+    id: &str,
+    action: &str,
+    value: Option<String>,
+) -> Response {
+    let mut sessions = state.inner.oauth_sessions.write().unwrap();
+    let Some(session) = sessions.get_mut(id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"OAuth session not found"})),
+        )
+            .into_response();
+    };
+    if session.status == "complete" || session.status == "cancelled" || session.status == "failed" {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error":"OAuth session is no longer active"})),
+        )
+            .into_response();
+    }
+    let now = now_ms();
+    match action {
+        "cancel" => {
+            session.status = "cancelled".into();
+            session.prompt = None;
+        }
+        "prompt" => {
+            session.status = "waiting".into();
+            session.prompt = None;
+            session
+                .progress
+                .push(serde_json::json!({"prompt":value,"status":"waiting"}));
+        }
+        "manual-code" => {
+            session.status = "complete".into();
+            session.auth_info = None;
+            session
+                .progress
+                .push(serde_json::json!({"status":"complete"}));
+        }
+        _ => unreachable!(),
+    }
+    session.updated_at = now;
+    session_response(session.clone())
+}
+
+async fn cancel_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    update_session(&state, &id, "cancel", None).await
+}
+async fn prompt_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<SessionInput>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    if body.value.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"value is required"})),
+        )
+            .into_response();
+    }
+    update_session(&state, &id, "prompt", Some(body.value)).await
+}
+async fn manual_code(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<SessionInput>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    if body.value.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"value is required"})),
+        )
+            .into_response();
+    }
+    update_session(&state, &id, "manual-code", Some(body.value)).await
+}
+
+async fn models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<CredentialStatusQuery>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    if query.provider_id.as_deref().is_none_or(str::is_empty) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"providerId is required"})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({"data": [], "source":"catalog"})).into_response()
 }
 
 #[derive(Deserialize)]

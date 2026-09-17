@@ -175,6 +175,9 @@ pub struct AppState {
 
 #[derive(Debug, Default)]
 pub struct AppStateInner {
+    /// In-flight provider OAuth onboarding sessions. These are ephemeral;
+    /// completed credentials are persisted separately.
+    pub oauth_sessions: RwLock<HashMap<String, crate::oauth::OAuthSession>>,
     pub usage_events: Option<tokio::sync::broadcast::Sender<crate::usage::UsageEvent>>,
     /// Subscribers for the admin-only live system log stream.
     pub system_logs: Option<tokio::sync::broadcast::Sender<crate::system_logs::SystemLog>>,
@@ -210,6 +213,7 @@ impl AppState {
     pub fn new(admin_key: Option<String>, keys: HashMap<String, KeyConfig>) -> Self {
         Self {
             inner: Arc::new(AppStateInner {
+                oauth_sessions: RwLock::new(HashMap::new()),
                 usage_events: Some(tokio::sync::broadcast::channel(256).0),
                 system_logs: Some(tokio::sync::broadcast::channel(256).0),
                 database: None,
