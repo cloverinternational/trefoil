@@ -14,6 +14,7 @@ use serde::Deserialize;
 use sqlx::Row;
 use std::collections::HashMap;
 use tokio::process::Command;
+use tokio::time::{sleep, Duration, Instant};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -96,7 +97,7 @@ async fn list_servers(State(state): State<AppState>, headers: HeaderMap) -> Resp
         return Json(serde_json::json!({})).into_response();
     };
     let Ok(rows) = sqlx::query(
-        "SELECT name,upstream_url,enabled,mode,auth_scheme FROM mcp_servers ORDER BY name",
+        "SELECT name,upstream_url,enabled,mode,auth_scheme,launcher,package_name,args,env,startup_timeout_ms FROM mcp_servers ORDER BY name",
     )
     .fetch_all(pool)
     .await
@@ -126,7 +127,7 @@ async fn get_server(
         return not_found(&name);
     };
     match sqlx::query(
-        "SELECT name,upstream_url,enabled,mode,auth_scheme FROM mcp_servers WHERE name=$1",
+        "SELECT name,upstream_url,enabled,mode,auth_scheme,launcher,package_name,args,env,startup_timeout_ms FROM mcp_servers WHERE name=$1",
     )
     .bind(&name)
     .fetch_optional(pool)
@@ -179,7 +180,7 @@ async fn patch_server(
         return not_found(&name);
     };
     let Ok(row) =
-        sqlx::query("SELECT upstream_url,enabled,mode,auth_scheme FROM mcp_servers WHERE name=$1")
+        sqlx::query("SELECT upstream_url,enabled,mode,auth_scheme,launcher,package_name,args,env,startup_timeout_ms FROM mcp_servers WHERE name=$1")
             .bind(&name)
             .fetch_optional(pool)
             .await
@@ -393,7 +394,7 @@ async fn start_server(
             .flatten()
             .as_deref(),
     ));
-    let child =
+    let mut child =
         match command.spawn() {
             Ok(child) => child,
             Err(error) => return (
@@ -402,11 +403,41 @@ async fn start_server(
             )
                 .into_response(),
         };
+    let timeout_ms = row
+        .try_get::<Option<i64>, _>("startup_timeout_ms")
+        .ok()
+        .flatten()
+        .unwrap_or(30_000)
+        .clamp(100, 300_000) as u64;
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            let error = format!("MCP process exited during startup with status {status}");
+            state
+                .inner
+                .mcp_process_status
+                .lock()
+                .await
+                .insert(name.clone(), ("failed".into(), Some(error.clone())));
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error":error,"status":"failed"})),
+            )
+                .into_response();
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
     let mut processes = state.inner.mcp_processes.lock().await;
     if let Some(mut old) = processes.insert(name.clone(), child) {
         let _ = old.kill().await;
         let _ = old.wait().await;
     }
+    state
+        .inner
+        .mcp_process_status
+        .lock()
+        .await
+        .insert(name.clone(), ("running".into(), None));
     Json(serde_json::json!({"success":true,"name":name,"status":"running"})).into_response()
 }
 
@@ -423,6 +454,12 @@ async fn stop_server(
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
+    state
+        .inner
+        .mcp_process_status
+        .lock()
+        .await
+        .insert(name.clone(), ("stopped".into(), None));
     Json(serde_json::json!({"success":true,"name":name,"status":"stopped"})).into_response()
 }
 
@@ -470,5 +507,12 @@ async fn process_logs(
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
-    Json(serde_json::json!({"serverName":name,"data":[]})).into_response()
+    let status = state
+        .inner
+        .mcp_process_status
+        .lock()
+        .await
+        .get(&name)
+        .cloned();
+    Json(serde_json::json!({"serverName":name,"data":[],"status":status.as_ref().map(|v|v.0.as_str()).unwrap_or("stopped"),"error":status.and_then(|v|v.1)})).into_response()
 }
