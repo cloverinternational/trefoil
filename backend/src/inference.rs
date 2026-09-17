@@ -659,6 +659,7 @@ async fn completions(
     };
     let request_id = new_request_id();
     let start_time = now_ms();
+    let original_body = body.clone();
     body["model"] = Value::String(upstream_model);
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -735,6 +736,66 @@ async fn completions(
             response_with_request_id(status, payload, &request_id)
         }
         Err(error) => {
+            register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
+            let (fallback_provider_slug, fallback_model) =
+                resolve_target(&state, &model, key_config);
+            if fallback_provider_slug != provider_slug || fallback_model != model {
+                let fallback_provider = {
+                    state
+                        .inner
+                        .providers
+                        .read()
+                        .unwrap()
+                        .get(&fallback_provider_slug)
+                        .cloned()
+                };
+                if let Some(fallback_provider) = fallback_provider {
+                    if let Ok(fallback_base) =
+                        dispatch_provider_url(&fallback_provider.api_base_url)
+                    {
+                        let mut fallback_body = original_body;
+                        fallback_body["model"] = Value::String(fallback_model.clone());
+                        let mut fallback_request = client
+                            .post(format!(
+                                "{}/completions",
+                                fallback_base.as_str().trim_end_matches('/')
+                            ))
+                            .json(&fallback_body);
+                        if let Some(key) = fallback_provider.api_key {
+                            fallback_request = fallback_request.bearer_auth(key);
+                        }
+                        match fallback_request.send().await {
+                            Ok(fallback) => {
+                                let status = fallback.status();
+                                let payload = fallback.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                                record_response_usage(
+                                    &state,
+                                    &request_id,
+                                    usage_key_name,
+                                    &fallback_provider_slug,
+                                    &model,
+                                    "completions",
+                                    status.is_success(),
+                                    start_time,
+                                    &payload,
+                                    true,
+                                )
+                                .await;
+                                return response_with_request_id(status, payload, &request_id);
+                            }
+                            Err(fallback_error) => {
+                                register_provider_failure(
+                                    &state,
+                                    &fallback_provider_slug,
+                                    &fallback_model,
+                                    fallback_error.to_string(),
+                                )
+                                .await
+                            }
+                        }
+                    }
+                }
+            }
             record_basic_usage(
                 &state,
                 &request_id,
@@ -846,6 +907,7 @@ async fn embeddings(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default();
+    let original_body = body.clone();
     let mut request_body = body;
     request_body["model"] = Value::String(upstream_model);
     let client = match reqwest::Client::builder()
@@ -916,6 +978,58 @@ async fn embeddings(
             response
         }
         Err(error) => {
+            register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
+            let (fallback_provider_slug, fallback_model) =
+                resolve_target(&state, &model, key_config);
+            if fallback_provider_slug != provider_slug || fallback_model != model {
+                let fallback_provider = {
+                    state
+                        .inner
+                        .providers
+                        .read()
+                        .unwrap()
+                        .get(&fallback_provider_slug)
+                        .cloned()
+                };
+                if let Some(fallback_provider) = fallback_provider {
+                    if let Ok(fallback_base) =
+                        dispatch_provider_url(&fallback_provider.api_base_url)
+                    {
+                        let mut fallback_body = original_body;
+                        fallback_body["model"] = Value::String(fallback_model.clone());
+                        let mut fallback_request = client
+                            .post(format!(
+                                "{}/embeddings",
+                                fallback_base.as_str().trim_end_matches('/')
+                            ))
+                            .json(&fallback_body);
+                        if let Some(key) = fallback_provider.api_key {
+                            fallback_request = fallback_request.bearer_auth(key);
+                        }
+                        match fallback_request.send().await {
+                            Ok(fallback) => {
+                                let status = fallback.status();
+                                let payload = fallback.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                                let mut response =
+                                    response_with_request_id(status, payload, &request_id);
+                                if let Ok(value) = request_id.parse() {
+                                    response.headers_mut().insert("x-request-id", value);
+                                }
+                                return response;
+                            }
+                            Err(fallback_error) => {
+                                register_provider_failure(
+                                    &state,
+                                    &fallback_provider_slug,
+                                    &fallback_model,
+                                    fallback_error.to_string(),
+                                )
+                                .await
+                            }
+                        }
+                    }
+                }
+            }
             if let Some(pool) = &state.inner.database {
                 let _ = crate::database::record_request_usage(
                     pool,
