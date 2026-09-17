@@ -9,6 +9,7 @@ import { ModelAliases } from './pages/ModelAliases';
 import { ApiKeys } from './pages/ApiKeys';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Quotas } from './pages/Quotas';
+import { DetailedUsage } from './pages/DetailedUsage';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { adminKey } = useAuth();
@@ -27,6 +28,8 @@ const AppRoutes = () => (
     <Route path="/aliases" element={<ProtectedRoute><ModelAliases /></ProtectedRoute>} />
     <Route path="/keys" element={<ProtectedRoute><ApiKeys /></ProtectedRoute>} />
     <Route path="/quotas" element={<ProtectedRoute><Quotas /></ProtectedRoute>} />
+    <Route path="/usage" element={<ProtectedRoute><DetailedUsage /></ProtectedRoute>} />
+    <Route path="/detailed-usage" element={<ProtectedRoute><DetailedUsage /></ProtectedRoute>} />
     <Route
       path="/"
       element={

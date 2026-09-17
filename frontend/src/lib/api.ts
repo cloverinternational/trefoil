@@ -94,6 +94,18 @@ export async function getRecentUsage(limit = 8): Promise<UsageRecord[]> {
   return Array.isArray(body.data) ? body.data : [];
 }
 
+export async function getUsage(limit = 25, offset = 0): Promise<{ data: UsageRecord[]; total: number }> {
+  const response = await fetch(`/v0/management/usage?limit=${limit}&offset=${offset}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load usage records');
+  const body = (await response.json()) as { data?: UsageRecord[]; total?: number };
+  return { data: Array.isArray(body.data) ? body.data : [], total: Number(body.total ?? 0) };
+}
+
+export async function deleteUsage(requestId: string): Promise<void> {
+  const response = await fetch(`/v0/management/usage/${encodeURIComponent(requestId)}`, { method: 'DELETE', headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to delete usage record');
+}
+
 export interface ProviderConfig {
   display_name?: string;
   api_base_url: string;
