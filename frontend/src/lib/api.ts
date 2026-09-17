@@ -196,6 +196,25 @@ export async function deleteProvider(name: string): Promise<void> {
   if (!response.ok) throw new Error('Unable to delete provider');
 }
 
+export interface OAuthProviderInfo { id: string; name: string; usesCallbackServer?: boolean; }
+export interface OAuthCredentialStatus { ready: boolean; }
+export async function getOAuthProviders(): Promise<OAuthProviderInfo[]> {
+  const response = await fetch('/v0/management/oauth/providers', { headers: authHeaders() });
+  if (!response.ok) throw new Error(response.status === 403 ? 'Administrator access required' : 'Unable to load OAuth providers');
+  const body = await response.json() as { data?: OAuthProviderInfo[] };
+  return Array.isArray(body.data) ? body.data : [];
+}
+export async function getOAuthCredentialStatus(providerId: string, accountId: string): Promise<OAuthCredentialStatus> {
+  const query = new URLSearchParams({ providerId, accountId });
+  const response = await fetch(`/v0/management/oauth/credentials/status?${query}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to check OAuth credential status');
+  const body = await response.json() as { data?: OAuthCredentialStatus }; return body.data ?? { ready: false };
+}
+export async function deleteOAuthCredentials(providerId: string, accountId: string): Promise<void> {
+  const response = await fetch('/v0/management/oauth/credentials', { method: 'DELETE', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ providerId, accountId }) });
+  if (!response.ok) { const body = await response.json().catch(() => null) as { error?: string } | null; throw new Error(body?.error || 'Unable to disconnect OAuth account'); }
+}
+
 export interface McpServerConfig { upstreamUrl: string; enabled: boolean; mode: string; authScheme?: string | null; launcher?: string | null; packageName?: string | null; args?: string | null; env?: string | null; startupTimeoutMs?: number | null; }
 export interface McpKey { id: number; key: string; isActive: boolean; }
 async function mcpRequest(path: string, init?: RequestInit) { return fetch(path, { ...init, headers: { ...authHeaders(), ...(init?.headers ?? {}) } }); }
