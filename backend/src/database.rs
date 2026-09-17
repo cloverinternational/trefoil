@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 
 use crate::state::{
     AdapterEntry, CooldownEntry, KeyConfig, ModelConfig, ModelTargetGroup, ProviderConfig,
-    QuotaDefinition, RawPassthroughConfig,
+    QuotaCheckerConfig, QuotaDefinition, RawPassthroughConfig,
 };
 
 pub const DEFAULT_MAX_CONNECTIONS: u32 = 16;
@@ -145,7 +146,7 @@ pub async fn delete_key(pool: &PgPool, name: &str) -> Result<(), sqlx::Error> {
 }
 
 pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderConfig>, sqlx::Error> {
-    let rows = sqlx::query("SELECT slug, display_name, api_base_url, api_key, oauth_provider_type, enabled, disable_cooldown, stall_cooldown, allow_100_percent_utilization, discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled, auto_compat, adapter, model_autosync_enabled, model_autosync_interval, raw_passthrough FROM providers")
+    let rows = sqlx::query("SELECT slug, display_name, api_base_url, api_key, oauth_provider_type, enabled, disable_cooldown, stall_cooldown, allow_100_percent_utilization, discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled, auto_compat, adapter, model_autosync_enabled, model_autosync_interval, raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled, quota_checker_interval, quota_checker_options FROM providers")
         .fetch_all(pool).await?;
     let mut result = HashMap::new();
     for row in rows {
@@ -178,6 +179,20 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
                 },
                 raw_passthrough: raw
                     .and_then(|v| serde_json::from_value::<RawPassthroughConfig>(v).ok()),
+                quota_checker: row
+                    .try_get::<Option<String>, _>("quota_checker_type")?
+                    .map(|checker_type| -> Result<QuotaCheckerConfig, sqlx::Error> {
+                        Ok(QuotaCheckerConfig {
+                            checker_type: Some(checker_type),
+                            id: row.try_get("quota_checker_id")?,
+                            enabled: row.try_get("quota_checker_enabled")?,
+                            interval: row.try_get::<i32, _>("quota_checker_interval")? as u64,
+                            options: row
+                                .try_get::<Option<serde_json::Value>, _>("quota_checker_options")?
+                                .unwrap_or(Value::Null),
+                        })
+                    })
+                    .transpose()?,
             },
         );
     }
@@ -199,8 +214,9 @@ pub async fn upsert_provider(
            disable_cooldown, stall_cooldown, allow_100_percent_utilization,
            discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled,
            auto_compat, adapter, model_autosync_enabled, model_autosync_interval,
-           raw_passthrough, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19)
+           raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled,
+           quota_checker_interval, quota_checker_options, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$23)
          ON CONFLICT (slug) DO UPDATE SET
            display_name=EXCLUDED.display_name, api_base_url=EXCLUDED.api_base_url,
            api_key=EXCLUDED.api_key, oauth_provider_type=EXCLUDED.oauth_provider_type,
@@ -213,7 +229,13 @@ pub async fn upsert_provider(
            auto_compat=EXCLUDED.auto_compat, adapter=EXCLUDED.adapter,
            model_autosync_enabled=EXCLUDED.model_autosync_enabled,
            model_autosync_interval=EXCLUDED.model_autosync_interval,
-           raw_passthrough=EXCLUDED.raw_passthrough, updated_at=EXCLUDED.updated_at",
+           raw_passthrough=EXCLUDED.raw_passthrough,
+           quota_checker_type=EXCLUDED.quota_checker_type,
+           quota_checker_id=EXCLUDED.quota_checker_id,
+           quota_checker_enabled=EXCLUDED.quota_checker_enabled,
+           quota_checker_interval=EXCLUDED.quota_checker_interval,
+           quota_checker_options=EXCLUDED.quota_checker_options,
+           updated_at=EXCLUDED.updated_at",
     )
     .bind(slug)
     .bind(&config.display_name)
@@ -233,6 +255,11 @@ pub async fn upsert_provider(
     .bind(config.model_autosync.enabled)
     .bind(config.model_autosync.interval_minutes as i32)
     .bind(serde_json::to_value(&config.raw_passthrough).unwrap())
+    .bind(config.quota_checker.as_ref().and_then(|q| q.checker_type.clone()))
+    .bind(config.quota_checker.as_ref().and_then(|q| q.id.clone()))
+    .bind(config.quota_checker.as_ref().map(|q| q.enabled).unwrap_or(true))
+    .bind(config.quota_checker.as_ref().map(|q| q.interval as i32).unwrap_or(30))
+    .bind(config.quota_checker.as_ref().map(|q| q.options.clone()))
     .bind(now)
     .execute(pool)
     .await

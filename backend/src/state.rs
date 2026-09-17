@@ -112,6 +112,26 @@ pub struct ProviderConfig {
     pub model_autosync: ModelAutosync,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_passthrough: Option<RawPassthroughConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_checker: Option<QuotaCheckerConfig>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct QuotaCheckerConfig {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub checker_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_quota_interval")]
+    pub interval: u64,
+    #[serde(default)]
+    pub options: Value,
+}
+
+fn default_quota_interval() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

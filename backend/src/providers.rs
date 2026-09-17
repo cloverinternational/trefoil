@@ -21,7 +21,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::auth::{resolve_principal, Principal};
-use crate::state::{AdapterEntry, AppState, ProviderConfig, RawPassthroughConfig};
+use crate::state::{
+    AdapterEntry, AppState, ProviderConfig, QuotaCheckerConfig, RawPassthroughConfig,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -198,6 +200,7 @@ struct ProviderBody {
     /// `AdapterEntry[]` form, matching `AdapterConfigSchema`'s preprocess step.
     adapter: Option<AdapterInput>,
     raw_passthrough: Option<RawPassthroughConfig>,
+    quota_checker: Option<QuotaCheckerConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -376,6 +379,9 @@ fn validate_and_build(
             .map(|e| e.model_autosync.clone())
             .unwrap_or_default(),
         raw_passthrough,
+        quota_checker: body
+            .quota_checker
+            .or_else(|| existing.and_then(|e| e.quota_checker.clone())),
     })
 }
 

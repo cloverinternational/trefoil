@@ -57,6 +57,54 @@ pub fn router() -> Router<AppState> {
         )
 }
 
+/// Poll enabled provider custom checkers in the background.
+pub fn start_poller(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            let providers = state.inner.providers.read().unwrap().clone();
+            let mut delay = Duration::from_secs(30);
+            for (provider, config) in providers {
+                let Some(quota) = config.quota_checker.filter(|q| q.enabled) else {
+                    continue;
+                };
+                let Some(checker_id) = quota.id.or(quota.checker_type) else {
+                    continue;
+                };
+                delay = delay.min(Duration::from_secs(quota.interval.max(1)));
+                let Some(pool) = &state.inner.database else {
+                    continue;
+                };
+                let Ok(Some(code)) = sqlx::query_scalar::<_, String>(
+                    "SELECT code FROM custom_checkers WHERE id=$1 AND enabled=true",
+                )
+                .bind(&checker_id)
+                .fetch_optional(pool)
+                .await
+                else {
+                    continue;
+                };
+                let input = serde_json::json!({"provider": provider, "options": quota.options});
+                match run_checker(&code, &input).await {
+                    Ok(meters) => {
+                        persist_result(&state, &checker_id, &provider, &meters, None).await
+                    }
+                    Err(message) => {
+                        persist_result(
+                            &state,
+                            &checker_id,
+                            &provider,
+                            &Value::Array(vec![]),
+                            Some(&message),
+                        )
+                        .await
+                    }
+                }
+            }
+            tokio::time::sleep(delay).await;
+        }
+    });
+}
+
 fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     match resolve_principal(
         state,

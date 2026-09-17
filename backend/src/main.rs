@@ -48,6 +48,7 @@ async fn main() {
     *state.inner.user_quotas.write().unwrap() = user_quotas;
     *state.inner.settings.write().unwrap() = settings;
     *state.inner.cooldowns.write().unwrap() = cooldowns;
+    trefoil_backend::custom_checkers::start_poller(state.clone());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
         .await
