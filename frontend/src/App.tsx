@@ -10,6 +10,7 @@ import { ApiKeys } from './pages/ApiKeys';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Quotas } from './pages/Quotas';
 import { DetailedUsage } from './pages/DetailedUsage';
+import { Configuration } from './pages/Configuration';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { adminKey } = useAuth();
@@ -30,6 +31,8 @@ const AppRoutes = () => (
     <Route path="/quotas" element={<ProtectedRoute><Quotas /></ProtectedRoute>} />
     <Route path="/usage" element={<ProtectedRoute><DetailedUsage /></ProtectedRoute>} />
     <Route path="/detailed-usage" element={<ProtectedRoute><DetailedUsage /></ProtectedRoute>} />
+    <Route path="/config" element={<ProtectedRoute><Configuration /></ProtectedRoute>} />
+    <Route path="/configuration" element={<ProtectedRoute><Configuration /></ProtectedRoute>} />
     <Route
       path="/"
       element={

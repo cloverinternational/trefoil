@@ -65,6 +65,24 @@ export async function getConfigStatus(): Promise<{
   return response.json();
 }
 
+export type SystemSettings = Record<string, unknown>;
+
+export async function getSystemSettings(): Promise<SystemSettings> {
+  const response = await fetch('/v0/management/system-settings', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load system settings');
+  const body = await response.json();
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Invalid system settings response');
+  return body as SystemSettings;
+}
+
+export async function patchSystemSettings(settings: SystemSettings): Promise<void> {
+  const response = await fetch('/v0/management/system-settings', { method: 'PATCH', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(settings) });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string | { message?: string } } | null;
+    throw new Error(typeof body?.error === 'string' ? body.error : body?.error?.message || 'Unable to save system settings');
+  }
+}
+
 export async function getUsageSummary(): Promise<Record<string, number>> {
   const response = await fetch('/v0/management/usage/summary', { headers: authHeaders() });
   if (!response.ok) throw new Error('Unable to load usage summary');

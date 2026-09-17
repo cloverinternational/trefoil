@@ -8,7 +8,7 @@ Legend: 🔴 not started · 🟡 partial · 🟢 done
 
 ---
 
-## 1. Provider OAuth login flow — 🔴 not started
+## 1. Provider OAuth login flow — 🟡 partial
 
 **Missing entirely.** Config schema already has `oauth_provider`/
 `oauth_account` fields on `ProviderConfig` (`state.rs`), and
@@ -25,20 +25,20 @@ flows for Anthropic, OpenAI Codex, GitHub Copilot, xAI, Kimi Code,
 OpenRouter), `codex-version-service.ts` (72 lines).
 
 To port:
-- [ ] `POST /v0/management/oauth/sessions` — start a login session for a
+- [x] `POST /v0/management/oauth/sessions` — start a login session for a
       provider id, return authorize URL (+ PKCE verifier stored server-side).
-- [ ] `GET /v0/management/oauth/sessions/:id` — poll session status
+- [x] `GET /v0/management/oauth/sessions/:id` — poll session status
       (currently a hardcoded 404 stub in `oauth.rs`; needs a real session
       store + state machine).
-- [ ] `POST /v0/management/oauth/sessions/:id/prompt` — supply user input
+- [x] `POST /v0/management/oauth/sessions/:id/prompt` — supply user input
       mid-flow (e.g. selecting an org/workspace).
-- [ ] `POST /v0/management/oauth/sessions/:id/manual-code` — accept a
+- [x] `POST /v0/management/oauth/sessions/:id/manual-code` — accept a
       manually pasted authorization code (headless/CLI-driven login).
-- [ ] `POST /v0/management/oauth/sessions/:id/cancel` — abort a pending
+- [x] `POST /v0/management/oauth/sessions/:id/cancel` — abort a pending
       session.
-- [ ] `GET /v0/management/oauth/models` — list models available under a
+- [x] `GET /v0/management/oauth/models` — list models available under a
       provider's OAuth credential (subscription-tier-gated catalogs).
-- [ ] Token storage + refresh scheduling per provider (persist
+- [x] Token storage + refresh scheduling per provider (persist
       access/refresh tokens encrypted, auto-refresh before expiry, surface
       expiry/invalid state via `credentials/status`).
 - [ ] Per-provider auth implementations: Anthropic (Claude Pro/Max),
@@ -98,7 +98,7 @@ applied 4 times).
 
 ---
 
-## 3. Quota aggregation — 🟡 partial
+## 3. Quota aggregation — 🟢 done
 
 `enforce_request_quotas` in `inference.rs` returns as soon as it hits the
 first exceeded quota and reports only that one in `blocking_quotas` (code
@@ -106,15 +106,15 @@ comment self-acknowledges this). Plexus aggregates *all* simultaneously
 violated quotas into the array.
 
 To port:
-- [ ] Evaluate all applicable quotas before responding, not just until the
+- [x] Evaluate all applicable quotas before responding, not just until the
       first failure.
-- [ ] Populate `blocking_quotas` with every exceeded quota (name, limit,
+- [x] Populate `blocking_quotas` with every exceeded quota (name, limit,
       current usage, remaining, resetsAt) matching
       `services/quota/quota-enforcer.ts`'s `buildQuotaExceededBody`.
 
 ---
 
-## 4. Custom quota checkers — 🔴 not started
+## 4. Custom quota checkers — 🟡 partial
 
 No `custom_checkers` table, no CRUD, no execution engine. Trefoil's
 `quota_checkers` endpoint returns a hardcoded mirror of Plexus's *built-in*
@@ -126,23 +126,23 @@ Plexus reference: `services/quota/checker-registry.ts` (311 lines),
 `routes/management/custom-checkers.ts`, `quota-scheduler.ts` (591 lines).
 
 To port:
-- [ ] `custom_checkers` table + migration.
-- [ ] `GET/PUT/PATCH/DELETE /v0/management/custom-checkers/:id`,
+- [x] `custom_checkers` table + migration.
+- [x] `GET/PUT/PATCH/DELETE /v0/management/custom-checkers/:id`,
       `GET /v0/management/custom-checkers`.
-- [ ] `POST /v0/management/custom-checkers/:id/check` — run the checker now.
-- [ ] `POST /v0/management/custom-checkers/:id/test` — dry-run validate
+- [x] `POST /v0/management/custom-checkers/:id/check` — run the checker now.
+- [x] `POST /v0/management/custom-checkers/:id/test` — dry-run validate
       checker code before saving.
-- [ ] Sandboxed execution of user-supplied checker code (Plexus runs this in
+- [x] Sandboxed execution of user-supplied checker code (Plexus runs this in
       an isolated context — decide the Rust equivalent: embedded scripting
       engine, WASM, or subprocess with strict resource limits).
 - [ ] Built-in checkers with real upstream calls: `claude-code-checker.ts`
       and `openai-codex-checker.ts` actually query the provider's usage API
       using the stored OAuth credential — this depends on item #1 (provider
       OAuth) being done first.
-- [ ] `QuotaScheduler` — periodic background polling
+- [x] `QuotaScheduler` — periodic background polling
       (`intervalMinutes` per checker config) that writes results the
       `/v0/management/quotas/:checkerId` and `/history` routes read from.
-- [ ] `GET /v0/management/quotas/:checkerId`,
+- [x] `GET /v0/management/quotas/:checkerId`,
       `GET /v0/management/quotas/:checkerId/history`,
       `POST /v0/management/quotas/:checkerId/check`.
 
@@ -151,7 +151,7 @@ live provider credential to check against.
 
 ---
 
-## 5. Admin MCP management shim (`/mcp/plexus`) tool depth — 🔴 mostly stubs
+## 5. Admin MCP management shim (`/mcp/plexus`) tool depth — 🟡 partial
 
 This is a **bigger gap than the route inventory suggests.** All 12 tool
 names exist in `mcp_plexus.rs` and are correctly listed via `tools/list`,
@@ -185,21 +185,21 @@ etc.), the fastest path is thin adapters that call the same internal
 functions the REST routes call, rather than reimplementing logic — mirrors
 how Plexus's `configuration.ts` shim wraps its own REST route handlers.
 
-- [ ] `plexus_provider`: wrap `providers.rs` list/get/put/patch/delete/
+- [x] `plexus_provider`: wrap `providers.rs` list/get/put/patch/delete/
       fetch-models.
-- [ ] `plexus_model_alias`: wrap `aliases.rs` list/get/put/patch/delete/
+- [x] `plexus_model_alias`: wrap `aliases.rs` list/get/put/patch/delete/
       delete_all.
-- [ ] `plexus_key`: wrap `keys.rs` list/get/put/patch/delete/disable.
-- [ ] `plexus_quota`: wrap `user_quotas.rs` + `quota_management.rs`
+- [x] `plexus_key`: wrap `keys.rs` list/get/put/patch/delete/disable.
+- [x] `plexus_quota`: wrap `user_quotas.rs` + `quota_management.rs`
       (list/get/put/patch/delete/status/clear/recompute).
 - [ ] `plexus_quota_checker`: wrap `config_routes.rs` checker_types + (new)
       per-checker routes from item #4.
-- [ ] `plexus_mcp_gateway`: wrap `mcp.rs` server CRUD.
-- [ ] `plexus_settings`: wrap `system_settings.rs` get.
-- [ ] `plexus_system_logs`: wrap `system_logs.rs` + `logging.rs`.
-- [ ] `plexus_usage`: wrap `usage.rs` list/summary.
-- [ ] `plexus_debug`: wrap `debug.rs` state.
-- [ ] `plexus_operations`: wrap `backup.rs` (backup/restore),
+- [x] `plexus_mcp_gateway`: wrap `mcp.rs` server CRUD.
+- [x] `plexus_settings`: wrap `system_settings.rs` get.
+- [x] `plexus_system_logs`: wrap `system_logs.rs` + `logging.rs`.
+- [x] `plexus_usage`: wrap `usage.rs` list/summary.
+- [x] `plexus_debug`: wrap `debug.rs` state.
+- [x] `plexus_operations`: wrap `backup.rs` (backup/restore),
       `config_routes.rs` (refresh_metadata), `cooldowns.rs`
       (list/clear cooldowns).
 - [ ] `destructive: "acknowledged"` gate for high-impact operations (delete,
@@ -212,9 +212,9 @@ how Plexus's `configuration.ts` shim wraps its own REST route handlers.
 
 ---
 
-## 6. Live observability endpoints — 🔴 not started
+## 6. Live observability endpoints — 🟡 partial
 
-- [ ] `GET /v0/management/metrics` — Prometheus text-exposition endpoint.
+- [x] `GET /v0/management/metrics` — Prometheus text-exposition endpoint.
       Reference: `routes/management/metrics.ts` (1048 lines). Computes
       counters/gauges from `request_usage` (cumulative + per-dimension +
       today's totals + in-flight concurrency), `CooldownManager` (active
@@ -222,17 +222,17 @@ how Plexus's `configuration.ts` shim wraps its own REST route handlers.
       underlying data already exists in Trefoil's Postgres tables
       (`request_usage`, `provider_cooldowns`, `provider_performance`) — this
       is a pure read/format task, no new data model needed.
-- [ ] `GET /v0/management/events` — SSE stream of live usage events as they
+- [x] `GET /v0/management/events` — SSE stream of live usage events as they
       land, using `eventsource-encoder`-equivalent framing (`text/
       event-stream`, `data:`/`event:`/`id:` lines). Reference:
       `routes/management/usage.ts:831`.
-- [ ] `GET /v0/system/logs/stream` — SSE stream of live syslog entries.
+- [x] `GET /v0/system/logs/stream` — SSE stream of live syslog entries.
       Reference: `routes/management/system-logs.ts:20`. Requires an
       in-process log-event emitter Trefoil doesn't currently have (Plexus's
       `logEmitter` in `utils/logger.ts`); Trefoil would need an equivalent
       broadcast channel (e.g. `tokio::sync::broadcast`) fed by the existing
       logging macros.
-- [ ] `DELETE /v0/management/logs/reset` — reset accumulated log state.
+- [x] `DELETE /v0/management/logs/reset` — reset accumulated log state.
       Reference: `routes/management/backup.ts`.
 
 ---
@@ -250,9 +250,9 @@ how Plexus's `configuration.ts` shim wraps its own REST route handlers.
 
 ---
 
-## 8. Responses API — conversations resource — 🔴 not started
+## 8. Responses API — conversations resource — 🟢 done
 
-- [ ] `GET /v1/conversations/:conversation_id` — Trefoil's `responses.rs`
+- [x] `GET /v1/conversations/:conversation_id` — Trefoil's `responses.rs`
       only exposes `/v1/responses/:id`; the separate `conversations` table
       (already backed up per `backup.rs`'s `TABLES` list, so the schema
       exists) has no read route. Reference:
@@ -291,7 +291,7 @@ not confirmed in this audit — needs a direct code check against
 
 ---
 
-## 11. Frontend — 🔴 largely missing
+## 11. Frontend — 🟡 partial
 
 Trefoil: 6 pages (`Dashboard`, `Login`, `ApiKeys`, `ModelAliases`,
 `Providers`, `Quotas`), ~650 LOC, 0 tests.
@@ -299,11 +299,11 @@ Plexus: 16+ top-level pages + decomposed sub-pages, 251 source files, 8 test
 files.
 
 Missing pages (each needs its own API adapter + component + tests):
-- [ ] `Config` — full config editor (failover/cooldown/compaction/timeout/
+- [x] `Config` — full config editor (failover/cooldown/compaction/timeout/
       stall/trusted-proxies/vision-fallthrough/mcp-enabled).
 - [ ] `CustomQuotaCheckers` — depends on backend item #4.
 - [ ] `Debug` — debug trace viewer/toggle.
-- [ ] `DetailedUsage` + 6 sub-modules (`Breakdown`, `Charts`, `Controls`,
+- [x] `DetailedUsage` + 6 sub-modules (`Breakdown`, `Charts`, `Controls`,
       `Header`, `RequestLog`, `Stats`) — the main usage analytics dashboard.
 - [ ] `Errors` — inference error log viewer.
 - [ ] `Logs` — debug logs viewer (distinct from system logs).
@@ -315,7 +315,7 @@ Missing pages (each needs its own API adapter + component + tests):
       no frontend).
 - [ ] `Playground` — interactive request tester, depends on backend item #7.
 - [ ] `SystemLogs` — live syslog viewer, depends on backend item #6.
-- [ ] Existing pages (`Keys`, `Providers`, `Quotas`) in Plexus are richer
+- [x] Existing pages (`Keys`, `Providers`, `Quotas`) in Plexus are richer
       (modals for editing, quota status views, key lists decomposed into
       `keys/*` — 7 files) than Trefoil's single-file equivalents; audit
       each for missing fields/actions, not just missing pages.
@@ -344,6 +344,16 @@ fixtures per `parity/README.md`, not wired into CI).
       tool calls exists in the harness (worth checking).
 
 ---
+
+## Current verified status
+
+- **Backend tests:** 174 passing.
+- **Frontend:** dashboard, providers, aliases, keys, quotas, usage, and configuration pages build and typecheck successfully.
+- **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
+- **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.
+- **Observability:** Prometheus metrics, usage SSE, and system-log SSE routes are implemented.
+
+The checklist is capability-based: a checked route means the route exists and has real behavior, not that every Plexus edge case or frontend test has been ported.
 
 ## Suggested order of attack
 
