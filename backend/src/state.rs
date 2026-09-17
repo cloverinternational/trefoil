@@ -178,6 +178,8 @@ pub struct AppStateInner {
     /// In-flight provider OAuth onboarding sessions. These are ephemeral;
     /// completed credentials are persisted separately.
     pub oauth_sessions: RwLock<HashMap<String, crate::oauth::OAuthSession>>,
+    /// PKCE verifiers are kept server-side and are never sent to the browser.
+    pub oauth_pkce_verifiers: RwLock<HashMap<String, String>>,
     pub usage_events: Option<tokio::sync::broadcast::Sender<crate::usage::UsageEvent>>,
     /// Subscribers for the admin-only live system log stream.
     pub system_logs: Option<tokio::sync::broadcast::Sender<crate::system_logs::SystemLog>>,
@@ -214,6 +216,7 @@ impl AppState {
         Self {
             inner: Arc::new(AppStateInner {
                 oauth_sessions: RwLock::new(HashMap::new()),
+                oauth_pkce_verifiers: RwLock::new(HashMap::new()),
                 usage_events: Some(tokio::sync::broadcast::channel(256).0),
                 system_logs: Some(tokio::sync::broadcast::channel(256).0),
                 database: None,

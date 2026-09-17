@@ -69,6 +69,10 @@ pub fn router() -> Router<AppState> {
             "/v0/management/oauth/sessions/:id/manual-code",
             axum::routing::post(manual_code),
         )
+        .route(
+            "/v0/management/oauth/sessions/:id/callback",
+            axum::routing::get(callback),
+        )
         .route("/v0/management/oauth/models", axum::routing::get(models))
 }
 
@@ -100,6 +104,13 @@ struct SessionInput {
     value: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct CallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -117,7 +128,19 @@ fn session_id() -> String {
         .collect()
 }
 
-fn authorization_url(provider: &str, session_id: &str) -> Option<String> {
+fn token_endpoint(provider: &str) -> Option<&'static str> {
+    match provider {
+        "anthropic" => Some("https://console.anthropic.com/v1/oauth/token"),
+        "github-copilot" => Some("https://github.com/login/oauth/access_token"),
+        "kimi-coding" => Some("https://auth.kimi.com/oauth/token"),
+        "openai-codex" => Some("https://auth.openai.com/oauth/token"),
+        "openrouter" => Some("https://openrouter.ai/api/v1/auth/keys"),
+        "xai" => Some("https://accounts.x.ai/oauth/token"),
+        _ => None,
+    }
+}
+
+fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option<String> {
     let endpoint = match provider {
         "anthropic" => "https://console.anthropic.com/oauth/authorize",
         "github-copilot" => "https://github.com/login/oauth/authorize",
@@ -127,11 +150,6 @@ fn authorization_url(provider: &str, session_id: &str) -> Option<String> {
         "xai" => "https://accounts.x.ai/oauth/authorize",
         _ => return None,
     };
-    let verifier: String = rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(64)
-        .map(char::from)
-        .collect();
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let mut url = url::Url::parse(endpoint).ok()?;
     let redirect = format!("/v0/management/oauth/sessions/{session_id}/callback");
@@ -169,7 +187,12 @@ async fn create_session(
     }
     let now = now_ms();
     let id = session_id();
-    let auth_url = authorization_url(&body.provider_id, &id).unwrap();
+    let verifier: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(64)
+        .map(char::from)
+        .collect();
+    let auth_url = authorization_url(&body.provider_id, &id, &verifier).unwrap();
     let session = OAuthSession {
         id: id.clone(),
         provider_id: body.provider_id.clone(),
@@ -191,6 +214,12 @@ async fn create_session(
         .write()
         .unwrap()
         .insert(id, session.clone());
+    state
+        .inner
+        .oauth_pkce_verifiers
+        .write()
+        .unwrap()
+        .insert(session.id.clone(), verifier);
     if let Some(pool) = &state.inner.database {
         if crate::database::upsert_oauth_session(pool, &session)
             .await
@@ -204,6 +233,134 @@ async fn create_session(
         }
     }
     session_response(session)
+}
+
+async fn callback(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<CallbackQuery>,
+) -> Response {
+    // The state parameter binds the browser redirect to the server-side session.
+    if query.state.as_deref() != Some(id.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Invalid OAuth state"})),
+        )
+            .into_response();
+    }
+    if let Some(error) = query.error {
+        return update_session(&state, &id, "prompt", Some(error)).await;
+    }
+    let Some(code) = query.code.filter(|code| !code.trim().is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Authorization code is required"})),
+        )
+            .into_response();
+    };
+    let session = match state.inner.oauth_sessions.read().unwrap().get(&id).cloned() {
+        Some(session) if session.expires_at > now_ms() && session.status == "waiting" => session,
+        Some(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error":"OAuth session is no longer active"})),
+            )
+                .into_response()
+        }
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error":"OAuth session not found"})),
+            )
+                .into_response()
+        }
+    };
+    let verifier = match state
+        .inner
+        .oauth_pkce_verifiers
+        .write()
+        .unwrap()
+        .remove(&id)
+    {
+        Some(verifier) => verifier,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"OAuth verifier unavailable"})),
+            )
+                .into_response()
+        }
+    };
+    let Some(endpoint) = token_endpoint(&session.provider_id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Unsupported OAuth provider"})),
+        )
+            .into_response();
+    };
+    let redirect = format!("/v0/management/oauth/sessions/{id}/callback");
+    let result = reqwest::Client::new()
+        .post(endpoint)
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("client_id", "trefoil"),
+            ("redirect_uri", redirect.as_str()),
+            ("code_verifier", verifier.as_str()),
+        ])
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await;
+    let response = match result {
+        Ok(response) => response,
+        Err(_) => return oauth_failed(&state, &id, "OAuth token request failed").await,
+    };
+    let status = response.status();
+    let payload = response
+        .json::<serde_json::Value>()
+        .await
+        .unwrap_or_default();
+    if !status.is_success() {
+        return oauth_failed(&state, &id, "OAuth token exchange rejected").await;
+    }
+    let Some(access) = payload.get("access_token").and_then(|v| v.as_str()) else {
+        return oauth_failed(&state, &id, "OAuth response omitted access token").await;
+    };
+    let refresh = payload
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let expires = now_ms()
+        + payload
+            .get("expires_in")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(3600)
+            * 1000;
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_oauth_credential(
+            pool,
+            &session.provider_id,
+            &session.account_id,
+            access,
+            refresh,
+            expires,
+        )
+        .await
+        .is_err()
+        {
+            return oauth_failed(&state, &id, "Unable to persist OAuth credentials").await;
+        }
+    }
+    update_session(&state, &id, "manual-code", Some("complete".into())).await
+}
+
+async fn oauth_failed(state: &AppState, id: &str, message: &str) -> Response {
+    let _ = update_session(state, id, "cancel", None).await;
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(serde_json::json!({"error":message})),
+    )
+        .into_response()
 }
 
 async fn get_session(

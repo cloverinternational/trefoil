@@ -51,6 +51,19 @@ pub async fn upsert_oauth_session(
         .execute(pool).await.map(|_| ())
 }
 
+pub async fn upsert_oauth_credential(
+    pool: &PgPool,
+    provider: &str,
+    account: &str,
+    access_token: &str,
+    refresh_token: &str,
+    expires_at: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO oauth_credentials (oauth_provider_type,account_id,access_token,refresh_token,expires_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$6) ON CONFLICT (oauth_provider_type,account_id) DO UPDATE SET access_token=EXCLUDED.access_token,refresh_token=EXCLUDED.refresh_token,expires_at=EXCLUDED.expires_at,updated_at=EXCLUDED.updated_at")
+        .bind(provider).bind(account).bind(access_token).bind(refresh_token)
+        .bind(expires_at).execute(pool).await.map(|_| ())
+}
+
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
     PgPoolOptions::new()
         .max_connections(
