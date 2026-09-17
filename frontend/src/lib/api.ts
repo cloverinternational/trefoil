@@ -149,6 +149,11 @@ export async function deleteUsage(requestId: string): Promise<void> {
   if (!response.ok) throw new Error('Unable to delete usage record');
 }
 
+export interface InferenceError { id: number; requestId: string; date: string; errorMessage: string | null; errorStack: string | null; details: string | null; createdAt: number; apiKey: string | null; }
+export async function getErrors(limit = 25, offset = 0): Promise<{ data: InferenceError[]; total: number }> { const r = await fetch(`/v0/management/errors?limit=${limit}&offset=${offset}`, { headers: authHeaders() }); if (!r.ok) throw new Error('Unable to load inference errors'); const b = await r.json() as { data?: InferenceError[]; total?: number }; return { data: Array.isArray(b.data) ? b.data : [], total: Number(b.total ?? 0) }; }
+export async function deleteError(id: string): Promise<void> { const r = await fetch(`/v0/management/errors/${encodeURIComponent(id)}`, { method: 'DELETE', headers: authHeaders() }); if (!r.ok) throw new Error('Unable to delete inference error'); }
+export async function deleteErrors(): Promise<void> { const r = await fetch('/v0/management/errors', { method: 'DELETE', headers: authHeaders() }); if (!r.ok) throw new Error('Unable to clear inference errors'); }
+
 export interface ProviderConfig {
   display_name?: string;
   api_base_url: string;

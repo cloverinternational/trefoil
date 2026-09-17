@@ -305,7 +305,7 @@ Missing pages (each needs its own API adapter + component + tests):
 - [x] `Debug` — debug trace viewer/toggle with trace list, detail, and deletion.
 - [x] `DetailedUsage` + 6 sub-modules (`Breakdown`, `Charts`, `Controls`,
       `Header`, `RequestLog`, `Stats`) — the main usage analytics dashboard.
-- [ ] `Errors` — inference error log viewer.
+- [x] `Errors` — inference error log viewer at `/errors` with pagination, detail inspection, per-record deletion, and admin-only clear-all.
 - [ ] `Logs` — debug logs viewer (distinct from system logs).
 - [ ] `Mcp` — MCP server management UI (CRUD + process control + logs),
       depends on backend items already done (mcp.rs) but the UI doesn't
