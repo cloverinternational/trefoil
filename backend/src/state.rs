@@ -155,6 +155,7 @@ pub struct AppState {
 
 #[derive(Debug, Default)]
 pub struct AppStateInner {
+    pub usage_events: Option<tokio::sync::broadcast::Sender<crate::usage::UsageEvent>>,
     /// Subscribers for the admin-only live system log stream.
     pub system_logs: Option<tokio::sync::broadcast::Sender<crate::system_logs::SystemLog>>,
     /// Production state is being migrated to PostgreSQL repository by
@@ -189,6 +190,7 @@ impl AppState {
     pub fn new(admin_key: Option<String>, keys: HashMap<String, KeyConfig>) -> Self {
         Self {
             inner: Arc::new(AppStateInner {
+                usage_events: Some(tokio::sync::broadcast::channel(256).0),
                 system_logs: Some(tokio::sync::broadcast::channel(256).0),
                 database: None,
                 admin_key,

@@ -29,6 +29,7 @@ use crate::{
 /// row is finalized exactly once when the body is dropped or exhausted.
 struct StreamAccounting {
     pool: Option<sqlx::PgPool>,
+    event_sender: Option<tokio::sync::broadcast::Sender<crate::usage::UsageEvent>>,
     request_id: String,
     key_name: Option<String>,
     provider: String,
@@ -50,6 +51,13 @@ impl StreamAccounting {
             return;
         }
         self.finalized = true;
+        if let Some(sender) = &self.event_sender {
+            let id = now_ms();
+            let _ = sender.send(crate::usage::UsageEvent {
+                kind: "completed".into(), id, api_key: self.key_name.clone(),
+                data: serde_json::json!({"requestId": self.request_id, "apiKey": self.key_name, "provider": self.provider, "responseStatus": if success { "success" } else { "error" }, "durationMs": id.saturating_sub(self.start_time)}),
+            });
+        }
         let Some(pool) = &self.pool else { return };
         let _ = crate::database::record_request_usage(
             pool,
@@ -958,6 +966,7 @@ async fn responses(
                         response.bytes_stream(),
                         StreamAccounting {
                             pool: state.inner.database.clone(),
+                            event_sender: state.inner.usage_events.clone(),
                             request_id: request_id.clone(),
                             key_name: usage_key_name.map(str::to_owned),
                             provider: provider_slug.clone(),
@@ -1080,6 +1089,7 @@ async fn responses(
                                             response.bytes_stream(),
                                             StreamAccounting {
                                                 pool: state.inner.database.clone(),
+                                                event_sender: state.inner.usage_events.clone(),
                                                 request_id: request_id.clone(),
                                                 key_name: usage_key_name.map(str::to_owned),
                                                 provider: fallback_provider_slug.clone(),
@@ -1379,6 +1389,7 @@ async fn gemini(
                             response.bytes_stream(),
                             StreamAccounting {
                                 pool: state.inner.database.clone(),
+                                event_sender: state.inner.usage_events.clone(),
                                 request_id: new_request_id(),
                                 key_name: None,
                                 provider: provider_slug.clone(),
@@ -1565,6 +1576,7 @@ async fn completions(
                         upstream.bytes_stream(),
                         StreamAccounting {
                             pool: state.inner.database.clone(),
+                            event_sender: state.inner.usage_events.clone(),
                             request_id: request_id.clone(),
                             key_name: usage_key_name.map(str::to_owned),
                             provider: provider_slug.clone(),
@@ -2165,6 +2177,7 @@ async fn chat_completions(
                         upstream.bytes_stream(),
                         StreamAccounting {
                             pool: state.inner.database.clone(),
+                            event_sender: state.inner.usage_events.clone(),
                             request_id: request_id.clone(),
                             key_name: usage_key_name.map(str::to_owned),
                             provider: provider_slug.clone(),
@@ -2854,6 +2867,7 @@ mod tests {
     fn test_stream_accounting() -> StreamAccounting {
         StreamAccounting {
             pool: None,
+            event_sender: None,
             request_id: "test".into(),
             key_name: None,
             provider: "gemini".into(),

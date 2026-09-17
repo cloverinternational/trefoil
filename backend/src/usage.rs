@@ -3,12 +3,18 @@
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse, Response,
+    },
     Json, Router,
 };
+use futures_util::stream;
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::Row;
+use std::{convert::Infallible, time::Duration};
+use tokio::sync::broadcast;
 
 use crate::{
     auth::{resolve_principal, Principal},
@@ -17,6 +23,7 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/v0/management/events", axum::routing::get(events))
         .route(
             "/v0/management/usage",
             axum::routing::get(list_usage).delete(clear_usage),
@@ -29,6 +36,58 @@ pub fn router() -> Router<AppState> {
             "/v0/management/usage/:request_id",
             axum::routing::delete(delete_usage),
         )
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct UsageEvent {
+    pub kind: String,
+    pub id: i64,
+    pub api_key: Option<String>,
+    pub data: Value,
+}
+
+pub fn publish_event(state: &AppState, event: UsageEvent) {
+    if let Some(sender) = &state.inner.usage_events {
+        let _ = sender.send(event);
+    }
+}
+
+async fn events(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let principal = match admin(&state, &headers) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let Some(sender) = &state.inner.usage_events else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "usage event stream unavailable",
+        )
+            .into_response();
+    };
+    let receiver = sender.subscribe();
+    let stream = stream::unfold(
+        (
+            receiver,
+            principal,
+            tokio::time::interval(Duration::from_secs(10)),
+        ),
+        |(mut receiver, principal, mut interval)| async move {
+            loop {
+                tokio::select! {
+                    result = receiver.recv() => { let event = match result { Ok(event) => event, Err(broadcast::error::RecvError::Lagged(_)) => UsageEvent { kind: "ping".into(), id: chrono::Utc::now().timestamp_millis(), api_key: None, data: serde_json::json!("subscriber lagged") }, Err(broadcast::error::RecvError::Closed) => return None }; if matches!((&principal, &event.api_key), (Principal::Limited { key_name, .. }, Some(key)) if key_name != key) { continue; } let sse = Event::default().event(event.kind).id(event.id.to_string()).json_data(event.data).unwrap_or_else(|_| Event::default().event("ping").data("pong")); return Some((Ok::<Event, Infallible>(sse), (receiver, principal, interval))); }
+                    _ = interval.tick() => { let id = chrono::Utc::now().timestamp_millis(); return Some((Ok::<Event, Infallible>(Event::default().event("ping").id(id.to_string()).data("pong")), (receiver, principal, interval))); }
+                }
+            }
+        },
+    );
+    let mut response = Sse::new(stream).into_response();
+    response
+        .headers_mut()
+        .insert("cache-control", "no-cache".parse().unwrap());
+    response
+        .headers_mut()
+        .insert("connection", "keep-alive".parse().unwrap());
+    response
 }
 
 #[derive(Deserialize)]
