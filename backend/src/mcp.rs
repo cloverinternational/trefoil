@@ -16,6 +16,7 @@ use sqlx::Row;
 use std::collections::HashMap;
 use tokio::process::Command;
 use tokio::time::{sleep, Duration, Instant};
+use url::Url;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -151,6 +152,13 @@ async fn put_server(
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
+    if !valid_name(&name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"invalid server name"})),
+        )
+            .into_response();
+    }
     let Some(url) = body.upstream_url else {
         return (
             StatusCode::BAD_REQUEST,
@@ -158,6 +166,21 @@ async fn put_server(
         )
             .into_response();
     };
+    if Url::parse(&url).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"upstream_url must be a valid URL"})),
+        )
+            .into_response();
+    }
+    let mode = body.mode.clone().unwrap_or_else(|| "remote_http".into());
+    if mode != "remote_http" && mode != "local_process" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"invalid mode"})),
+        )
+            .into_response();
+    }
     let Some(pool) = &state.inner.database else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -166,7 +189,7 @@ async fn put_server(
             .into_response();
     };
     let now = chrono::Utc::now().naive_utc();
-    match sqlx::query("INSERT INTO mcp_servers (name,upstream_url,enabled,mode,auth_scheme,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$6) ON CONFLICT(name) DO UPDATE SET upstream_url=EXCLUDED.upstream_url,enabled=EXCLUDED.enabled,mode=EXCLUDED.mode,auth_scheme=EXCLUDED.auth_scheme,updated_at=EXCLUDED.updated_at").bind(&name).bind(url).bind(body.enabled.unwrap_or(true)).bind(body.mode.unwrap_or_else(||"remote_http".into())).bind(body.auth_scheme).bind(now).execute(pool).await {Ok(_)=>Json(serde_json::json!({"success":true,"name":name})).into_response(),Err(_)=>(StatusCode::INTERNAL_SERVER_ERROR,Json(serde_json::json!({"error":"Internal server error"}))).into_response()}
+    match sqlx::query("INSERT INTO mcp_servers (name,upstream_url,enabled,mode,auth_scheme,launcher,package_name,args,env,startup_timeout_ms,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11) ON CONFLICT(name) DO UPDATE SET upstream_url=EXCLUDED.upstream_url,enabled=EXCLUDED.enabled,mode=EXCLUDED.mode,auth_scheme=EXCLUDED.auth_scheme,launcher=EXCLUDED.launcher,package_name=EXCLUDED.package_name,args=EXCLUDED.args,env=EXCLUDED.env,startup_timeout_ms=EXCLUDED.startup_timeout_ms,updated_at=EXCLUDED.updated_at").bind(&name).bind(url).bind(body.enabled.unwrap_or(true)).bind(mode).bind(body.auth_scheme).bind(body.launcher).bind(body.package_name).bind(body.args).bind(body.env).bind(body.startup_timeout_ms).bind(now).execute(pool).await {Ok(_)=>Json(serde_json::json!({"success":true,"name":name})).into_response(),Err(_)=>internal_error()}
 }
 async fn patch_server(
     State(state): State<AppState>,
@@ -298,7 +321,7 @@ async fn delete_key(
 async fn clear_key_cooldown(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((_name, id)): Path<(String, String)>,
+    Path((name, id)): Path<(String, String)>,
 ) -> Response {
     if let Err(r) = admin(&state, &headers) {
         return r;
@@ -313,8 +336,8 @@ async fn clear_key_cooldown(
     let Some(pool) = &state.inner.database else {
         return Json(serde_json::json!({"success":true})).into_response();
     };
-    match sqlx::query("UPDATE mcp_keys SET cooldown_until=NULL, updated_at=NOW() WHERE id=$1")
-        .bind(id)
+    match sqlx::query("UPDATE mcp_keys k SET cooldown_until=NULL, updated_at=NOW() FROM mcp_servers s WHERE k.mcp_server_id=s.id AND s.name=$1 AND k.id=$2")
+        .bind(name).bind(id)
         .execute(pool)
         .await
     {
@@ -440,6 +463,18 @@ async fn stop_server(
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
+    let Some(pool) = &state.inner.database else {
+        return not_found(&name);
+    };
+    match sqlx::query("SELECT 1 FROM mcp_servers WHERE name=$1")
+        .bind(&name)
+        .fetch_optional(pool)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found(&name),
+        Err(_) => return internal_error(),
+    }
     let mut processes = state.inner.mcp_processes.lock().await;
     if let Some(transport) = processes.remove(&name) {
         let _ = transport.shutdown().await;
@@ -471,6 +506,14 @@ fn allowed_launcher(value: &str) -> bool {
         "node" | "npx" | "uvx" | "python" | "python3" | "bun" | "deno"
     )
 }
+fn valid_name(value: &str) -> bool {
+    let b = value.as_bytes();
+    (2..=63).contains(&b.len())
+        && b[0].is_ascii_lowercase()
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'_')
+}
+
 fn parse_string_list(value: Option<&str>) -> Vec<String> {
     value
         .and_then(|v| serde_json::from_str(v).ok())

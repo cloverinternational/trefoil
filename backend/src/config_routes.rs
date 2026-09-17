@@ -667,17 +667,30 @@ async fn config_export(State(state): State<AppState>, headers: HeaderMap) -> Res
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
+    let (mcp_servers, mcp_keys) = match &state.inner.database {
+        Some(pool) => {
+            let servers = sqlx::query("SELECT name, upstream_url, enabled, mode, auth_scheme, launcher, package_name, args, env, startup_timeout_ms FROM mcp_servers ORDER BY name")
+                .fetch_all(pool).await.unwrap_or_default();
+            let keys = sqlx::query("SELECT s.name, k.id, k.key, k.is_active FROM mcp_keys k JOIN mcp_servers s ON s.id=k.mcp_server_id ORDER BY s.name, k.id")
+                .fetch_all(pool).await.unwrap_or_default();
+            let mut out = serde_json::Map::new();
+            for row in servers {
+                let name: String = row.try_get("name").unwrap_or_default();
+                out.insert(name, serde_json::json!({"upstreamUrl":row.try_get::<String,_>("upstream_url").unwrap_or_default(),"enabled":row.try_get::<bool,_>("enabled").unwrap_or(true),"mode":row.try_get::<String,_>("mode").unwrap_or_else(|_| "remote_http".into()),"authScheme":row.try_get::<Option<String>,_>("auth_scheme").unwrap_or(None),"launcher":row.try_get::<Option<String>,_>("launcher").unwrap_or(None),"packageName":row.try_get::<Option<String>,_>("package_name").unwrap_or(None),"args":row.try_get::<Option<String>,_>("args").unwrap_or(None),"env":row.try_get::<Option<String>,_>("env").unwrap_or(None),"startupTimeoutMs":row.try_get::<Option<i64>,_>("startup_timeout_ms").unwrap_or(None)}));
+            }
+            let keys = keys.into_iter().map(|row| serde_json::json!({"serverName":row.try_get::<String,_>("name").unwrap_or_default(),"id":row.try_get::<i32,_>("id").unwrap_or_default(),"key":row.try_get::<String,_>("key").unwrap_or_default(),"isActive":row.try_get::<bool,_>("is_active").unwrap_or(true)})).collect::<Vec<_>>();
+            (
+                serde_json::Value::Object(out),
+                serde_json::Value::Array(keys),
+            )
+        }
+        None => (serde_json::json!({}), serde_json::json!([])),
+    };
     Json(serde_json::json!({
-        "providers": state.inner.providers.read().unwrap().clone(),
-        "models": state.inner.aliases.read().unwrap().clone(),
-        "keys": state.inner.keys.read().unwrap().clone(),
-        "user_quotas": state.inner.user_quotas.read().unwrap().clone(),
-        "mcp_servers": {},
-        "mcp_keys": [],
-        "settings": state.inner.settings.read().unwrap().clone(),
-        "oauth_providers": [],
-    }))
-    .into_response()
+        "providers": state.inner.providers.read().unwrap().clone(), "models": state.inner.aliases.read().unwrap().clone(),
+        "keys": state.inner.keys.read().unwrap().clone(), "user_quotas": state.inner.user_quotas.read().unwrap().clone(),
+        "mcp_servers": mcp_servers, "mcp_keys": mcp_keys, "settings": state.inner.settings.read().unwrap().clone(), "oauth_providers": [],
+    })).into_response()
 }
 
 fn failover_body(state: &AppState) -> serde_json::Value {
@@ -1302,7 +1315,7 @@ async fn config_status(State(state): State<AppState>, headers: HeaderMap) -> Res
         "modelAliasCount": state.inner.aliases.read().unwrap().len(),
         "keyCount": state.inner.keys.read().unwrap().len(),
         "quotaCount": state.inner.user_quotas.read().unwrap().len(),
-        "mcpServerCount": 0,
+        "mcpServerCount": match &state.inner.database { Some(pool) => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mcp_servers").fetch_one(pool).await.unwrap_or(0), None => 0 },
     }))
     .into_response()
 }
