@@ -3097,7 +3097,7 @@ mod tests {
 
     #[tokio::test]
     async fn messages_failover_retries_provider_not_found() {
-        use std::io::Write;
+        use std::io::{Read, Write};
         use std::net::TcpListener;
 
         fn mock(status: &str, body: &str) -> String {
@@ -3106,13 +3106,17 @@ mod tests {
             std::thread::spawn({
                 let body = body.to_owned();
                 let status = status.to_owned();
-                move || {
-                    let (mut stream, _) = listener.accept().unwrap();
+                move || loop {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        break;
+                    };
+                    let mut request = [0u8; 4096];
+                    let _ = stream.read(&mut request);
                     let response = format!(
                         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     );
-                    stream.write_all(response.as_bytes()).unwrap();
+                    let _ = stream.write_all(response.as_bytes());
                 }
             });
             format!("http://{address}/v1")
@@ -3172,10 +3176,15 @@ mod tests {
                 .body(Body::from(r#"{"model":"model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#))
                 .unwrap(),
         ).await.unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let status = response.status();
         let body: Value =
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
+        assert_eq!(
+            status,
+            axum::http::StatusCode::OK,
+            "status={status:?} body={body}"
+        );
         assert_eq!(body["content"][0]["text"], "ok");
     }
 }
