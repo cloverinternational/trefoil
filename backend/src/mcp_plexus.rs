@@ -14,6 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json, Router,
 };
+use base64::Engine;
 use serde_json::{json, Value};
 
 const TOOLS: &[(&str, &str)] = &[
@@ -264,6 +265,18 @@ async fn forwarded_operation(
     path: &str,
     body: Option<Value>,
 ) -> Response {
+    let input = body.map(|value| (value.to_string().into_bytes(), "application/json"));
+    forwarded_request(state, id, operation, method, path, input).await
+}
+
+async fn forwarded_request(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    method: &str,
+    path: &str,
+    input: Option<(Vec<u8>, &str)>,
+) -> Response {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
@@ -272,10 +285,10 @@ async fn forwarded_operation(
         "x-admin-key",
         state.inner.admin_key.clone().unwrap_or_default(),
     );
-    let input = match body {
-        Some(value) => {
-            request = request.header("content-type", "application/json");
-            Body::from(value.to_string())
+    let input = match input {
+        Some((bytes, content_type)) => {
+            request = request.header("content-type", content_type);
+            Body::from(bytes)
         }
         None => Body::empty(),
     };
@@ -284,8 +297,18 @@ async fn forwarded_operation(
         .await
         .unwrap();
     let status = response.status();
-    let payload = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-        .unwrap_or_else(|_| json!({"success": status.is_success()}));
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let payload = if content_type.contains("json") {
+        serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({"success": status.is_success()}))
+    } else {
+        json!({"encoding":"base64","contentType":content_type,"data":base64::engine::general_purpose::STANDARD.encode(&bytes)})
+    };
     let result = if status.is_success() {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -332,17 +355,43 @@ async fn operations_operation(
     }
     match operation {
         "backup" => {
-            forwarded_operation(state, id, operation, "GET", "/v0/management/backup", None).await
+            let path = if args.get("full").and_then(Value::as_bool).unwrap_or(false) {
+                "/v0/management/backup?full=true"
+            } else {
+                "/v0/management/backup"
+            };
+            forwarded_request(state, id, operation, "GET", path, None).await
         }
-        "restore" => match args.get("body").cloned() {
-            Some(body) => {
+        "restore" => match args.get("body") {
+            Some(body) if body.is_object() || body.is_array() => {
                 forwarded_operation(
                     state,
                     id,
                     operation,
                     "POST",
                     "/v0/management/restore",
-                    Some(body),
+                    Some(body.clone()),
+                )
+                .await
+            }
+            Some(body) => {
+                let Some(encoded) = body
+                    .as_str()
+                    .or_else(|| body.get("data").and_then(Value::as_str))
+                else {
+                    return rpc_error(id, -32602, "body must be a JSON object or base64 string");
+                };
+                let bytes = match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                    Ok(bytes) => bytes,
+                    Err(_) => return rpc_error(id, -32602, "body contains invalid base64"),
+                };
+                forwarded_request(
+                    state,
+                    id,
+                    operation,
+                    "POST",
+                    "/v0/management/restore",
+                    Some((bytes, "application/gzip")),
                 )
                 .await
             }
