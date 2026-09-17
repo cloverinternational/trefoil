@@ -338,3 +338,44 @@ export async function recomputeQuota(key: string, quota: string): Promise<void> 
   const response = await fetch('/v0/management/quota/recompute', { method: 'POST', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ key, quota }) });
   if (!response.ok) throw new Error('Unable to recompute quota');
 }
+
+export interface CustomQuotaChecker {
+  id: string;
+  displayName: string;
+  code: string;
+  enabled: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export async function getCustomQuotaCheckers(): Promise<CustomQuotaChecker[]> {
+  const response = await fetch('/v0/management/custom-checkers', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load custom quota checkers');
+  const body = await response.json();
+  return Array.isArray(body) ? body : [];
+}
+
+export async function saveCustomQuotaChecker(id: string, checker: Pick<CustomQuotaChecker, 'displayName' | 'code' | 'enabled'>): Promise<CustomQuotaChecker> {
+  const response = await fetch(`/v0/management/custom-checkers/${encodeURIComponent(id)}`, {
+    method: 'PUT', headers: { ...authHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify({ id, ...checker }),
+  });
+  const body = await response.json().catch(() => null) as CustomQuotaChecker & { error?: string } | null;
+  if (!response.ok) throw new Error(body?.error || 'Unable to save custom quota checker');
+  return body as CustomQuotaChecker;
+}
+
+export async function deleteCustomQuotaChecker(id: string): Promise<void> {
+  const response = await fetch(`/v0/management/custom-checkers/${encodeURIComponent(id)}`, { method: 'DELETE', headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to delete custom quota checker');
+}
+
+export async function testCustomQuotaChecker(id: string, provider: string, options: Record<string, unknown>, code?: string): Promise<{ success: boolean; meters: unknown[]; error?: string }> {
+  const response = await fetch(`/v0/management/custom-checkers/${encodeURIComponent(id)}/test`, {
+    method: 'POST', headers: { ...authHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify({ provider, options, ...(code ? { code } : {}) }),
+  });
+  const body = await response.json().catch(() => null) as { success?: boolean; meters?: unknown[]; error?: string } | null;
+  if (!response.ok) throw new Error(body?.error || 'Custom quota checker test failed');
+  return { success: body?.success === true, meters: body?.meters ?? [], error: body?.error };
+}
