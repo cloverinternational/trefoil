@@ -36,6 +36,10 @@ pub fn router() -> Router<AppState> {
             "/v0/management/usage/:request_id",
             axum::routing::delete(delete_usage),
         )
+        .route(
+            "/v0/management/logs/reset",
+            axum::routing::delete(reset_logs),
+        )
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -100,6 +104,48 @@ struct UsageQuery {
 fn admin(state: &AppState, headers: &HeaderMap) -> Result<Principal, Response> {
     let key = headers.get("x-admin-key").and_then(|v| v.to_str().ok());
     resolve_principal(state, key).ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":{"message":"Unauthorized","type":"auth_error","code":401}}))).into_response())
+}
+
+async fn reset_logs(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    if let Some(pool) = &state.inner.database {
+        let mut transaction = match pool.begin().await {
+            Ok(transaction) => transaction,
+            Err(_) => return reset_error(),
+        };
+        for statement in [
+            "DELETE FROM request_usage",
+            "DELETE FROM inference_errors",
+            "DELETE FROM debug_logs",
+        ] {
+            if sqlx::query(statement)
+                .execute(&mut *transaction)
+                .await
+                .is_err()
+            {
+                let _ = transaction.rollback().await;
+                return reset_error();
+            }
+        }
+        if transaction.commit().await.is_err() {
+            return reset_error();
+        }
+    }
+    Json(serde_json::json!({
+        "success": true,
+        "message": "All logs have been reset successfully"
+    }))
+    .into_response()
+}
+
+fn reset_error() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error":"Failed to reset logs"})),
+    )
+        .into_response()
 }
 
 /// Authenticate any principal, then require Admin specifically -- matches
