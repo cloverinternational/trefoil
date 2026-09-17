@@ -40,7 +40,7 @@
    system logs/streaming, restart, provider model fetch, custom checkers,
    remaining config routes, and exact error semantics.
 8. **Frontend parity.** Port the eight frontend tests, add API adapters, then
-   implement loading/error/empty/persistence behavior and browser tests.
+   implement loading/error/empty/persistence behavior and browser tests. The System Logs page is now implemented at `/system-logs` with admin SSE, runtime level controls, module filtering, pause/resume, clear, and error handling; browser coverage remains outstanding.
 9. **Security/performance hardening.** Add SSRF defenses, secret redaction,
    request limits, connection-pool tuning, race/concurrency tests, migration
    compatibility checks, and production-like load verification.

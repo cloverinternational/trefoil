@@ -83,6 +83,21 @@ export async function patchSystemSettings(settings: SystemSettings): Promise<voi
   }
 }
 
+export interface LoggingLevelState { level: string; startupLevel: string; supportedLevels: string[]; ephemeral?: boolean; }
+
+async function loggingRequest(path: string, init?: RequestInit): Promise<LoggingLevelState> {
+  const response = await fetch(path, { ...init, headers: { ...authHeaders(), ...(init?.headers ?? {}) } });
+  const body = await response.json().catch(() => null) as LoggingLevelState & { error?: string | { message?: string } } | null;
+  if (!response.ok) throw new Error(typeof body?.error === 'string' ? body.error : body?.error?.message || 'Unable to update logging settings');
+  return body as LoggingLevelState;
+}
+export const getLoggingLevel = () => loggingRequest('/v0/management/logging/level');
+export const setLoggingLevel = (level: string) => loggingRequest('/v0/management/logging/level', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level }) });
+export const resetLoggingLevel = () => loggingRequest('/v0/management/logging/level', { method: 'DELETE' });
+export async function getModuleFilter(): Promise<{ modules: string[] }> { const r = await fetch('/v0/management/logging/modules', { headers: authHeaders() }); if (!r.ok) throw new Error('Unable to load module filter'); return r.json(); }
+export async function setModuleFilter(modules: string[]): Promise<{ modules: string[] }> { const r = await fetch('/v0/management/logging/modules', { method: 'PUT', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ modules }) }); if (!r.ok) throw new Error('Unable to update module filter'); return r.json(); }
+export async function clearModuleFilter(): Promise<{ modules: string[] }> { const r = await fetch('/v0/management/logging/modules', { method: 'DELETE', headers: authHeaders() }); if (!r.ok) throw new Error('Unable to clear module filter'); return r.json(); }
+
 export async function getUsageSummary(): Promise<Record<string, number>> {
   const response = await fetch('/v0/management/usage/summary', { headers: authHeaders() });
   if (!response.ok) throw new Error('Unable to load usage summary');

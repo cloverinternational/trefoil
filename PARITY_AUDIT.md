@@ -40,7 +40,7 @@ OAuth login-session flow (interactive provider OAuth, 5 routes — Trefoil's
 Observability/metrics (3 routes):
 - `GET /v0/management/metrics` (Prometheus text-format scrape endpoint)
 - `GET /v0/management/events` (SSE live usage event stream)
-- `GET /v0/system/logs/stream` (SSE live syslog stream)
+- `GET /v0/system/logs/stream` (SSE live syslog stream; consumed by the admin `/system-logs` page)
 
 Misc management (5 routes):
 - `GET /v0/management/mcp-servers/:name/status` (live process status; Trefoil
