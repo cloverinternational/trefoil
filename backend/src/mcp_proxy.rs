@@ -10,8 +10,10 @@ use axum::{
 };
 use futures_util::StreamExt;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use sqlx::Row;
 use std::collections::HashMap;
+use subtle::ConstantTimeEq;
 
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -152,6 +154,57 @@ async fn config(
     Ok((url, enabled, headers))
 }
 
+async fn authenticate(state: &AppState, name: &str, incoming: &HeaderMap) -> Result<(), Response> {
+    let Some(pool) = &state.inner.database else {
+        return Err(error(
+            StatusCode::UNAUTHORIZED,
+            "MCP authentication required",
+        ));
+    };
+    let credential = incoming
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer ").or(Some(value)))
+        .or_else(|| incoming.get("x-api-key").and_then(|v| v.to_str().ok()))
+        .filter(|value| !value.is_empty());
+    let Some(credential) = credential else {
+        return Err(error(
+            StatusCode::UNAUTHORIZED,
+            "MCP authentication required",
+        ));
+    };
+    let digest = Sha256::digest(credential.as_bytes());
+    let rows = sqlx::query("SELECT k.key FROM mcp_keys k JOIN mcp_servers s ON s.id=k.mcp_server_id WHERE s.name=$1 AND k.is_active=true")
+        .bind(name).fetch_all(pool).await
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"))?;
+    let mut matched = false;
+    for row in rows {
+        let key: String = row.try_get("key").unwrap_or_default();
+        matched |= bool::from(digest.ct_eq(Sha256::digest(key.as_bytes()).as_ref()));
+    }
+    if matched {
+        Ok(())
+    } else {
+        Err(error(StatusCode::UNAUTHORIZED, "Invalid MCP credentials"))
+    }
+}
+
+fn safe_configured_header(name: &str) -> bool {
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+            | "content-length"
+    )
+}
+
 fn copy_request_headers(
     mut request: reqwest::RequestBuilder,
     incoming: &HeaderMap,
@@ -167,7 +220,9 @@ fn copy_request_headers(
         }
     }
     for (key, value) in configured {
-        request = request.header(key, value);
+        if safe_configured_header(key) {
+            request = request.header(key, value);
+        }
     }
     request
 }
@@ -215,7 +270,6 @@ async fn forward(
         header::CONTENT_TYPE.as_str(),
         header::CACHE_CONTROL.as_str(),
         "mcp-session-id",
-        "connection",
     ] {
         if let Some(value) = response_headers.get(key) {
             if let Ok(value) = HeaderValue::from_bytes(value.as_bytes()) {
@@ -232,6 +286,9 @@ async fn post(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Err(response) = authenticate(&state, &name, &headers).await {
+        return response;
+    }
     let (url, _, configured) = match config(&state, &name).await {
         Ok(v) => v,
         Err(e) => return e,
@@ -276,6 +333,9 @@ async fn get(
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
+    if let Err(response) = authenticate(&state, &name, &headers).await {
+        return response;
+    }
     let (mut url, _, configured) = match config(&state, &name).await {
         Ok(v) => v,
         Err(e) => return e,
@@ -310,6 +370,9 @@ async fn delete(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(response) = authenticate(&state, &name, &headers).await {
+        return response;
+    }
     let (url, _, configured) = match config(&state, &name).await {
         Ok(v) => v,
         Err(e) => return e,
@@ -339,4 +402,29 @@ async fn delete(
         .await;
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_configured_header;
+
+    #[test]
+    fn rejects_hop_by_hop_and_routing_headers() {
+        for name in [
+            "Connection",
+            "Host",
+            "Content-Length",
+            "Proxy-Authorization",
+            "Transfer-Encoding",
+        ] {
+            assert!(!safe_configured_header(name));
+        }
+    }
+
+    #[test]
+    fn permits_static_auth_and_mcp_headers() {
+        assert!(safe_configured_header("authorization"));
+        assert!(safe_configured_header("x-api-key"));
+        assert!(safe_configured_header("mcp-session-id"));
+    }
 }
