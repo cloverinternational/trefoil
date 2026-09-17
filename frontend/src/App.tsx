@@ -19,6 +19,7 @@ import { Errors } from './pages/Errors';
 import { Logs } from './pages/Logs';
 import { Models } from './pages/Models';
 import { MyKey } from './pages/MyKey';
+import { Playground } from './pages/Playground';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { adminKey } = useAuth();
@@ -38,6 +39,7 @@ const AppRoutes = () => (
     <Route path="/models" element={<ProtectedRoute><Models /></ProtectedRoute>} />
     <Route path="/keys" element={<ProtectedRoute><ApiKeys /></ProtectedRoute>} />
     <Route path="/my-key" element={<ProtectedRoute><MyKey /></ProtectedRoute>} />
+    <Route path="/playground" element={<ProtectedRoute><Playground /></ProtectedRoute>} />
     <Route path="/quotas" element={<ProtectedRoute><Quotas /></ProtectedRoute>} />
     <Route path="/usage" element={<ProtectedRoute><DetailedUsage /></ProtectedRoute>} />
     <Route path="/detailed-usage" element={<ProtectedRoute><DetailedUsage /></ProtectedRoute>} />
