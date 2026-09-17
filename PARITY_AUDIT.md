@@ -76,7 +76,7 @@ one call per verb. Not an actual gap.
 | Custom probe/test endpoint | Missing | `POST /v0/management/test` (manual per-provider/model canonical probe) has no Trefoil equivalent; no `ProbeService`. |
 | MCP proxy (remote) | Implemented | JSON-RPC envelope validation, round-robin key selection, cooldown-on-failure, upstream auth injection, header allowlisting — present in `mcp_proxy.rs`. |
 | MCP local process lifecycle | Implemented | Spawn/stop/restart with launcher allowlist, env/arg parsing, process-log capture (`mcp.rs`) — recently added (latest commit), matches Plexus's `mcp-process-manager.ts` at a route level; sandboxing/resource-limit depth not independently verified. |
-| MCP admin-shim (`/mcp/plexus`) | Route-present | `mcp_plexus.rs` (202 lines) vs Plexus's `routes/mcp/plexus/*` (~2000 lines across dispatch/http/management/metadata/operations/responses/security/types). Likely a much thinner tool surface — needs a tool-by-tool diff to quantify, not done here. |
+| MCP admin-shim (`/mcp/plexus`) | Route-present | `mcp_plexus.rs` dispatches `plexus_quota` status, clear (acknowledged destructive confirmation), and recompute through DB-backed management handlers; broader tool depth remains thinner than Plexus. |
 | OAuth (MCP client) | Implemented | Full authorization-code + PKCE S256 + refresh-token rotation with DB-backed consumption tracking (`oauth_server.rs`). This is materially more complete than the prior audit's "45%" estimate. |
 | Backup/restore | Implemented | Table list (`TABLES` in `backup.rs`) is an exact match to Plexus's `OPERATIONAL_TABLES` (13 tables). Gzip+tar archive format, admin-only, size-capped. |
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
@@ -120,6 +120,8 @@ one call per verb. Not an actual gap.
       real, DB-backed, and more complete than previously scored.
 - [x] MCP local-process lifecycle (spawn/stop/restart/logs) is implemented
       with a launcher allowlist.
+- [x] `plexus_quota` MCP operations (`status`, `clear`, `recompute`) are wired
+      with admin auth, confirmation, attachment, and not-found/error handling.
 - [ ] Differential harness (~275 cases) run end-to-end against live Plexus +
       Trefoil in this pass — not executed (requires two live servers +
       Postgres fixture provisioning per `parity/README.md`); route/config

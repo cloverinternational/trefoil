@@ -59,6 +59,39 @@ async fn recompute_quota(
             "invalid_request_error",
         );
     };
+    if !state.inner.keys.read().unwrap().contains_key(key) {
+        return error(
+            StatusCode::NOT_FOUND,
+            &format!("Key not found: {key}"),
+            "not_found_error",
+        );
+    }
+    let config = state.inner.keys.read().unwrap().get(key).cloned().unwrap();
+    let attached: Vec<String> = if config.quota_names.is_empty() {
+        state
+            .inner
+            .settings
+            .read()
+            .unwrap()
+            .get("default_quotas")
+            .and_then(Value::as_array)
+            .map(|v| {
+                v.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        config.quota_names.clone()
+    };
+    if !attached.iter().any(|name| name == quota) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Quota is not attached to key",
+            "invalid_request_error",
+        );
+    }
     let Some(definition) = state.inner.user_quotas.read().unwrap().get(quota).cloned() else {
         return error(
             StatusCode::BAD_REQUEST,
@@ -69,7 +102,7 @@ async fn recompute_quota(
     if definition.quota_type == "rolling" && definition.limit_type != "cost" {
         return error(
             StatusCode::BAD_REQUEST,
-            "Cannot recompute a leaky rolling quota",
+            "unsupported_quota_type: Cannot recompute a leaky rolling quota",
             "invalid_request_error",
         );
     }

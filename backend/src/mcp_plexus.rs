@@ -194,6 +194,9 @@ async fn call_tool(
         | ("plexus_key", "disable") => {
             return key_operation(state, id, operation, args).await;
         }
+        ("plexus_quota", "status") | ("plexus_quota", "clear") | ("plexus_quota", "recompute") => {
+            return quota_operation(state, id, operation, args).await;
+        }
         _ if TOOLS.iter().any(|(tool, _)| *tool == name) => {
             json!({"ok":false,"operation":operation,"error":{"message":"Operation is not implemented yet","type":"invalid_request","code":400}})
         }
@@ -207,6 +210,75 @@ async fn call_tool(
     rpc_result(
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":result.get("ok").and_then(Value::as_bool)==Some(false)}),
+    )
+}
+
+async fn quota_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    args: Option<&Value>,
+) -> Response {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    let (method, path, body) = match operation {
+        "status" => {
+            let Some(key) = args.get("id").and_then(Value::as_str) else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            ("GET", format!("/v0/management/quota/status/{key}"), None)
+        }
+        "clear" | "recompute" => {
+            if operation == "clear"
+                && args.get("destructive").and_then(Value::as_str) != Some("acknowledged")
+            {
+                return rpc_result(
+                    id,
+                    json!({"structuredContent":{"ok":false,"operation":operation,"error":{"message":"Confirmation required","type":"confirmation_required","code":400}},"content":[{"type":"text","text":"Confirmation required"}],"isError":true}),
+                );
+            }
+            let Some(body) = args.get("body") else {
+                return rpc_error(id, -32602, "body is required");
+            };
+            (
+                "POST",
+                format!("/v0/management/quota/{operation}"),
+                Some(body.clone()),
+            )
+        }
+        _ => unreachable!(),
+    };
+    let mut request = Request::builder().method(method).uri(path).header(
+        "x-admin-key",
+        state.inner.admin_key.clone().unwrap_or_default(),
+    );
+    let body = match body {
+        Some(value) => {
+            request = request.header("content-type", "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = crate::quota_management::router()
+        .with_state(state.clone())
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap();
+    let ok = response.status().is_success();
+    let payload: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+            .unwrap_or_else(|_| json!({"error":{"message":"Invalid quota response"}}));
+    let result = if ok {
+        json!({"ok":true,"operation":operation,"data":payload})
+    } else {
+        json!({"ok":false,"operation":operation,"error":payload.get("error").cloned().unwrap_or(payload)})
+    };
+    rpc_result(
+        id,
+        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
     )
 }
 
