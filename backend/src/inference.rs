@@ -209,7 +209,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/messages", axum::routing::post(messages))
         .route("/v1/images/generations", axum::routing::post(images))
         .route("/v1/images", axum::routing::post(images))
-        .route("/v1/images/edits", axum::routing::post(images))
+        .route("/v1/images/edits", axum::routing::post(image_edits))
         .route("/v1/audio/speech", axum::routing::post(audio_speech))
         .route(
             "/v1/audio/transcriptions",
@@ -222,7 +222,15 @@ async fn audio_transcriptions(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
-    if let Err(response) = authenticate(&state, &headers) {
+    let principal = match authenticate(&state, &headers) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    let key_config = match &principal {
+        Principal::Limited { config, .. } => Some(config),
+        Principal::Admin => None,
+    };
+    if let Err(response) = enforce_request_quotas(&state, &principal).await {
         return response;
     }
     let mut fields = Vec::new();
@@ -249,10 +257,23 @@ async fn audio_transcriptions(
         );
     };
     let model = String::from_utf8_lossy(model_bytes).into_owned();
+    if key_config.is_some_and(|config| !model_allowed(config, &model)) {
+        return error_response(
+            axum::http::StatusCode::FORBIDDEN,
+            &format!("Key is not allowed to access model '{model}'"),
+            "access_denied",
+        );
+    }
     let client = reqwest::Client::new();
     let mut attempted = None;
-    for _ in 0..2 {
-        let (provider_slug, upstream_model) = resolve_target(&state, &model, None);
+    for (provider_slug, upstream_model) in inference_targets(&state, &model, key_config) {
+        if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
+            return error_response(
+                axum::http::StatusCode::FORBIDDEN,
+                "Key is not allowed to access any provider configured for model",
+                "access_denied",
+            );
+        }
         let Some(provider) = state
             .inner
             .providers
@@ -303,6 +324,22 @@ async fn audio_transcriptions(
             Ok(response) => {
                 let status = response.status();
                 let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                if is_retryable_upstream_status(status) {
+                    attempted = Some(
+                        payload["error"]["message"]
+                            .as_str()
+                            .unwrap_or("retryable upstream error")
+                            .to_owned(),
+                    );
+                    register_provider_failure(
+                        &state,
+                        &provider_slug,
+                        &upstream_model,
+                        attempted.clone().unwrap_or_default(),
+                    )
+                    .await;
+                    continue;
+                }
                 return (status, Json(payload)).into_response();
             }
             Err(error) => {
@@ -708,6 +745,22 @@ fn chat_to_anthropic(payload: Value) -> Value {
     serde_json::json!({"id": payload.get("id"), "type":"message", "role":"assistant", "content":content,
         "model":payload.get("model"), "stop_reason":stop_reason, "stop_sequence":null,
         "usage":{"input_tokens":payload.get("usage").and_then(|u| u.get("prompt_tokens")).cloned().unwrap_or(Value::from(0)), "output_tokens":payload.get("usage").and_then(|u| u.get("completion_tokens")).cloned().unwrap_or(Value::from(0))}})
+}
+
+async fn image_edits(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    forward_json_api(
+        &state,
+        &headers,
+        body,
+        "/images/edits",
+        "authorization",
+        true,
+    )
+    .await
 }
 
 async fn images(
