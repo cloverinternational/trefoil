@@ -194,6 +194,9 @@ async fn call_tool(
         | ("plexus_key", "disable") => {
             return key_operation(state, id, operation, args).await;
         }
+        ("plexus_usage", "list") | ("plexus_usage", "summary") => {
+            return usage_operation(state, id, operation, args).await;
+        }
         ("plexus_mcp_gateway", "servers_list")
         | ("plexus_mcp_gateway", "get")
         | ("plexus_mcp_gateway", "put")
@@ -684,6 +687,82 @@ async fn mcp_gateway_operation(
     let payload: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
             .unwrap_or_else(|_| json!({"error": "Invalid MCP gateway response"}));
+    let result = if ok {
+        json!({"ok":true,"operation":operation,"data":payload})
+    } else {
+        json!({"ok":false,"operation":operation,"error":payload})
+    };
+    rpc_result(
+        id,
+        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
+    )
+}
+
+/// Forward the read-only usage operations through the same management router
+/// used by the HTTP API.  Keeping this as a router call avoids subtly
+/// different authentication, pagination, or response shapes on the MCP
+/// surface.
+async fn usage_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    args: Option<&Value>,
+) -> Response {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    let mut path = match operation {
+        "list" => "/v0/management/usage".to_string(),
+        "summary" => "/v0/management/usage/summary".to_string(),
+        _ => unreachable!(),
+    };
+    if let Some(query) = args.get("query") {
+        let Some(query) = query.as_object() else {
+            return rpc_error(id, -32602, "query must be an object");
+        };
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in query {
+            if let Some(value) = value.as_str() {
+                serializer.append_pair(key, value);
+            } else if let Some(value) = value.as_i64() {
+                serializer.append_pair(key, &value.to_string());
+            } else if let Some(value) = value.as_u64() {
+                serializer.append_pair(key, &value.to_string());
+            } else if let Some(value) = value.as_f64() {
+                serializer.append_pair(key, &value.to_string());
+            } else if let Some(value) = value.as_bool() {
+                serializer.append_pair(key, if value { "true" } else { "false" });
+            } else {
+                return rpc_error(id, -32602, "query values must be scalar");
+            }
+        }
+        let query = serializer.finish();
+        if !query.is_empty() {
+            path.push('?');
+            path.push_str(&query);
+        }
+    }
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header(
+            "x-admin-key",
+            state.inner.admin_key.clone().unwrap_or_default(),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = crate::usage::router()
+        .with_state(state.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    let ok = response.status().is_success();
+    let payload: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+            .unwrap_or_else(|_| json!({"error":"Invalid usage response"}));
     let result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
