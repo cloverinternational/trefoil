@@ -702,6 +702,15 @@ async fn forward_json_api(
         Principal::Limited { config, .. } => Some(config),
         Principal::Admin => None,
     };
+    crate::system_logs::event(
+        state,
+        "info",
+        "inference request started",
+        [
+            ("model".into(), Value::String(model.clone())),
+            ("path".into(), Value::String(path.into())),
+        ],
+    );
     let client = reqwest::Client::new();
     let original_body = body.clone();
     let mut attempted = None;
@@ -778,6 +787,16 @@ async fn forward_json_api(
                     );
                     continue;
                 }
+                crate::system_logs::event(
+                    state,
+                    if status.is_success() { "info" } else { "error" },
+                    "inference request completed",
+                    [
+                        ("provider".into(), Value::String(provider_slug.clone())),
+                        ("model".into(), Value::String(upstream_model.clone())),
+                        ("status".into(), Value::from(status.as_u16())),
+                    ],
+                );
                 return (status, Json(payload)).into_response();
             }
             Err(error) => {

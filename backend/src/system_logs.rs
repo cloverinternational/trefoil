@@ -36,6 +36,23 @@ pub fn publish(state: &AppState, log: SystemLog) {
     }
 }
 
+pub fn event(
+    state: &AppState,
+    level: impl Into<String>,
+    message: impl Into<String>,
+    context: impl IntoIterator<Item = (String, serde_json::Value)>,
+) {
+    publish(
+        state,
+        SystemLog {
+            level: level.into(),
+            message: message.into(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            context: context.into_iter().collect(),
+        },
+    );
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v0/system/logs/recent", axum::routing::get(recent))
