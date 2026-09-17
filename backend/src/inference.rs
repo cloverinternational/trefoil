@@ -306,7 +306,25 @@ async fn responses(
                     .unwrap()
                     .into_response();
             }
-            let payload=response.json::<Value>().await.unwrap_or_else(|_|serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+            let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+            if status.is_success() {
+                if let (Some(pool), Some(response_id)) = (
+                    &state.inner.database,
+                    payload.get("id").and_then(Value::as_str),
+                ) {
+                    let output = payload
+                        .get("output")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!([]));
+                    let _ = sqlx::query("INSERT INTO responses (id, object, created_at, completed_at, status, model, output_items, previous_response_id, store, background) VALUES ($1,'response',$2,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO UPDATE SET output_items=EXCLUDED.output_items, status=EXCLUDED.status, completed_at=EXCLUDED.completed_at")
+                        .bind(response_id).bind(now_ms() / 1000).bind(payload.get("status").and_then(Value::as_str).unwrap_or("completed"))
+                        .bind(payload.get("model").and_then(Value::as_str).unwrap_or(&model)).bind(output.to_string())
+                        .bind(body.get("previous_response_id").and_then(Value::as_str))
+                        .bind(if body.get("store").and_then(Value::as_bool).unwrap_or(true) { 1i32 } else { 0i32 })
+                        .bind(if body.get("background").and_then(Value::as_bool).unwrap_or(false) { 1i32 } else { 0i32 })
+                        .execute(pool).await;
+                }
+            }
             (status, Json(payload)).into_response()
         }
         Err(error) => error_response(
