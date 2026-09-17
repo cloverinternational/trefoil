@@ -157,6 +157,11 @@ impl LocalMcpTransport {
         self.notifications.lock().await.recv().await
     }
 
+    /// PID of the managed child, while it is still present.
+    pub async fn pid(&self) -> Option<u32> {
+        self.child.lock().await.as_ref().and_then(Child::id)
+    }
+
     async fn write(&self, message: Value) -> Result<(), TransportError> {
         let mut stdin = self.inner.stdin.lock().await;
         let mut bytes = serde_json::to_vec(&message)?;

@@ -56,6 +56,10 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(restart_server),
         )
         .route(
+            "/v0/management/mcp-servers/:name/status",
+            axum::routing::get(server_status),
+        )
+        .route(
             "/v0/management/mcp-servers/:name/process-logs",
             axum::routing::get(process_logs),
         )
@@ -498,6 +502,68 @@ async fn restart_server(
     }
     let _ = stop_server(State(state.clone()), headers.clone(), Path(name.clone())).await;
     start_server(State(state), headers, Path(name)).await
+}
+
+/// Return the in-memory runtime state for a managed MCP process.  The
+/// configuration is read from PostgreSQL first so that an unknown server is
+/// not indistinguishable from a known, stopped server.
+async fn server_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    if let Err(response) = admin(&state, &headers) {
+        return response;
+    }
+    let Some(pool) = &state.inner.database else {
+        return not_found(&name);
+    };
+    let row = match sqlx::query("SELECT upstream_url FROM mcp_servers WHERE name=$1")
+        .bind(&name)
+        .fetch_optional(pool)
+        .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => return not_found(&name),
+        Err(_) => return internal_error(),
+    };
+
+    let recorded = state
+        .inner
+        .mcp_process_status
+        .lock()
+        .await
+        .get(&name)
+        .cloned();
+    let process = state.inner.mcp_processes.lock().await;
+    let pid = if let Some(transport) = process.get(&name) {
+        transport.pid().await
+    } else {
+        None
+    };
+    let status = if pid.is_some() {
+        "running"
+    } else {
+        recorded
+            .as_ref()
+            .map(|value| value.0.as_str())
+            .unwrap_or("stopped")
+    };
+    let status = status.to_owned();
+    let last_error = recorded.and_then(|value| value.1);
+    let url = row.try_get::<String, _>("upstream_url").ok();
+    let url = (status == "running").then_some(url).flatten();
+
+    Json(serde_json::json!({
+        "serverName": name,
+        "status": status,
+        "pid": pid,
+        "url": url,
+        "lastError": last_error,
+        "startedAt": null,
+        "exitedAt": null
+    }))
+    .into_response()
 }
 
 fn allowed_launcher(value: &str) -> bool {
