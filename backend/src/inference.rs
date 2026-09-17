@@ -1648,24 +1648,6 @@ async fn chat_completions(
         Ok(upstream) => {
             let status = upstream.status();
             if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
-                if let Some(pool) = &state.inner.database {
-                    let _ = crate::database::record_request_usage(
-                        pool,
-                        &request_id,
-                        usage_key_name,
-                        Some(&provider_slug),
-                        Some(&model),
-                        "chat",
-                        if status.is_success() {
-                            "success"
-                        } else {
-                            "error"
-                        },
-                        true,
-                        start_time,
-                    )
-                    .await;
-                }
                 let content_type = upstream
                     .headers()
                     .get("content-type")
@@ -1676,7 +1658,22 @@ async fn chat_completions(
                     .header("content-type", content_type)
                     .header("cache-control", "no-cache")
                     .header("x-request-id", &request_id)
-                    .body(Body::from_stream(upstream.bytes_stream()))
+                    .body(accounted_sse_body(
+                        upstream.bytes_stream(),
+                        StreamAccounting {
+                            pool: state.inner.database.clone(),
+                            request_id: request_id.clone(),
+                            key_name: usage_key_name.map(str::to_owned),
+                            provider: provider_slug.clone(),
+                            model: model.clone(),
+                            api_type: "chat".to_owned(),
+                            start_time,
+                            input_tokens: None,
+                            output_tokens: None,
+                            cost: None,
+                            finalized: false,
+                        },
+                    ))
                     .expect("valid streaming response")
                     .into_response();
             }
