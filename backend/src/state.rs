@@ -166,7 +166,8 @@ pub struct AppStateInner {
     pub settings: RwLock<HashMap<String, Value>>,
     pub cooldowns: RwLock<HashMap<(String, String), CooldownEntry>>,
     pub mcp_key_round_robin: RwLock<HashMap<i32, i32>>,
-    pub mcp_processes: Arc<tokio::sync::Mutex<HashMap<String, tokio::process::Child>>>,
+    pub mcp_processes:
+        Arc<tokio::sync::Mutex<HashMap<String, crate::mcp_stdio::LocalMcpTransport>>>,
     pub mcp_process_logs: Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>>,
     pub mcp_process_status: Arc<tokio::sync::Mutex<HashMap<String, (String, Option<String>)>>>,
     /// Per-key trace/debug capture toggle, mirroring `DebugManager`'s

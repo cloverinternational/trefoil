@@ -16,6 +16,7 @@ pub mod mcp_logs;
 pub mod mcp_oauth;
 pub mod mcp_plexus;
 pub mod mcp_proxy;
+pub mod mcp_stdio;
 pub mod oauth;
 pub mod oauth_server;
 pub mod openapi;

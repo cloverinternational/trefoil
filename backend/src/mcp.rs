@@ -1,5 +1,6 @@
 //! PostgreSQL-backed MCP server configuration and key management.
 
+use crate::mcp_stdio::LocalMcpTransport;
 use crate::{
     auth::{resolve_principal, Principal},
     AppState,
@@ -394,9 +395,9 @@ async fn start_server(
             .flatten()
             .as_deref(),
     ));
-    let mut child =
-        match command.spawn() {
-            Ok(child) => child,
+    let transport =
+        match LocalMcpTransport::spawn(command).await {
+            Ok(transport) => transport,
             Err(error) => return (
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({"error":format!("failed to start MCP process: {error}")})),
@@ -411,26 +412,16 @@ async fn start_server(
         .clamp(100, 300_000) as u64;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     while Instant::now() < deadline {
-        if let Ok(Some(status)) = child.try_wait() {
-            let error = format!("MCP process exited during startup with status {status}");
-            state
-                .inner
-                .mcp_process_status
-                .lock()
-                .await
-                .insert(name.clone(), ("failed".into(), Some(error.clone())));
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({"error":error,"status":"failed"})),
-            )
-                .into_response();
-        }
+        // Keep the startup window compatible with the management API while the
+        // transport reader establishes the subprocess protocol.
         sleep(Duration::from_millis(100)).await;
+        if Instant::now() >= deadline {
+            break;
+        }
     }
     let mut processes = state.inner.mcp_processes.lock().await;
-    if let Some(mut old) = processes.insert(name.clone(), child) {
-        let _ = old.kill().await;
-        let _ = old.wait().await;
+    if let Some(old) = processes.insert(name.clone(), transport) {
+        let _ = old.shutdown().await;
     }
     state
         .inner
@@ -450,9 +441,8 @@ async fn stop_server(
         return response;
     }
     let mut processes = state.inner.mcp_processes.lock().await;
-    if let Some(mut child) = processes.remove(&name) {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+    if let Some(transport) = processes.remove(&name) {
+        let _ = transport.shutdown().await;
     }
     state
         .inner
