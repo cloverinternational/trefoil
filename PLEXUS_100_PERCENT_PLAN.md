@@ -321,9 +321,10 @@ Missing pages (each needs its own API adapter + component + tests):
       (modals for editing, quota status views, key lists decomposed into
       `keys/*` — 7 files) than Trefoil's single-file equivalents; audit
       each for missing fields/actions, not just missing pages.
-- [ ] Port the 8 Plexus frontend test files (`format`, `currency`, `api`,
-      `modelOptions`, `modelList`, `normalize`, `detailed-usage/helpers`)
-      and add equivalents for any new Trefoil-specific logic.
+- [~] Port the 8 Plexus frontend test areas (`format`, `currency`, `api`,
+      `modelOptions`, `modelList`, `normalize`, `detailed-usage/helpers`):
+      core `format`, `modelOptions`, and `normalize` helpers now have Vitest
+      coverage; currency, API, model-list, and detailed-usage helpers remain.
 - [ ] Browser/e2e test parity — the old `PARITY_TESTING.md` roadmap called
       for this; confirm scope once pages above exist.
 
