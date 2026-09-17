@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/oauth/register", axum::routing::post(register_client))
         .route("/oauth/token", axum::routing::post(token))
+        .route("/oauth/revoke", axum::routing::post(revoke))
         .route(
             "/oauth/authorize",
             axum::routing::get(authorize).post(authorize),
@@ -106,7 +107,8 @@ struct TokenRequest {
     client_id: Option<String>,
     redirect_uri: Option<String>,
     code_verifier: Option<String>,
-    _refresh_token: Option<String>,
+    #[serde(rename = "refresh_token")]
+    refresh_token: Option<String>,
 }
 
 async fn token(State(state): State<AppState>, Form(request): Form<TokenRequest>) -> Response {
@@ -114,10 +116,57 @@ async fn token(State(state): State<AppState>, Form(request): Form<TokenRequest>)
         return oauth_error("server_error", "PostgreSQL is required");
     };
     if request.grant_type.as_deref() == Some("refresh_token") {
-        return oauth_error(
-            "unsupported_grant_type",
-            "Refresh token rotation is not implemented yet",
-        );
+        let (Some(refresh_token), Some(client_id)) = (request.refresh_token, request.client_id)
+        else {
+            return oauth_error(
+                "invalid_request",
+                "refresh_token and client_id are required",
+            );
+        };
+        let hash = hex::encode(Sha256::digest(refresh_token.as_bytes()));
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut tx = match pool.begin().await {
+            Ok(tx) => tx,
+            Err(_) => return oauth_error("server_error", "Unable to rotate OAuth token"),
+        };
+        let row = sqlx::query("SELECT id,refresh_token,client_id,key_name,resource,scope,refresh_token_expires_at,revoked_at FROM mcp_oauth_tokens WHERE refresh_token_hash=$1 FOR UPDATE")
+            .bind(hash).fetch_optional(&mut *tx).await;
+        let Ok(Some(row)) = row else {
+            return oauth_error("invalid_grant", "Refresh token is invalid");
+        };
+        let valid = row.try_get::<String, _>("refresh_token").ok().as_deref()
+            == Some(refresh_token.as_str())
+            && row.try_get::<String, _>("client_id").ok().as_deref() == Some(client_id.as_str())
+            && row
+                .try_get::<Option<i64>, _>("revoked_at")
+                .unwrap_or(Some(0))
+                .is_none()
+            && row
+                .try_get::<i64, _>("refresh_token_expires_at")
+                .unwrap_or(0)
+                > now;
+        if !valid {
+            return oauth_error(
+                "invalid_grant",
+                "Refresh token is invalid or has been revoked",
+            );
+        }
+        let access = random_token();
+        let replacement = random_token();
+        let update = sqlx::query("UPDATE mcp_oauth_tokens SET revoked_at=$1,updated_at=$1 WHERE id=$2 AND revoked_at IS NULL")
+            .bind(now).bind(row.try_get::<i32, _>("id").unwrap_or_default()).execute(&mut *tx).await;
+        if update.map(|r| r.rows_affected()).unwrap_or(0) != 1 {
+            return oauth_error("invalid_grant", "Refresh token was already used");
+        }
+        let result = sqlx::query("INSERT INTO mcp_oauth_tokens (access_token_hash,access_token,refresh_token_hash,refresh_token,client_id,key_name,resource,scope,access_token_expires_at,refresh_token_expires_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)")
+            .bind(hex::encode(Sha256::digest(access.as_bytes()))).bind(&access)
+            .bind(hex::encode(Sha256::digest(replacement.as_bytes()))).bind(&replacement).bind(&client_id)
+            .bind(row.try_get::<String,_>("key_name").unwrap_or_default()).bind(row.try_get::<String,_>("resource").unwrap_or_default())
+            .bind(row.try_get::<Option<String>,_>("scope").unwrap_or(None)).bind(now + 3_600_000).bind(now + 30 * 86_400_000).bind(now).execute(&mut *tx).await;
+        if result.is_err() || tx.commit().await.is_err() {
+            return oauth_error("server_error", "Unable to rotate OAuth token");
+        }
+        return Json(serde_json::json!({"access_token":access,"refresh_token":replacement,"token_type":"Bearer","expires_in":3600,"scope":row.try_get::<Option<String>,_>("scope").unwrap_or(None)})).into_response();
     }
     if request.grant_type.as_deref() != Some("authorization_code") {
         return oauth_error(
@@ -323,6 +372,41 @@ fn oauth_error_status(error: &str, description: &str, status: StatusCode) -> Res
     )
         .into_response()
 }
+
+#[derive(Deserialize)]
+struct RevocationRequest {
+    token: Option<String>,
+    token_type_hint: Option<String>,
+}
+
+async fn revoke(State(state): State<AppState>, Form(request): Form<RevocationRequest>) -> Response {
+    let Some(pool) = &state.inner.database else {
+        return oauth_error_status(
+            "server_error",
+            "PostgreSQL is required",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    };
+    let Some(token) = request.token.filter(|token| !token.is_empty()) else {
+        return oauth_error("invalid_request", "token is required");
+    };
+    let hash = hex::encode(Sha256::digest(token.as_bytes()));
+    let now = chrono::Utc::now().timestamp_millis();
+    let query = match request.token_type_hint.as_deref() {
+        Some("access_token") => "UPDATE mcp_oauth_tokens SET revoked_at=$1,updated_at=$1 WHERE access_token_hash=$2 AND revoked_at IS NULL",
+        Some("refresh_token") => "UPDATE mcp_oauth_tokens SET revoked_at=$1,updated_at=$1 WHERE refresh_token_hash=$2 AND revoked_at IS NULL",
+        _ => "UPDATE mcp_oauth_tokens SET revoked_at=$1,updated_at=$1 WHERE (access_token_hash=$2 OR refresh_token_hash=$2) AND revoked_at IS NULL",
+    };
+    match sqlx::query(query).bind(now).bind(hash).execute(pool).await {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(_) => oauth_error_status(
+            "server_error",
+            "Unable to revoke OAuth token",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
+}
+
 fn random_token() -> String {
     rand::thread_rng()
         .sample_iter(&Alphanumeric)
