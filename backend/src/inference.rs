@@ -339,6 +339,164 @@ async fn messages(
 /// which expose an OpenAI-compatible endpoint receive the equivalent chat
 /// request, while native Anthropic endpoints continue to receive the request
 /// unchanged.
+fn gemini_native_provider(slug: &str, provider: &crate::state::ProviderConfig) -> bool {
+    let host = url::Url::parse(&provider.api_base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase));
+    slug.eq_ignore_ascii_case("gemini")
+        || slug.to_ascii_lowercase().contains("gemini")
+        || host.as_deref().is_some_and(|host| {
+            host == "googleapis.com"
+                || host.ends_with(".googleapis.com")
+                || host == "generativelanguage.googleapis.com"
+        })
+}
+
+fn gemini_parts_to_chat(parts: &Value) -> Value {
+    let parts = parts
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| vec![parts.clone()]);
+    let mut output = Vec::new();
+    for part in parts {
+        if let Some(text) = part.get("text") {
+            output.push(serde_json::json!({"type":"text", "text":text}));
+        }
+        if let Some(data) = part.get("inlineData") {
+            if let (Some(mime), Some(encoded)) = (
+                data.get("mimeType").and_then(Value::as_str),
+                data.get("data").and_then(Value::as_str),
+            ) {
+                output.push(serde_json::json!({"type":"image_url", "image_url":{"url":format!("data:{mime};base64,{encoded}")}}));
+            }
+        }
+    }
+    if output.len() == 1 {
+        output.remove(0)
+    } else {
+        Value::Array(output)
+    }
+}
+
+fn gemini_to_chat(body: Value, model: &str) -> Value {
+    let mut messages = Vec::new();
+    if let Some(instruction) = body
+        .get("systemInstruction")
+        .or_else(|| body.get("system_instruction"))
+    {
+        let parts = instruction.get("parts").unwrap_or(instruction);
+        messages.push(serde_json::json!({"role":"system", "content":gemini_parts_to_chat(parts)}));
+    }
+    if let Some(contents) = body.get("contents").and_then(Value::as_array) {
+        for content in contents {
+            let source_role = content
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("user");
+            let role = if source_role == "model" {
+                "assistant"
+            } else {
+                source_role
+            };
+            let parts = content
+                .get("parts")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(vec![]));
+            let mut message =
+                serde_json::json!({"role":role, "content":gemini_parts_to_chat(&parts)});
+            let calls: Vec<Value> = parts.as_array().into_iter().flatten().filter_map(|part| part.get("functionCall")).enumerate().map(|(index, call)| serde_json::json!({"id":call.get("id").cloned().unwrap_or_else(|| Value::String(format!("call_{index}"))),"type":"function","function":{"name":call.get("name"),"arguments":serde_json::to_string(call.get("args").unwrap_or(&Value::Null)).unwrap_or_else(|_| "{}".into())}})).collect();
+            if !calls.is_empty() {
+                message["tool_calls"] = Value::Array(calls);
+            }
+            if let Some(response) = parts
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find_map(|part| part.get("functionResponse"))
+            {
+                message = serde_json::json!({"role":"tool", "content":response.get("response").cloned().unwrap_or(Value::Null)});
+            }
+            messages.push(message);
+        }
+    }
+    let config = body.get("generationConfig").cloned().unwrap_or(Value::Null);
+    let mut output = serde_json::json!({"model":model, "messages":messages});
+    for (source, target) in [
+        ("maxOutputTokens", "max_tokens"),
+        ("temperature", "temperature"),
+        ("topP", "top_p"),
+        ("stopSequences", "stop"),
+    ] {
+        if let Some(value) = config.get(source) {
+            output[target] = value.clone();
+        }
+    }
+    if config.get("responseMimeType").and_then(Value::as_str) == Some("application/json") {
+        output["response_format"] = serde_json::json!({"type":"json_object"});
+    }
+    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        let mut converted = Vec::new();
+        for tool in tools {
+            if let Some(declarations) = tool.get("functionDeclarations").and_then(Value::as_array) {
+                for function in declarations {
+                    converted.push(serde_json::json!({"type":"function", "function":{"name":function["name"],"description":function["description"],"parameters":function.get("parameters").cloned().unwrap_or_else(|| serde_json::json!({"type":"object"}))}}));
+                }
+            }
+        }
+        output["tools"] = Value::Array(converted);
+    }
+    output
+}
+
+fn chat_to_gemini(payload: Value) -> Value {
+    let mut candidates = Vec::new();
+    if let Some(choices) = payload.get("choices").and_then(Value::as_array) {
+        for choice in choices {
+            let message = choice.get("message").unwrap_or(&Value::Null);
+            let mut parts = Vec::new();
+            if let Some(content) = message.get("content") {
+                let values = content
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_else(|| vec![content.clone()]);
+                for value in values {
+                    if value
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_none_or(|kind| kind == "text")
+                    {
+                        parts.push(
+                            serde_json::json!({"text":value.get("text").cloned().unwrap_or(value)}),
+                        );
+                    }
+                }
+            }
+            if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+                for call in calls {
+                    let function = call.get("function").unwrap_or(&Value::Null);
+                    let args = function
+                        .get("arguments")
+                        .and_then(Value::as_str)
+                        .and_then(|value| serde_json::from_str(value).ok())
+                        .unwrap_or(Value::Object(Default::default()));
+                    parts.push(serde_json::json!({"functionCall":{"name":function.get("name"),"args":args,"id":call.get("id")}}));
+                }
+            }
+            let finish = match choice.get("finish_reason").and_then(Value::as_str) {
+                Some("length") => "MAX_TOKENS",
+                Some("tool_calls") => "STOP",
+                Some(reason) => reason,
+                None => "STOP",
+            };
+            candidates.push(
+                serde_json::json!({"content":{"role":"model","parts":parts},"finishReason":finish}),
+            );
+        }
+    }
+    let usage = payload.get("usage").unwrap_or(&Value::Null);
+    serde_json::json!({"candidates":candidates,"usageMetadata":{"promptTokenCount":usage.get("prompt_tokens").cloned().unwrap_or(Value::from(0)),"candidatesTokenCount":usage.get("completion_tokens").cloned().unwrap_or(Value::from(0)),"totalTokenCount":usage.get("total_tokens").cloned().unwrap_or(Value::from(0))}})
+}
+
 fn anthropic_native_provider(provider: &crate::state::ProviderConfig) -> bool {
     let anthropic_host = url::Url::parse(&provider.api_base_url)
         .ok()
@@ -1123,6 +1281,12 @@ async fn gemini(
                 "model_not_found",
             );
         };
+        let native_gemini = gemini_native_provider(&provider_slug, &provider);
+        let outbound_body = if native_gemini {
+            body.clone()
+        } else {
+            gemini_to_chat(body.clone(), &upstream_model)
+        };
         let mut request = reqwest::Client::new()
             .post(format!(
                 "{}/v1beta/models/{}:{}",
@@ -1130,7 +1294,7 @@ async fn gemini(
                 upstream_model,
                 action
             ))
-            .json(&body);
+            .json(&outbound_body);
         if let Some(key) = provider.api_key {
             request = request.header("x-goog-api-key", key);
         }
@@ -1170,6 +1334,11 @@ async fn gemini(
                         .into_response();
                 }
                 let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                let payload = if native_gemini {
+                    payload
+                } else {
+                    chat_to_gemini(payload)
+                };
                 return (status, Json(payload)).into_response();
             }
             Err(error) => {
@@ -2613,6 +2782,48 @@ mod tests {
         );
         assert_eq!(accounting.input_tokens, Some(17));
         assert_eq!(accounting.output_tokens, Some(5));
+    }
+
+    #[test]
+    fn gemini_request_transform_maps_system_content_tools_and_generation() {
+        let request = gemini_to_chat(
+            serde_json::json!({
+                "systemInstruction":{"parts":[{"text":"be brief"}]},
+                "contents":[{"role":"user","parts":[{"text":"hi"},{"inlineData":{"mimeType":"image/png","data":"abc"}}]},
+                    {"role":"model","parts":[{"functionCall":{"name":"lookup","args":{"q":"rust"}}}]}],
+                "generationConfig":{"maxOutputTokens":42,"responseMimeType":"application/json"},
+                "tools":[{"functionDeclarations":[{"name":"lookup","description":"find","parameters":{"type":"object"}}]}]
+            }),
+            "model",
+        );
+        assert_eq!(request["messages"][0]["role"], "system");
+        assert_eq!(
+            request["messages"][1]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,abc"
+        );
+        assert_eq!(
+            request["messages"][2]["tool_calls"][0]["function"]["name"],
+            "lookup"
+        );
+        assert_eq!(request["max_tokens"], 42);
+        assert_eq!(request["tools"][0]["function"]["name"], "lookup");
+    }
+
+    #[test]
+    fn gemini_response_transform_maps_choices_tools_finish_and_usage() {
+        let response = chat_to_gemini(
+            serde_json::json!({"choices":[{"finish_reason":"length","message":{"content":"done","tool_calls":[{"id":"c1","function":{"name":"lookup","arguments":"{\"q\":\"rust\"}"}}]}}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}),
+        );
+        assert_eq!(
+            response["candidates"][0]["content"]["parts"][0]["text"],
+            "done"
+        );
+        assert_eq!(
+            response["candidates"][0]["content"]["parts"][1]["functionCall"]["args"]["q"],
+            "rust"
+        );
+        assert_eq!(response["candidates"][0]["finishReason"], "MAX_TOKENS");
+        assert_eq!(response["usageMetadata"]["totalTokenCount"], 7);
     }
 
     #[tokio::test]
