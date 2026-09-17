@@ -882,7 +882,14 @@ async fn responses(
     if let Some(key) = provider.api_key {
         request = request.bearer_auth(key);
     }
-    match request.send().await {
+    let send_result = request.send().await.and_then(|response| {
+        if is_retryable_upstream_status(response.status()) {
+            response.error_for_status()
+        } else {
+            Ok(response)
+        }
+    });
+    match send_result {
         Ok(response) => {
             let status = response.status();
             record_attempt(
