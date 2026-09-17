@@ -226,3 +226,60 @@ export async function disableKey(name: string): Promise<void> {
     throw new Error(body?.error || 'Unable to disable API key');
   }
 }
+
+export interface QuotaDefinition {
+  type: 'rolling' | 'daily' | 'weekly' | 'monthly';
+  limitType: 'requests' | 'tokens' | 'cost';
+  limit: number;
+  duration?: string;
+  warnAt?: number;
+  shared?: boolean;
+  allowedProviders?: string[];
+  excludedProviders?: string[];
+  allowedModels?: string[];
+  excludedModels?: string[];
+}
+
+export interface QuotaSnapshot {
+  name: string; limitType: string; limit: number; currentUsage: number;
+  remaining: number; allowed: boolean; resetsAt: string; global: boolean;
+  shared: boolean; source: string; warnAt?: number;
+}
+
+export async function getQuotas(): Promise<Record<string, QuotaDefinition>> {
+  const response = await fetch('/v0/management/user-quotas', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load quota definitions');
+  return response.json();
+}
+
+export async function saveQuota(name: string, quota: QuotaDefinition, editing: boolean): Promise<void> {
+  const response = await fetch(`/v0/management/user-quotas/${encodeURIComponent(name)}`, {
+    method: editing ? 'PATCH' : 'PUT',
+    headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(quota),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+    throw new Error(body?.error?.message || 'Unable to save quota');
+  }
+}
+
+export async function deleteQuota(name: string): Promise<void> {
+  const response = await fetch(`/v0/management/user-quotas/${encodeURIComponent(name)}`, { method: 'DELETE', headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to delete quota');
+}
+
+export async function getQuotaStatus(key: string): Promise<{ key: string; quotas: QuotaSnapshot[] }> {
+  const response = await fetch(`/v0/management/quota/status/${encodeURIComponent(key)}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load quota status');
+  return response.json();
+}
+
+export async function resetQuota(key: string, quota?: string): Promise<void> {
+  const response = await fetch('/v0/management/quota/clear', { method: 'POST', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ key, ...(quota ? { quota } : {}) }) });
+  if (!response.ok) throw new Error('Unable to reset quota');
+}
+
+export async function recomputeQuota(key: string, quota: string): Promise<void> {
+  const response = await fetch('/v0/management/quota/recompute', { method: 'POST', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ key, quota }) });
+  if (!response.ok) throw new Error('Unable to recompute quota');
+}
