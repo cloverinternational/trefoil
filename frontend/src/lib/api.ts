@@ -70,3 +70,26 @@ export async function getUsageSummary(): Promise<Record<string, number>> {
   if (!response.ok) throw new Error('Unable to load usage summary');
   return response.json();
 }
+
+export interface UsageRecord {
+  requestId: string;
+  date: string;
+  apiKey: string | null;
+  provider: string | null;
+  incomingModelAlias: string | null;
+  responseStatus: string | null;
+  startTime: number;
+  durationMs: number | null;
+  tokensInput: number | null;
+  tokensOutput: number | null;
+  costTotal: number | null;
+}
+
+export async function getRecentUsage(limit = 8): Promise<UsageRecord[]> {
+  const response = await fetch(`/v0/management/usage?limit=${limit}&offset=0`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) throw new Error('Unable to load recent activity');
+  const body = (await response.json()) as { data?: UsageRecord[] };
+  return Array.isArray(body.data) ? body.data : [];
+}
