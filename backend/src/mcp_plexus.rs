@@ -201,6 +201,14 @@ async fn call_tool(
         | ("plexus_mcp_gateway", "delete") => {
             return mcp_gateway_operation(state, id, operation, args).await;
         }
+        ("plexus_settings", "get") => return settings_operation(state, id).await,
+        ("plexus_system_logs", "recent")
+        | ("plexus_system_logs", "level")
+        | ("plexus_system_logs", "set_level")
+        | ("plexus_system_logs", "reset_level") => {
+            return system_logs_operation(state, id, operation, args).await;
+        }
+        ("plexus_debug", "state") => return debug_operation(state, id).await,
         ("plexus_quota", "status") | ("plexus_quota", "clear") | ("plexus_quota", "recompute") => {
             return quota_operation(state, id, operation, args).await;
         }
@@ -217,6 +225,129 @@ async fn call_tool(
     rpc_result(
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":result.get("ok").and_then(Value::as_bool)==Some(false)}),
+    )
+}
+
+async fn settings_operation(state: &AppState, id: Value) -> Response {
+    let settings = state.inner.settings.read().unwrap();
+    let data = Value::Object(
+        settings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    );
+    let result = json!({"ok":true,"operation":"get","data":data});
+    rpc_result(
+        id,
+        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":false}),
+    )
+}
+
+async fn system_logs_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    args: Option<&Value>,
+) -> Response {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    let (method, path, body, use_system) = match operation {
+        "recent" => (
+            "GET",
+            format!(
+                "/v0/system/logs/recent?limit={}&offset={}",
+                args.get("limit").and_then(Value::as_u64).unwrap_or(100),
+                args.get("offset").and_then(Value::as_u64).unwrap_or(0)
+            ),
+            None,
+            true,
+        ),
+        "level" => ("GET", "/v0/management/logging/level".into(), None, false),
+        "set_level" => {
+            let Some(level) = args.get("level").and_then(Value::as_str) else {
+                return rpc_error(id, -32602, "level is required");
+            };
+            (
+                "PUT",
+                "/v0/management/logging/level".into(),
+                Some(json!({"level":level})),
+                false,
+            )
+        }
+        "reset_level" => ("DELETE", "/v0/management/logging/level".into(), None, false),
+        _ => unreachable!(),
+    };
+    let mut req = Request::builder().method(method).uri(path).header(
+        "x-admin-key",
+        state.inner.admin_key.clone().unwrap_or_default(),
+    );
+    let b = match body {
+        Some(v) => {
+            req = req.header("content-type", "application/json");
+            Body::from(v.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = if use_system {
+        crate::system_logs::router()
+            .with_state(state.clone())
+            .oneshot(req.body(b).unwrap())
+            .await
+            .unwrap()
+    } else {
+        crate::logging::router()
+            .with_state(state.clone())
+            .oneshot(req.body(b).unwrap())
+            .await
+            .unwrap()
+    };
+    let ok = response.status().is_success();
+    let payload: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+            .unwrap_or_else(|_| json!({"error":"Invalid response"}));
+    let result = if ok {
+        json!({"ok":true,"operation":operation,"data":payload})
+    } else {
+        json!({"ok":false,"operation":operation,"error":payload})
+    };
+    rpc_result(
+        id,
+        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
+    )
+}
+
+async fn debug_operation(state: &AppState, id: Value) -> Response {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let req = Request::get("/v0/management/debug")
+        .header(
+            "x-admin-key",
+            state.inner.admin_key.clone().unwrap_or_default(),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = crate::debug::router()
+        .with_state(state.clone())
+        .oneshot(req)
+        .await
+        .unwrap();
+    let ok = response.status().is_success();
+    let payload: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+            .unwrap_or_else(|_| json!({"error":"Invalid response"}));
+    let result = if ok {
+        json!({"ok":true,"operation":"state","data":payload})
+    } else {
+        json!({"ok":false,"operation":"state","error":payload})
+    };
+    rpc_result(
+        id,
+        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
     )
 }
 
