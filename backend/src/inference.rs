@@ -7,19 +7,149 @@
 //! terminal inspection remain intentionally deferred parity slices.
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{Multipart, Path, Query, State},
     http::HeaderMap,
     response::{IntoResponse, Response},
     Json, Router,
 };
+use futures_util::{Stream, StreamExt};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{
     auth::{resolve_principal, Principal},
     AppState,
 };
+
+/// State carried by a provider SSE stream until its terminal event (or an
+/// upstream/client disconnect).  Keeping this state in the stream, rather
+/// than in the request handler, makes accounting request-local and ensures a
+/// row is finalized exactly once when the body is dropped or exhausted.
+struct StreamAccounting {
+    pool: Option<sqlx::PgPool>,
+    request_id: String,
+    key_name: Option<String>,
+    provider: String,
+    model: String,
+    api_type: String,
+    start_time: i64,
+    input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+    cost: Option<f32>,
+    finalized: bool,
+}
+
+impl StreamAccounting {
+    async fn finalize(&mut self, success: bool) {
+        if self.finalized {
+            return;
+        }
+        self.finalized = true;
+        let Some(pool) = &self.pool else { return };
+        let _ = crate::database::record_request_usage(
+            pool,
+            &self.request_id,
+            self.key_name.as_deref(),
+            Some(&self.provider),
+            Some(&self.model),
+            &self.api_type,
+            if success { "success" } else { "error" },
+            true,
+            self.start_time,
+        )
+        .await;
+        let _ = crate::database::update_request_usage_metrics(
+            pool,
+            &self.request_id,
+            self.input_tokens,
+            self.output_tokens,
+            self.cost,
+            now_ms().saturating_sub(self.start_time),
+        )
+        .await;
+    }
+
+    fn observe(&mut self, data: &str) -> bool {
+        if data.trim() == "[DONE]" {
+            return true;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            return false;
+        };
+        let usage = value
+            .get("usage")
+            .or_else(|| value.get("response").and_then(|v| v.get("usage")));
+        if let Some(usage) = usage {
+            self.input_tokens = usage
+                .get("prompt_tokens")
+                .or_else(|| usage.get("input_tokens"))
+                .and_then(Value::as_i64)
+                .map(|v| v as i32)
+                .or(self.input_tokens);
+            self.output_tokens = usage
+                .get("completion_tokens")
+                .or_else(|| usage.get("output_tokens"))
+                .and_then(Value::as_i64)
+                .map(|v| v as i32)
+                .or(self.output_tokens);
+            self.cost = usage
+                .get("total_cost")
+                .or_else(|| usage.get("cost"))
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .or(self.cost);
+        }
+        let event = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        event.ends_with(".completed") || event == "message_stop" || event == "completion"
+    }
+}
+
+fn accounted_sse_body<S>(stream: S, accounting: StreamAccounting) -> Body
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+{
+    let state = Arc::new(tokio::sync::Mutex::new(accounting));
+    let output = stream.scan(String::new(), move |buffer, item| {
+        let state = state.clone();
+        let (bytes, mut terminal, error) = match item {
+            Ok(bytes) => {
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+                let terminal = false;
+                let mut events = Vec::new();
+                while let Some(index) = buffer.find('\n') {
+                    let line = buffer[..index].trim_end_matches('\r').to_owned();
+                    buffer.drain(..=index);
+                    if let Some(data) = line.strip_prefix("data:") {
+                        events.push(data.trim().to_owned());
+                    }
+                }
+                (Some((bytes, events)), terminal, None)
+            }
+            Err(error) => (None, false, Some(error)),
+        };
+        Box::pin(async move {
+            if let Some((bytes, events)) = bytes {
+                let mut accounting = state.lock().await;
+                for event in events {
+                    terminal |= accounting.observe(&event);
+                }
+                if terminal {
+                    accounting.finalize(true).await;
+                }
+                Some(Ok(bytes))
+            } else {
+                state.lock().await.finalize(false).await;
+                Some(Err(error.expect("stream error")))
+            }
+        })
+    });
+    Body::from_stream(output)
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -930,7 +1060,22 @@ async fn completions(
                     .header("content-type", content_type)
                     .header("cache-control", "no-cache")
                     .header("x-request-id", &request_id)
-                    .body(Body::from_stream(upstream.bytes_stream()))
+                    .body(accounted_sse_body(
+                        upstream.bytes_stream(),
+                        StreamAccounting {
+                            pool: state.inner.database.clone(),
+                            request_id: request_id.clone(),
+                            key_name: usage_key_name.map(str::to_owned),
+                            provider: provider_slug.clone(),
+                            model: model.clone(),
+                            api_type: "chat".to_owned(),
+                            start_time,
+                            input_tokens: None,
+                            output_tokens: None,
+                            cost: None,
+                            finalized: false,
+                        },
+                    ))
                     .expect("valid streaming response")
                     .into_response();
             }
