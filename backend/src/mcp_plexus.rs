@@ -185,6 +185,15 @@ async fn call_tool(
         | ("plexus_model_alias", "delete_all") => {
             return model_alias_operation(state, id, operation, args).await;
         }
+        ("plexus_key", "list")
+        | ("plexus_key", "get")
+        | ("plexus_key", "put")
+        | ("plexus_key", "create")
+        | ("plexus_key", "update")
+        | ("plexus_key", "delete")
+        | ("plexus_key", "disable") => {
+            return key_operation(state, id, operation, args).await;
+        }
         _ if TOOLS.iter().any(|(tool, _)| *tool == name) => {
             json!({"ok":false,"operation":operation,"error":{"message":"Operation is not implemented yet","type":"invalid_request","code":400}})
         }
@@ -287,6 +296,118 @@ fn redact_provider(provider: &crate::state::ProviderConfig) -> Value {
         object.remove("api_key");
     }
     value
+}
+
+async fn key_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    args: Option<&Value>,
+) -> Response {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    let name = args.get("id").and_then(Value::as_str);
+    let (method, path, body) = match operation {
+        "list" => ("GET", "/v0/management/keys".into(), None),
+        "get" => {
+            let Some(name) = name else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            ("GET", format!("/v0/management/keys/{name}"), None)
+        }
+        "put" | "create" | "update" => {
+            let Some(name) = name else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            let method = if operation == "update" {
+                "PATCH"
+            } else {
+                "PUT"
+            };
+            (
+                method,
+                format!("/v0/management/keys/{name}"),
+                Some(args.get("body").cloned().unwrap_or_else(|| json!({}))),
+            )
+        }
+        "delete" | "disable" => {
+            if args.get("destructive").and_then(Value::as_str) != Some("acknowledged") {
+                return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
+            }
+            let Some(name) = name else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            let path = if operation == "delete" {
+                format!("/v0/management/keys/{name}")
+            } else {
+                format!("/v0/management/keys/{name}/disable")
+            };
+            (
+                if operation == "delete" {
+                    "DELETE"
+                } else {
+                    "POST"
+                },
+                path,
+                None,
+            )
+        }
+        _ => unreachable!(),
+    };
+    let mut request = Request::builder().method(method).uri(path).header(
+        "x-admin-key",
+        state.inner.admin_key.clone().unwrap_or_default(),
+    );
+    let body = match body {
+        Some(v) => {
+            request = request.header("content-type", "application/json");
+            Body::from(v.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = crate::keys::router()
+        .with_state(state.clone())
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap();
+    let ok = response.status().is_success();
+    let payload: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+            .unwrap_or_else(|_| json!({"error":"Invalid key response"}));
+    let payload = if ok && matches!(operation, "list" | "get") {
+        redact_key_secrets(payload)
+    } else {
+        payload
+    };
+    let result = if ok {
+        json!({"ok":true,"operation":operation,"data":payload})
+    } else {
+        json!({"ok":false,"operation":operation,"error":payload})
+    };
+    rpc_result(
+        id,
+        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
+    )
+}
+
+fn redact_key_secrets(value: Value) -> Value {
+    match value {
+        Value::Array(v) => Value::Array(v.into_iter().map(redact_key_secrets).collect()),
+        Value::Object(mut o) => {
+            for (k, v) in o.iter_mut() {
+                if k.eq_ignore_ascii_case("secret") {
+                    *v = json!("[REDACTED]");
+                } else {
+                    *v = redact_key_secrets(v.take());
+                }
+            }
+            Value::Object(o)
+        }
+        v => v,
+    }
 }
 
 async fn provider_operation(
