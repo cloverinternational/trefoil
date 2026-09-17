@@ -6,7 +6,7 @@
 //! `mcpServerCount` is currently zero.
 
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json, Router,
@@ -83,6 +83,14 @@ pub fn router() -> Router<AppState> {
             axum::routing::get(quota_checkers),
         )
         .route("/v0/management/quotas", axum::routing::get(quota_results))
+        .route(
+            "/v0/management/quotas/:checker_id",
+            axum::routing::get(quota_result),
+        )
+        .route(
+            "/v0/management/quotas/:checker_id/history",
+            axum::routing::get(quota_history),
+        )
         .route(
             "/v0/management/pi/providers",
             axum::routing::get(pi_providers),
@@ -485,6 +493,102 @@ async fn quota_results(State(state): State<AppState>, headers: HeaderMap) -> Res
     let Ok(rows) = sqlx::query("SELECT quota_name, limit_type, current_usage, last_updated, window_start FROM quota_state ORDER BY quota_name, key_name").fetch_all(pool).await else { return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to retrieve quota data"}))).into_response(); };
     let data = rows.into_iter().map(|row| serde_json::json!({"quotaName":row.try_get::<String,_>("quota_name").unwrap_or_default(),"limitType":row.try_get::<String,_>("limit_type").unwrap_or_default(),"currentUsage":row.try_get::<f32,_>("current_usage").unwrap_or(0.0),"lastUpdated":row.try_get::<i64,_>("last_updated").unwrap_or_default(),"windowStart":row.try_get::<Option<i64>,_>("window_start").unwrap_or(None)})).collect::<Vec<_>>();
     Json(data).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct QuotaHistoryQuery {
+    #[serde(rename = "meterKey")]
+    meter_key: Option<String>,
+    since: Option<String>,
+}
+
+fn snapshot_json(row: &sqlx::postgres::PgRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": row.try_get::<i32, _>("id").unwrap_or_default(),
+        "checkerId": row.try_get::<String, _>("checker_id").unwrap_or_default(),
+        "checkerType": row.try_get::<String, _>("checker_type").unwrap_or_default(),
+        "provider": row.try_get::<String, _>("provider").unwrap_or_default(),
+        "meterKey": row.try_get::<String, _>("meter_key").unwrap_or_default(),
+        "kind": row.try_get::<String, _>("kind").unwrap_or_default(),
+        "unit": row.try_get::<String, _>("unit").unwrap_or_default(),
+        "label": row.try_get::<String, _>("label").unwrap_or_default(),
+        "group": row.try_get::<Option<String>, _>("group").unwrap_or(None), "scope": row.try_get::<Option<String>, _>("scope").unwrap_or(None),
+        "limit": row.try_get::<Option<f32>, _>("limit").unwrap_or(None), "used": row.try_get::<Option<f32>, _>("used").unwrap_or(None), "remaining": row.try_get::<Option<f32>, _>("remaining").unwrap_or(None),
+        "utilizationState": row.try_get::<String, _>("utilization_state").unwrap_or_default(), "utilizationPercent": row.try_get::<Option<f32>, _>("utilization_percent").unwrap_or(None),
+        "status": row.try_get::<String, _>("status").unwrap_or_default(), "periodValue": row.try_get::<Option<i32>, _>("period_value").unwrap_or(None), "periodUnit": row.try_get::<Option<String>, _>("period_unit").unwrap_or(None), "periodCycle": row.try_get::<Option<String>, _>("period_cycle").unwrap_or(None), "resetsAt": row.try_get::<Option<i64>, _>("resets_at").unwrap_or(None), "success": row.try_get::<bool, _>("success").unwrap_or(false), "errorMessage": row.try_get::<Option<String>, _>("error_message").unwrap_or(None), "checkedAt": row.try_get::<i64, _>("checked_at").unwrap_or_default(), "createdAt": row.try_get::<i64, _>("created_at").unwrap_or_default()
+    })
+}
+
+async fn quota_result(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(checker_id): Path<String>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(pool) = &state.inner.database else {
+        return Json(serde_json::json!({"checkerId":checker_id,"success":false,"meters":[]}))
+            .into_response();
+    };
+    let rows = sqlx::query(
+        "SELECT * FROM meter_snapshots WHERE checker_id=$1 ORDER BY checked_at DESC LIMIT 200",
+    )
+    .bind(&checker_id)
+    .fetch_all(pool)
+    .await;
+    let Ok(rows) = rows else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error":"Failed to retrieve quota data"})),
+        )
+            .into_response();
+    };
+    if rows.is_empty() {
+        return Json(serde_json::json!({"checkerId":checker_id,"success":false,"meters":[]}))
+            .into_response();
+    }
+    let checked = rows[0].try_get::<i64, _>("checked_at").unwrap_or_default();
+    let latest: Vec<_> = rows
+        .iter()
+        .filter(|r| r.try_get::<i64, _>("checked_at").unwrap_or_default() == checked)
+        .collect();
+    if let Some(row) = latest
+        .iter()
+        .find(|r| !r.try_get::<bool, _>("success").unwrap_or(false))
+    {
+        return Json(serde_json::json!({"checkerId":checker_id,"provider":row.try_get::<String,_>("provider").unwrap_or_default(),"checkedAt":checked,"success":false,"error":row.try_get::<Option<String>,_>("error_message").unwrap_or(None),"meters":[]})).into_response();
+    }
+    Json(serde_json::json!({"checkerId":checker_id,"checkerType":latest[0].try_get::<String,_>("checker_type").unwrap_or_default(),"provider":latest[0].try_get::<String,_>("provider").unwrap_or_default(),"checkedAt":checked,"success":true,"meters":latest.iter().map(|r| snapshot_json(r)).collect::<Vec<_>>() })).into_response()
+}
+
+async fn quota_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(checker_id): Path<String>,
+    Query(query): Query<QuotaHistoryQuery>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(pool) = &state.inner.database else {
+        return Json(
+            serde_json::json!({"checkerId":checker_id,"meterKey":query.meter_key,"history":[]}),
+        )
+        .into_response();
+    };
+    let since = query.since.as_deref().and_then(|s| {
+        s.strip_suffix('d')
+            .and_then(|d| d.parse::<f64>().ok())
+            .map(|d| chrono::Utc::now().timestamp_millis() - (d * 86_400_000.0) as i64)
+            .or_else(|| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .ok()
+                    .map(|d| d.timestamp_millis())
+            })
+    });
+    let rows = sqlx::query("SELECT * FROM meter_snapshots WHERE checker_id=$1 AND ($2::text IS NULL OR meter_key=$2) AND ($3::bigint IS NULL OR checked_at >= $3) ORDER BY checked_at DESC LIMIT 1000").bind(&checker_id).bind(&query.meter_key).bind(since).fetch_all(pool).await;
+    match rows { Ok(rows) => Json(serde_json::json!({"checkerId":checker_id,"meterKey":query.meter_key,"since":since.map(|v| chrono::DateTime::<chrono::Utc>::from_timestamp_millis(v).map(|d|d.to_rfc3339())),"history":rows.iter().map(snapshot_json).collect::<Vec<_>>() })).into_response(), Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to retrieve quota history"}))).into_response() }
 }
 
 async fn clear_vision_descriptor_cache(

@@ -339,12 +339,56 @@ async fn check(
     let input =
         serde_json::json!({"provider": provider, "options": body.options.unwrap_or(Value::Null)});
     match run_checker(&code, &input).await {
-        Ok(meters) => Json(serde_json::json!({"success":true,"provider":provider,"meters":meters}))
-            .into_response(),
-        Err(message) => Json(
-            serde_json::json!({"success":false,"provider":provider,"meters":[],"error":message}),
-        )
-        .into_response(),
+        Ok(meters) => {
+            persist_result(&state, &id, provider, &meters, None).await;
+            Json(serde_json::json!({"success":true,"checkerId":id,"provider":provider,"meters":meters})).into_response()
+        }
+        Err(message) => {
+            persist_result(&state, &id, provider, &Value::Array(vec![]), Some(&message)).await;
+            Json(serde_json::json!({"success":false,"checkerId":id,"provider":provider,"meters":[],"error":message})).into_response()
+        }
+    }
+}
+
+async fn persist_result(
+    state: &AppState,
+    checker_id: &str,
+    provider: &str,
+    meters: &Value,
+    error: Option<&str>,
+) {
+    let Some(pool) = &state.inner.database else {
+        return;
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    if let Some(message) = error {
+        let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,utilization_state,status,success,error_message,checked_at,created_at) VALUES ($1,$1,$2,'_error','unknown','unknown','error','unknown','error',false,$3,$4,$4)")
+            .bind(checker_id).bind(provider).bind(message).bind(now).execute(pool).await;
+        return;
+    }
+    let values = meters.as_array().cloned().unwrap_or_default();
+    for meter in values {
+        let key = meter.get("key").and_then(Value::as_str).unwrap_or("meter");
+        let kind = meter.get("kind").and_then(Value::as_str).unwrap_or("quota");
+        let unit = meter
+            .get("unit")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let label = meter.get("label").and_then(Value::as_str).unwrap_or(key);
+        let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,group_name,scope,limit_value,used,remaining,utilization_state,utilization_percent,status,period_value,period_unit,period_cycle,resets_at,success,error_message,checked_at,created_at) VALUES ($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,true,NULL,$19,$19)")
+            .bind(checker_id).bind(provider).bind(key).bind(kind).bind(unit).bind(label)
+            .bind(meter.get("group").and_then(Value::as_str))
+            .bind(meter.get("scope").and_then(Value::as_str))
+            .bind(meter.get("limit").and_then(Value::as_f64).map(|v| v as f32))
+            .bind(meter.get("used").and_then(Value::as_f64).map(|v| v as f32))
+            .bind(meter.get("remaining").and_then(Value::as_f64).map(|v| v as f32))
+            .bind(meter.get("utilizationState").and_then(Value::as_str).unwrap_or("unknown"))
+            .bind(meter.get("utilizationPercent").and_then(Value::as_f64).map(|v| v as f32))
+            .bind(meter.get("status").and_then(Value::as_str).unwrap_or("ok"))
+            .bind(meter.get("periodValue").and_then(Value::as_i64).map(|v| v as i32))
+            .bind(meter.get("periodUnit").and_then(Value::as_str))
+            .bind(meter.get("periodCycle").and_then(Value::as_str))
+            .bind(meter.get("resetsAt").and_then(Value::as_i64)).bind(now).execute(pool).await;
     }
 }
 
