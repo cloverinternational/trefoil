@@ -2067,13 +2067,29 @@ fn apply_native_compaction(body: &mut Value, state: &AppState) {
     let estimated = serde_json::to_string(body)
         .map(|s| s.len() / 4)
         .unwrap_or(0);
-    let threshold = config
+    let context_limit = config
         .get("absoluteTriggerTokens")
         .and_then(Value::as_u64)
         .map(|v| v as usize);
-    if threshold.is_none_or(|limit| estimated < limit) {
+    let ratio = config
+        .get("triggerRatio")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && (0.0..=1.0).contains(value));
+    let threshold = match (context_limit, ratio) {
+        (Some(limit), Some(ratio)) => (limit as f64 * ratio).ceil() as usize,
+        (Some(limit), None) => limit,
+        // A ratio has no useful meaning without a context limit. Preserve the
+        // historical no-op for ratio-only configurations.
+        (None, _) => return,
+    };
+    let minimum = config.get("minTokens").and_then(Value::as_u64).unwrap_or(0) as usize;
+    if estimated < threshold || estimated < minimum {
         return;
     }
+    let protect_recent = config
+        .get("protectRecent")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
     let native = config.get("native").and_then(Value::as_object);
     let arrays = native
         .and_then(|v| v.get("maxArrayItems"))
@@ -2086,10 +2102,15 @@ fn apply_native_compaction(body: &mut Value, state: &AppState) {
     if arrays.is_none() && strings.is_none() {
         return;
     }
-    compact_json_value(body, arrays, strings);
+    compact_json_value(body, arrays, strings, protect_recent);
 }
 
-fn compact_json_value(value: &mut Value, arrays: Option<usize>, strings: Option<usize>) {
+fn compact_json_value(
+    value: &mut Value,
+    arrays: Option<usize>,
+    strings: Option<usize>,
+    protect_recent: usize,
+) {
     match value {
         Value::String(text) => {
             if let Some(limit) = strings {
@@ -2098,15 +2119,23 @@ fn compact_json_value(value: &mut Value, arrays: Option<usize>, strings: Option<
         }
         Value::Array(items) => {
             if let Some(limit) = arrays {
-                items.truncate(limit)
+                if limit < items.len() {
+                    let keep_recent = protect_recent.min(limit);
+                    let keep_old = limit - keep_recent;
+                    let mut compacted = items[..keep_old].to_vec();
+                    if keep_recent > 0 {
+                        compacted.extend_from_slice(&items[items.len() - keep_recent..]);
+                    }
+                    *items = compacted;
+                }
             };
             for item in items {
-                compact_json_value(item, arrays, strings)
+                compact_json_value(item, arrays, strings, protect_recent)
             }
         }
         Value::Object(object) => {
             for item in object.values_mut() {
-                compact_json_value(item, arrays, strings)
+                compact_json_value(item, arrays, strings, protect_recent)
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
@@ -2386,6 +2415,36 @@ mod tests {
         let mut untouched = serde_json::json!({"messages":[{"content":"abcdef"}]});
         apply_native_compaction(&mut untouched, &state);
         assert_eq!(untouched["messages"][0]["content"], "abcdef");
+    }
+
+    #[test]
+    fn native_compaction_uses_trigger_ratio_and_preserves_recent_items() {
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        state.inner.settings.write().unwrap().insert(
+            "compaction".into(),
+            serde_json::json!({
+                "enabled": true,
+                "strategy": "native",
+                "absoluteTriggerTokens": 100,
+                "triggerRatio": 0.5,
+                "native": {"maxArrayItems": 3},
+                "protectRecent": 1
+            }),
+        );
+
+        let mut below = serde_json::json!({"messages": ["a"]});
+        apply_native_compaction(&mut below, &state);
+        assert_eq!(below["messages"].as_array().unwrap().len(), 1);
+
+        let mut body = serde_json::json!({"messages": ["first", "middle", "second", "last"]});
+        // Make the estimate exceed the 50-token threshold without changing
+        // the array shape being asserted.
+        body["padding"] = Value::String("x".repeat(220));
+        apply_native_compaction(&mut body, &state);
+        assert_eq!(
+            body["messages"],
+            serde_json::json!(["first", "middle", "last"])
+        );
     }
 
     #[test]
