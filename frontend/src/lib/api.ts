@@ -114,6 +114,12 @@ export async function getUsageSummary(): Promise<Record<string, number>> {
   return response.json();
 }
 
+export async function getMetrics(): Promise<string> {
+  const response = await fetch('/v0/management/metrics', { headers: authHeaders() });
+  if (!response.ok) throw new Error(response.status === 403 ? 'Administrator access required' : 'Unable to load metrics');
+  return response.text();
+}
+
 export interface UsageRecord {
   requestId: string;
   date: string;
