@@ -88,57 +88,79 @@ async fn audio_transcriptions(
         );
     };
     let model = String::from_utf8_lossy(model_bytes).into_owned();
-    let (provider_slug, upstream_model) = resolve_target(&state, &model, None);
-    let Some(provider) = state
-        .inner
-        .providers
-        .read()
-        .unwrap()
-        .get(&provider_slug)
-        .cloned()
-    else {
-        return error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            "No provider configured for model",
-            "model_not_found",
-        );
-    };
-    let mut form = reqwest::multipart::Form::new().text("model", upstream_model);
-    for (name, file_name, content_type, bytes) in
-        fields.into_iter().filter(|(name, _, _, _)| name != "model")
-    {
-        let mut part = reqwest::multipart::Part::bytes(bytes);
-        if let Some(file_name) = file_name {
-            part = part.file_name(file_name);
+    let client = reqwest::Client::new();
+    let mut attempted = None;
+    for _ in 0..2 {
+        let (provider_slug, upstream_model) = resolve_target(&state, &model, None);
+        let Some(provider) = state
+            .inner
+            .providers
+            .read()
+            .unwrap()
+            .get(&provider_slug)
+            .cloned()
+        else {
+            return error_response(
+                axum::http::StatusCode::NOT_FOUND,
+                "No provider configured for model",
+                "model_not_found",
+            );
+        };
+        let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+            return error_response(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "Provider API base URL is invalid",
+                "upstream_error",
+            );
+        };
+        let mut form = reqwest::multipart::Form::new().text("model", upstream_model.clone());
+        for (name, file_name, content_type, bytes) in &fields {
+            if name == "model" {
+                continue;
+            }
+            let mut part = reqwest::multipart::Part::bytes(bytes.clone());
+            if let Some(file_name) = file_name {
+                part = part.file_name(file_name.clone());
+            }
+            if let Some(content_type) = content_type {
+                part = part
+                    .mime_str(content_type)
+                    .unwrap_or_else(|_| reqwest::multipart::Part::bytes(Vec::new()));
+            }
+            form = form.part(name.clone(), part);
         }
-        if let Some(content_type) = content_type {
-            part = part
-                .mime_str(&content_type)
-                .unwrap_or_else(|_| reqwest::multipart::Part::bytes(Vec::new()));
+        let mut request = client
+            .post(format!(
+                "{}/audio/transcriptions",
+                base.as_str().trim_end_matches('/')
+            ))
+            .multipart(form);
+        if let Some(key) = provider.api_key {
+            request = request.bearer_auth(key);
         }
-        form = form.part(name, part);
-    }
-    let mut request = reqwest::Client::new()
-        .post(format!(
-            "{}/audio/transcriptions",
-            provider.api_base_url.trim_end_matches('/')
-        ))
-        .multipart(form);
-    if let Some(key) = provider.api_key {
-        request = request.bearer_auth(key);
-    }
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            let payload=response.json::<Value>().await.unwrap_or_else(|_|serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
-            (status, Json(payload)).into_response()
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                return (status, Json(payload)).into_response();
+            }
+            Err(error) => {
+                register_provider_failure(
+                    &state,
+                    &provider_slug,
+                    &upstream_model,
+                    error.to_string(),
+                )
+                .await;
+                attempted = Some(error.to_string());
+            }
         }
-        Err(error) => error_response(
-            axum::http::StatusCode::BAD_GATEWAY,
-            &error.to_string(),
-            "upstream_error",
-        ),
     }
+    error_response(
+        axum::http::StatusCode::BAD_GATEWAY,
+        attempted.as_deref().unwrap_or("upstream error"),
+        "upstream_error",
+    )
 }
 
 async fn audio_speech(
@@ -152,7 +174,7 @@ async fn audio_speech(
         body,
         "/audio/speech",
         "authorization",
-        false,
+        true,
     )
     .await
 }
@@ -176,7 +198,7 @@ async fn images(
         body,
         "/images/generations",
         "authorization",
-        false,
+        true,
     )
     .await
 }
