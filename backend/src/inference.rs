@@ -262,6 +262,20 @@ async fn responses(
         Principal::Admin => None,
     };
     let (provider_slug, upstream_model) = resolve_target(&state, &model, key_config);
+    if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
+        return error_response(
+            axum::http::StatusCode::FORBIDDEN,
+            &format!("Key is not allowed to access any provider configured for model '{model}'"),
+            "access_denied",
+        );
+    }
+    if target_is_on_cooldown(&state, &provider_slug, &upstream_model) {
+        return error_response(
+            axum::http::StatusCode::BAD_GATEWAY,
+            &format!("Provider {provider_slug}/{upstream_model} is on cooldown"),
+            "upstream_error",
+        );
+    }
     let Some(provider) = state
         .inner
         .providers
@@ -283,8 +297,22 @@ async fn responses(
             "upstream_error",
         );
     };
-    body["model"] = Value::String(upstream_model);
-    let mut request = reqwest::Client::new()
+    let original_body = body.clone();
+    body["model"] = Value::String(upstream_model.clone());
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return error_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &error.to_string(),
+                "server_error",
+            )
+        }
+    };
+    let mut request = client
         .post(format!("{}/responses", base.as_str().trim_end_matches('/')))
         .json(&body);
     if let Some(key) = provider.api_key {
@@ -327,11 +355,78 @@ async fn responses(
             }
             (status, Json(payload)).into_response()
         }
-        Err(error) => error_response(
-            axum::http::StatusCode::BAD_GATEWAY,
-            &error.to_string(),
-            "upstream_error",
-        ),
+        Err(error) => {
+            register_provider_failure(&state, &provider_slug, &upstream_model, error.to_string())
+                .await;
+            let (fallback_provider_slug, fallback_model) =
+                resolve_target(&state, &model, key_config);
+            if fallback_provider_slug != provider_slug || fallback_model != upstream_model {
+                let fallback_provider = {
+                    state
+                        .inner
+                        .providers
+                        .read()
+                        .unwrap()
+                        .get(&fallback_provider_slug)
+                        .cloned()
+                };
+                if let Some(fallback_provider) = fallback_provider {
+                    if let Ok(fallback_base) =
+                        dispatch_provider_url(&fallback_provider.api_base_url)
+                    {
+                        let mut fallback_body = original_body;
+                        fallback_body["model"] = Value::String(fallback_model.clone());
+                        let mut fallback_request = client
+                            .post(format!(
+                                "{}/responses",
+                                fallback_base.as_str().trim_end_matches('/')
+                            ))
+                            .json(&fallback_body);
+                        if let Some(key) = fallback_provider.api_key {
+                            fallback_request = fallback_request.bearer_auth(key);
+                        }
+                        match fallback_request.send().await {
+                            Ok(response) => {
+                                let status = response.status();
+                                if fallback_body
+                                    .get("stream")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false)
+                                {
+                                    let content_type = response
+                                        .headers()
+                                        .get("content-type")
+                                        .and_then(|v| v.to_str().ok())
+                                        .unwrap_or("text/event-stream");
+                                    return axum::http::Response::builder()
+                                        .status(status)
+                                        .header("content-type", content_type)
+                                        .body(Body::from_stream(response.bytes_stream()))
+                                        .unwrap()
+                                        .into_response();
+                                }
+                                let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                                return (status, Json(payload)).into_response();
+                            }
+                            Err(fallback_error) => {
+                                register_provider_failure(
+                                    &state,
+                                    &fallback_provider_slug,
+                                    &fallback_model,
+                                    fallback_error.to_string(),
+                                )
+                                .await
+                            }
+                        }
+                    }
+                }
+            }
+            error_response(
+                axum::http::StatusCode::BAD_GATEWAY,
+                &error.to_string(),
+                "upstream_error",
+            )
+        }
     }
 }
 
