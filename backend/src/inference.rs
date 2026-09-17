@@ -382,7 +382,7 @@ async fn delete_response(
             "not_found_error",
         );
     };
-    match sqlx::query("DELETE FROM request_usage WHERE request_id=$1")
+    match sqlx::query("DELETE FROM responses WHERE id=$1")
         .bind(&id)
         .execute(pool)
         .await
