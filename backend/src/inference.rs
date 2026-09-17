@@ -38,6 +38,9 @@ struct StreamAccounting {
     input_tokens: Option<i32>,
     output_tokens: Option<i32>,
     cost: Option<f32>,
+    /// Gemini's final chunk carries usageMetadata and has no [DONE] marker.
+    terminal_on_usage: bool,
+    stream_success: bool,
     finalized: bool,
 }
 
@@ -78,19 +81,23 @@ impl StreamAccounting {
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             return None;
         };
+        let gemini_usage = value.get("usageMetadata");
         let usage = value
             .get("usage")
+            .or(gemini_usage)
             .or_else(|| value.get("response").and_then(|v| v.get("usage")));
         if let Some(usage) = usage {
             self.input_tokens = usage
                 .get("prompt_tokens")
                 .or_else(|| usage.get("input_tokens"))
+                .or_else(|| usage.get("promptTokenCount"))
                 .and_then(Value::as_i64)
                 .map(|v| v as i32)
                 .or(self.input_tokens);
             self.output_tokens = usage
                 .get("completion_tokens")
                 .or_else(|| usage.get("output_tokens"))
+                .or_else(|| usage.get("candidatesTokenCount"))
                 .and_then(Value::as_i64)
                 .map(|v| v as i32)
                 .or(self.output_tokens);
@@ -100,6 +107,9 @@ impl StreamAccounting {
                 .and_then(Value::as_f64)
                 .map(|v| v as f32)
                 .or(self.cost);
+        }
+        if self.terminal_on_usage && gemini_usage.is_some() {
+            return Some(self.stream_success);
         }
         let event = value
             .get("type")
@@ -576,6 +586,8 @@ async fn responses(
                             input_tokens: None,
                             output_tokens: None,
                             cost: None,
+                            terminal_on_usage: false,
+                            stream_success: status.is_success(),
                             finalized: false,
                         },
                     ))
@@ -696,6 +708,8 @@ async fn responses(
                                                 input_tokens: None,
                                                 output_tokens: None,
                                                 cost: None,
+                                                terminal_on_usage: false,
+                                                stream_success: status.is_success(),
                                                 finalized: false,
                                             },
                                         ))
@@ -974,7 +988,24 @@ async fn gemini(
                                 .and_then(|v| v.to_str().ok())
                                 .unwrap_or("text/event-stream"),
                         )
-                        .body(Body::from_stream(response.bytes_stream()))
+                        .body(accounted_sse_body(
+                            response.bytes_stream(),
+                            StreamAccounting {
+                                pool: state.inner.database.clone(),
+                                request_id: new_request_id(),
+                                key_name: None,
+                                provider: provider_slug.clone(),
+                                model: model.to_owned(),
+                                api_type: "gemini".to_owned(),
+                                start_time: now_ms(),
+                                input_tokens: None,
+                                output_tokens: None,
+                                cost: None,
+                                terminal_on_usage: true,
+                                stream_success: status.is_success(),
+                                finalized: false,
+                            },
+                        ))
                         .unwrap()
                         .into_response();
                 }
@@ -1147,6 +1178,8 @@ async fn completions(
                             input_tokens: None,
                             output_tokens: None,
                             cost: None,
+                            terminal_on_usage: false,
+                            stream_success: status.is_success(),
                             finalized: false,
                         },
                     ))
@@ -1745,6 +1778,8 @@ async fn chat_completions(
                             input_tokens: None,
                             output_tokens: None,
                             cost: None,
+                            terminal_on_usage: false,
+                            stream_success: status.is_success(),
                             finalized: false,
                         },
                     ))
@@ -2325,6 +2360,41 @@ mod tests {
     use http_body_util::BodyExt;
     use std::collections::HashMap;
     use tower::ServiceExt;
+
+    fn test_stream_accounting() -> StreamAccounting {
+        StreamAccounting {
+            pool: None,
+            request_id: "test".into(),
+            key_name: None,
+            provider: "gemini".into(),
+            model: "test-model".into(),
+            api_type: "gemini".into(),
+            start_time: 0,
+            input_tokens: None,
+            output_tokens: None,
+            cost: None,
+            terminal_on_usage: true,
+            stream_success: true,
+            finalized: false,
+        }
+    }
+
+    #[test]
+    fn gemini_usage_metadata_is_terminal_and_accounted() {
+        let mut accounting = test_stream_accounting();
+        assert_eq!(
+            accounting.observe(r#"{"candidates":[{"content":{}}]}"#),
+            None
+        );
+        assert_eq!(
+            accounting.observe(
+                r#"{"usageMetadata":{"promptTokenCount":17,"candidatesTokenCount":5,"totalTokenCount":22}}"#
+            ),
+            Some(true)
+        );
+        assert_eq!(accounting.input_tokens, Some(17));
+        assert_eq!(accounting.output_tokens, Some(5));
+    }
 
     #[tokio::test]
     async fn models_requires_authentication() {
