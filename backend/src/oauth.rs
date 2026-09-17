@@ -15,10 +15,25 @@ use axum::{
     response::{IntoResponse, Response},
     Json, Router,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{distributions::Alphanumeric, Rng};
 use serde::Deserialize;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const SUPPORTED_PROVIDERS: &[&str] = &[
+    "anthropic",
+    "github-copilot",
+    "kimi-coding",
+    "openai-codex",
+    "openrouter",
+    "xai",
+];
+
+pub(crate) fn is_supported_provider(provider: &str) -> bool {
+    SUPPORTED_PROVIDERS.contains(&provider)
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -102,6 +117,34 @@ fn session_id() -> String {
         .collect()
 }
 
+fn authorization_url(provider: &str, session_id: &str) -> Option<String> {
+    let endpoint = match provider {
+        "anthropic" => "https://console.anthropic.com/oauth/authorize",
+        "github-copilot" => "https://github.com/login/oauth/authorize",
+        "kimi-coding" => "https://auth.kimi.com/oauth/authorize",
+        "openai-codex" => "https://auth.openai.com/oauth/authorize",
+        "openrouter" => "https://openrouter.ai/auth",
+        "xai" => "https://accounts.x.ai/oauth/authorize",
+        _ => return None,
+    };
+    let verifier: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(64)
+        .map(char::from)
+        .collect();
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let mut url = url::Url::parse(endpoint).ok()?;
+    let redirect = format!("/v0/management/oauth/sessions/{session_id}/callback");
+    url.query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", "trefoil")
+        .append_pair("redirect_uri", &redirect)
+        .append_pair("state", session_id)
+        .append_pair("code_challenge", &challenge)
+        .append_pair("code_challenge_method", "S256");
+    Some(url.to_string())
+}
+
 async fn create_session(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -117,15 +160,23 @@ async fn create_session(
         )
             .into_response();
     }
+    if !is_supported_provider(&body.provider_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Unsupported OAuth provider"})),
+        )
+            .into_response();
+    }
     let now = now_ms();
     let id = session_id();
+    let auth_url = authorization_url(&body.provider_id, &id).unwrap();
     let session = OAuthSession {
         id: id.clone(),
         provider_id: body.provider_id.clone(),
         account_id: body.account_id,
         status: "waiting".into(),
         auth_info: Some(
-            serde_json::json!({"url": format!("https://auth.invalid/{}/{}", body.provider_id, id), "instructions":"Open the authorization URL to continue."}),
+            serde_json::json!({"url": auth_url, "instructions":"Open the authorization URL to continue."}),
         ),
         prompt: None,
         progress: vec![serde_json::json!({"status":"waiting"})],

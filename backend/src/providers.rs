@@ -313,6 +313,13 @@ fn validate_and_build(
             "'oauth_provider' must be specified when using oauth://",
         ));
     }
+    if let Some(provider) = oauth_provider.as_deref() {
+        if !crate::oauth::is_supported_provider(provider) {
+            issues.push(ValidationIssue::root(
+                "'oauth_provider' must be a supported OAuth provider",
+            ));
+        }
+    }
     if is_oauth && oauth_account.is_none() {
         issues.push(ValidationIssue::root(
             "'oauth_account' must be specified when using oauth://",
