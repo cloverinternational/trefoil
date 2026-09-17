@@ -411,7 +411,7 @@ async fn quota_checker_types(State(state): State<AppState>, headers: HeaderMap) 
     Json(serde_json::json!({ "types": types, "count": 30 })).into_response()
 }
 
-fn checker_types() -> serde_json::Value {
+pub(crate) fn checker_types() -> serde_json::Value {
     serde_json::json!([
         {"type":"naga","displayName":"Naga"},
         {"type":"synthetic","displayName":"Synthetic"},
@@ -462,8 +462,17 @@ async fn quota_checkers(State(state): State<AppState>, headers: HeaderMap) -> Re
             })
         })
         .collect::<Vec<_>>();
-    // Provider quota-checker config and scheduling are not yet implemented.
-    Json(serde_json::json!({ "knownTypes": known_types, "configured": [] })).into_response()
+    let configured = if let Some(pool) = &state.inner.database {
+        sqlx::query("SELECT id,display_name,code,enabled,created_at,updated_at FROM custom_checkers ORDER BY id")
+            .fetch_all(pool).await.unwrap_or_default().into_iter().map(|row| {
+                serde_json::json!({"type": row.try_get::<String,_>("id").unwrap_or_default(), "displayName": row.try_get::<String,_>("display_name").unwrap_or_default(), "custom": true, "enabled": row.try_get::<bool,_>("enabled").unwrap_or(true)})
+            }).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut known_types = known_types;
+    known_types.extend(configured.iter().cloned());
+    Json(serde_json::json!({ "knownTypes": known_types, "configured": configured })).into_response()
 }
 
 async fn quota_results(State(state): State<AppState>, headers: HeaderMap) -> Response {

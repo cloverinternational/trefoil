@@ -4,6 +4,7 @@ pub mod backup;
 pub mod concurrency;
 pub mod config_routes;
 pub mod cooldowns;
+pub mod custom_checkers;
 pub mod database;
 pub mod debug;
 pub mod debug_logs;
@@ -45,6 +46,7 @@ pub fn app(state: AppState) -> Router {
         .merge(backup::router())
         .merge(config_routes::router())
         .merge(concurrency::router())
+        .merge(custom_checkers::router())
         .merge(cooldowns::router())
         .merge(debug::router())
         .merge(debug_logs::router())
