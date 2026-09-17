@@ -2,10 +2,9 @@
 
 use crate::AppState;
 use axum::extract::Form;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::{
-    extract::{Path, State},
-    http::HeaderMap,
+    extract::{Path, Query, State},
     response::{IntoResponse, Response},
     Json, Router,
 };
@@ -29,7 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/oauth/token", axum::routing::post(token))
         .route(
             "/oauth/authorize",
-            axum::routing::get(authorize_not_ready).post(authorize_not_ready),
+            axum::routing::get(authorize).post(authorize),
         )
 }
 
@@ -180,9 +179,146 @@ async fn token(State(state): State<AppState>, Form(request): Form<TokenRequest>)
     Json(serde_json::json!({"access_token":access,"refresh_token":refresh,"token_type":"Bearer","expires_in":3600,"scope":row.try_get::<Option<String>,_>("scope").unwrap_or(None)})).into_response()
 }
 
-fn oauth_error(error: &str, description: &str) -> Response {
+#[derive(Deserialize, Clone)]
+struct AuthorizationRequest {
+    response_type: Option<String>,
+    client_id: Option<String>,
+    redirect_uri: Option<String>,
+    state: Option<String>,
+    scope: Option<String>,
+    code_challenge: Option<String>,
+    code_challenge_method: Option<String>,
+    resource: Option<String>,
+    key_name: Option<String>,
+}
+
+async fn authorize(
+    State(state): State<AppState>,
+    Query(request): Query<AuthorizationRequest>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(pool) = &state.inner.database else {
+        return oauth_error_status(
+            "server_error",
+            "PostgreSQL is required",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    };
+    let (Some(client_id), Some(redirect_uri), Some(challenge), Some(resource)) = (
+        request.client_id.as_deref(),
+        request.redirect_uri.as_deref(),
+        request.code_challenge.as_deref(),
+        request.resource.as_deref(),
+    ) else {
+        return oauth_error(
+            "invalid_request",
+            "client_id, redirect_uri, code_challenge, and resource are required",
+        );
+    };
+    if request.response_type.as_deref() != Some("code")
+        || request.code_challenge_method.as_deref() != Some("S256")
+        || url::Url::parse(resource).is_err()
+    {
+        return oauth_error(
+            "invalid_request",
+            "response_type=code and S256 PKCE are required",
+        );
+    }
+    let Ok(Some(client)) =
+        sqlx::query("SELECT redirect_uris,status,scope FROM mcp_oauth_clients WHERE client_id=$1")
+            .bind(client_id)
+            .fetch_optional(pool)
+            .await
+    else {
+        return oauth_error("invalid_request", "Unknown OAuth client");
+    };
+    if client.try_get::<String, _>("status").unwrap_or_default() != "active" {
+        return oauth_error("unauthorized_client", "OAuth client is disabled");
+    }
+    let redirects: Vec<String> = serde_json::from_str(
+        &client
+            .try_get::<String, _>("redirect_uris")
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    if !redirects.iter().any(|uri| uri == redirect_uri) {
+        return oauth_error("invalid_request", "redirect_uri is not registered");
+    }
+    let allowed = client.try_get::<Option<String>, _>("scope").unwrap_or(None);
+    if allowed.as_ref().is_some_and(|a| {
+        request
+            .scope
+            .as_deref()
+            .unwrap_or("")
+            .split_whitespace()
+            .any(|s| !a.split_whitespace().any(|x| x == s))
+    }) {
+        return oauth_error("invalid_scope", "Requested scope is not allowed");
+    }
+    if headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/html"))
+    {
+        return (StatusCode::OK, [("content-type", "text/html; charset=utf-8")], "<h1>Authorize access</h1><p>Submit this request with an authenticated x-admin-key and Accept: application/json.</p>").into_response();
+    }
+    use crate::auth::{resolve_principal, Principal};
+    let key_name = match resolve_principal(
+        &state,
+        headers.get("x-admin-key").and_then(|v| v.to_str().ok()),
+    ) {
+        Some(Principal::Admin) => request
+            .key_name
+            .filter(|n| state.inner.keys.read().unwrap().contains_key(n)),
+        Some(Principal::Limited { key_name, .. }) => Some(key_name),
+        None => None,
+    };
+    let Some(key_name) = key_name else {
+        return oauth_error(
+            "access_denied",
+            "An authenticated API-key session and key_name are required",
+        );
+    };
+    let code = random_token();
+    let now = chrono::Utc::now().timestamp_millis();
+    let hash = hex::encode(Sha256::digest(code.as_bytes()));
+    let result = sqlx::query("INSERT INTO mcp_oauth_authorization_codes (code_hash,code,client_id,redirect_uri,resource,scope,key_name,code_challenge,code_challenge_method,expires_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'S256',$9,$10)").bind(hash).bind(&code).bind(client_id).bind(redirect_uri).bind(resource).bind(&request.scope).bind(key_name).bind(challenge).bind(now + 600_000).bind(now).execute(pool).await;
+    if result.is_err() {
+        return oauth_error_status(
+            "server_error",
+            "Unable to store authorization code",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
+    let mut callback = url::Url::parse(redirect_uri).unwrap();
+    callback.query_pairs_mut().append_pair("code", &code);
+    if let Some(state) = request.state {
+        callback.query_pairs_mut().append_pair("state", &state);
+    }
+    let location = callback.to_string();
+    if headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("application/json"))
+    {
+        return Json(serde_json::json!({"redirect_to": location})).into_response();
+    }
     (
-        StatusCode::BAD_REQUEST,
+        StatusCode::FOUND,
+        [(
+            axum::http::header::LOCATION,
+            HeaderValue::from_str(&location).unwrap(),
+        )],
+    )
+        .into_response()
+}
+
+fn oauth_error(error: &str, description: &str) -> Response {
+    oauth_error_status(error, description, StatusCode::BAD_REQUEST)
+}
+fn oauth_error_status(error: &str, description: &str, status: StatusCode) -> Response {
+    (
+        status,
         Json(serde_json::json!({"error":error,"error_description":description})),
     )
         .into_response()
@@ -193,12 +329,4 @@ fn random_token() -> String {
         .take(48)
         .map(char::from)
         .collect()
-}
-
-async fn authorize_not_ready() -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({"error":"OAuth authorization flow is not implemented"})),
-    )
-        .into_response()
 }
