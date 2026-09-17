@@ -166,6 +166,7 @@ pub struct AppStateInner {
     pub settings: RwLock<HashMap<String, Value>>,
     pub cooldowns: RwLock<HashMap<(String, String), CooldownEntry>>,
     pub mcp_key_round_robin: RwLock<HashMap<i32, i32>>,
+    pub mcp_processes: Arc<tokio::sync::Mutex<HashMap<String, tokio::process::Child>>>,
     /// Per-key trace/debug capture toggle, mirroring `DebugManager`'s
     /// `enabledKeys` set. Trefoil does not implement actual trace capture —
     /// only the on/off bookkeeping the `self/debug/toggle` and
@@ -192,6 +193,7 @@ impl AppState {
                 settings: RwLock::new(HashMap::new()),
                 cooldowns: RwLock::new(HashMap::new()),
                 mcp_key_round_robin: RwLock::new(HashMap::new()),
+                mcp_processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
                 debug_enabled_keys: RwLock::new(std::collections::HashSet::new()),
                 debug_enabled_global: RwLock::new(false),
                 debug_enabled_aliases: RwLock::new(std::collections::HashSet::new()),

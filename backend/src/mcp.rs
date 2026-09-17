@@ -12,6 +12,8 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::Row;
+use std::collections::HashMap;
+use tokio::process::Command;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -70,6 +72,11 @@ struct ServerBody {
     enabled: Option<bool>,
     mode: Option<String>,
     auth_scheme: Option<String>,
+    launcher: Option<String>,
+    package_name: Option<String>,
+    args: Option<String>,
+    env: Option<String>,
+    startup_timeout_ms: Option<i64>,
 }
 #[derive(Deserialize)]
 struct KeyBody {
@@ -78,7 +85,7 @@ struct KeyBody {
 }
 
 fn serialize_server(row: &sqlx::postgres::PgRow) -> serde_json::Value {
-    serde_json::json!({"upstreamUrl":row.try_get::<String,_>("upstream_url").unwrap_or_default(),"enabled":row.try_get::<bool,_>("enabled").unwrap_or(true),"mode":row.try_get::<String,_>("mode").unwrap_or_else(|_|"remote_http".into()),"authScheme":row.try_get::<Option<String>,_>("auth_scheme").unwrap_or(None)})
+    serde_json::json!({"upstreamUrl":row.try_get::<String,_>("upstream_url").unwrap_or_default(),"enabled":row.try_get::<bool,_>("enabled").unwrap_or(true),"mode":row.try_get::<String,_>("mode").unwrap_or_else(|_|"remote_http".into()),"authScheme":row.try_get::<Option<String>,_>("auth_scheme").unwrap_or(None),"launcher":row.try_get::<Option<String>,_>("launcher").unwrap_or(None),"packageName":row.try_get::<Option<String>,_>("package_name").unwrap_or(None),"args":row.try_get::<Option<String>,_>("args").unwrap_or(None),"env":row.try_get::<Option<String>,_>("env").unwrap_or(None),"startupTimeoutMs":row.try_get::<Option<i64>,_>("startup_timeout_ms").unwrap_or(None)})
 }
 
 async fn list_servers(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -195,6 +202,17 @@ async fn patch_server(
             auth_scheme: body
                 .auth_scheme
                 .or_else(|| row.try_get("auth_scheme").ok().flatten()),
+            launcher: body
+                .launcher
+                .or_else(|| row.try_get("launcher").ok().flatten()),
+            package_name: body
+                .package_name
+                .or_else(|| row.try_get("package_name").ok().flatten()),
+            args: body.args.or_else(|| row.try_get("args").ok().flatten()),
+            env: body.env.or_else(|| row.try_get("env").ok().flatten()),
+            startup_timeout_ms: body
+                .startup_timeout_ms
+                .or_else(|| row.try_get("startup_timeout_ms").ok().flatten()),
         }),
     )
     .await
@@ -316,16 +334,80 @@ fn not_found(name: &str) -> Response {
 async fn start_server(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(_name): Path<String>,
+    Path(name): Path<String>,
 ) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({"error":"MCP subprocess lifecycle is not implemented"})),
+    let Some(pool) = &state.inner.database else {
+        return not_found(&name);
+    };
+    let row = match sqlx::query(
+        "SELECT mode,launcher,package_name,args,env FROM mcp_servers WHERE name=$1",
     )
-        .into_response()
+    .bind(&name)
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => return not_found(&name),
+        Err(_) => return internal_error(),
+    };
+    if row.try_get::<String, _>("mode").unwrap_or_default() != "local_process" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"MCP server is not local_process"})),
+        )
+            .into_response();
+    }
+    let launcher = row
+        .try_get::<Option<String>, _>("launcher")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if !allowed_launcher(&launcher) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"launcher is not allowlisted"})),
+        )
+            .into_response();
+    }
+    let mut command = Command::new(&launcher);
+    command.kill_on_drop(true);
+    if let Some(package) = row
+        .try_get::<Option<String>, _>("package_name")
+        .ok()
+        .flatten()
+    {
+        command.arg(package);
+    }
+    command.args(parse_string_list(
+        row.try_get::<Option<String>, _>("args")
+            .ok()
+            .flatten()
+            .as_deref(),
+    ));
+    command.envs(parse_env(
+        row.try_get::<Option<String>, _>("env")
+            .ok()
+            .flatten()
+            .as_deref(),
+    ));
+    let child =
+        match command.spawn() {
+            Ok(child) => child,
+            Err(error) => return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error":format!("failed to start MCP process: {error}")})),
+            )
+                .into_response(),
+        };
+    let mut processes = state.inner.mcp_processes.lock().await;
+    if let Some(mut old) = processes.insert(name.clone(), child) {
+        let _ = old.kill().await;
+        let _ = old.wait().await;
+    }
+    Json(serde_json::json!({"success":true,"name":name,"status":"running"})).into_response()
 }
 
 async fn stop_server(
@@ -333,7 +415,15 @@ async fn stop_server(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Response {
-    start_server(State(state), headers, Path(name)).await
+    if let Err(response) = admin(&state, &headers) {
+        return response;
+    }
+    let mut processes = state.inner.mcp_processes.lock().await;
+    if let Some(mut child) = processes.remove(&name) {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+    Json(serde_json::json!({"success":true,"name":name,"status":"stopped"})).into_response()
 }
 
 async fn restart_server(
@@ -341,7 +431,35 @@ async fn restart_server(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Response {
+    if let Err(response) = admin(&state, &headers) {
+        return response;
+    }
+    let _ = stop_server(State(state.clone()), headers.clone(), Path(name.clone())).await;
     start_server(State(state), headers, Path(name)).await
+}
+
+fn allowed_launcher(value: &str) -> bool {
+    matches!(
+        value,
+        "node" | "npx" | "uvx" | "python" | "python3" | "bun" | "deno"
+    )
+}
+fn parse_string_list(value: Option<&str>) -> Vec<String> {
+    value
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default()
+}
+fn parse_env(value: Option<&str>) -> HashMap<String, String> {
+    value
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default()
+}
+fn internal_error() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error":"Internal server error"})),
+    )
+        .into_response()
 }
 
 async fn process_logs(
