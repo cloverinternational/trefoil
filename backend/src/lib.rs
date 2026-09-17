@@ -17,6 +17,7 @@ pub mod mcp_oauth;
 pub mod mcp_plexus;
 pub mod mcp_proxy;
 pub mod mcp_stdio;
+pub mod metrics;
 pub mod oauth;
 pub mod oauth_server;
 pub mod openapi;
@@ -54,6 +55,7 @@ pub fn app(state: AppState) -> Router {
         .merge(mcp_proxy::router())
         .merge(mcp_plexus::router())
         .merge(mcp_logs::router())
+        .merge(metrics::router())
         .merge(mcp_oauth::router())
         .merge(oauth::router())
         .merge(oauth_server::router())
