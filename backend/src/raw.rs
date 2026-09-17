@@ -49,7 +49,24 @@ async fn raw(
     else {
         return (StatusCode::NOT_FOUND, "provider not found").into_response();
     };
-    let Ok(base) = url::Url::parse(&config.api_base_url) else {
+    if !config
+        .raw_passthrough
+        .as_ref()
+        .is_some_and(|passthrough| passthrough.enabled)
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            "raw passthrough is not enabled for provider",
+        )
+            .into_response();
+    }
+    let passthrough_base = config
+        .raw_passthrough
+        .as_ref()
+        .map(|passthrough| passthrough.base_url.as_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(config.api_base_url.as_str());
+    let Ok(base) = url::Url::parse(passthrough_base) else {
         return (StatusCode::BAD_GATEWAY, "invalid provider URL").into_response();
     };
     if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
@@ -62,7 +79,7 @@ async fn raw(
     let client = reqwest::Client::new();
     let url = format!(
         "{}/{}",
-        config.api_base_url.trim_end_matches('/'),
+        passthrough_base.trim_end_matches('/'),
         path.trim_start_matches('/')
     );
     let mut request = client.request(method, url).body(bytes.to_vec());

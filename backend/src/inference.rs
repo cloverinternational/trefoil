@@ -332,14 +332,15 @@ async fn get_response(
             "not_found_error",
         );
     };
-    match sqlx::query_scalar::<_, Option<String>>(
-        "SELECT output_items FROM responses WHERE id=$1",
-    )
-    .bind(&id)
-    .fetch_optional(pool)
-    .await
+    match sqlx::query_scalar::<_, Option<String>>("SELECT output_items FROM responses WHERE id=$1")
+        .bind(&id)
+        .fetch_optional(pool)
+        .await
     {
-        Ok(Some(Some(value))) => Json(serde_json::from_str::<Value>(&value).unwrap_or_else(|_| serde_json::json!({"id":id}))).into_response(),
+        Ok(Some(Some(value))) => Json(
+            serde_json::from_str::<Value>(&value).unwrap_or_else(|_| serde_json::json!({"id":id})),
+        )
+        .into_response(),
         _ => error_response(
             axum::http::StatusCode::NOT_FOUND,
             "Response not found",
