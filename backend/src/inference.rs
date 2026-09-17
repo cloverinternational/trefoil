@@ -8,7 +8,7 @@
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Multipart, Path, Query, State},
     http::HeaderMap,
     response::{IntoResponse, Response},
     Json, Router,
@@ -31,6 +31,533 @@ pub fn router() -> Router<AppState> {
         .route("/v1/embeddings", axum::routing::post(embeddings))
         .route("/v1/completions", axum::routing::post(completions))
         .route("/completions", axum::routing::post(completions))
+        .route("/v1beta/models/:model_action", axum::routing::post(gemini))
+        .route("/v1/metadata/search", axum::routing::get(metadata_search))
+        .route("/v1/metadata/lookup", axum::routing::get(metadata_lookup))
+        .route(
+            "/v1/openrouter/models",
+            axum::routing::get(openrouter_models),
+        )
+        .route("/v1/muse-code/models", axum::routing::get(muse_models))
+        .route(
+            "/v1/responses/:response_id",
+            axum::routing::get(get_response).delete(delete_response),
+        )
+        .route("/v1/responses", axum::routing::post(responses))
+        .route("/v1/codex/responses", axum::routing::post(responses))
+        .route("/v1/messages", axum::routing::post(messages))
+        .route("/v1/images/generations", axum::routing::post(images))
+        .route("/v1/images", axum::routing::post(images))
+        .route("/v1/images/edits", axum::routing::post(images))
+        .route("/v1/audio/speech", axum::routing::post(audio_speech))
+        .route(
+            "/v1/audio/transcriptions",
+            axum::routing::post(audio_transcriptions),
+        )
+}
+
+async fn audio_transcriptions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    if let Err(response) = authenticate(&state, &headers) {
+        return response;
+    }
+    let mut fields = Vec::new();
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let Some(name) = field.name().map(str::to_owned) else {
+            continue;
+        };
+        let file_name = field.file_name().map(str::to_owned);
+        let content_type = field.content_type().map(str::to_owned);
+        let Ok(bytes) = field.bytes().await else {
+            return error_response(
+                axum::http::StatusCode::BAD_REQUEST,
+                "Invalid multipart field",
+                "invalid_request_error",
+            );
+        };
+        fields.push((name, file_name, content_type, bytes.to_vec()));
+    }
+    let Some((_, _, _, model_bytes)) = fields.iter().find(|(name, _, _, _)| name == "model") else {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "model is required",
+            "invalid_request_error",
+        );
+    };
+    let model = String::from_utf8_lossy(model_bytes).into_owned();
+    let (provider_slug, upstream_model) = resolve_target(&state, &model, None);
+    let Some(provider) = state
+        .inner
+        .providers
+        .read()
+        .unwrap()
+        .get(&provider_slug)
+        .cloned()
+    else {
+        return error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "No provider configured for model",
+            "model_not_found",
+        );
+    };
+    let mut form = reqwest::multipart::Form::new().text("model", upstream_model);
+    for (name, file_name, content_type, bytes) in
+        fields.into_iter().filter(|(name, _, _, _)| name != "model")
+    {
+        let mut part = reqwest::multipart::Part::bytes(bytes);
+        if let Some(file_name) = file_name {
+            part = part.file_name(file_name);
+        }
+        if let Some(content_type) = content_type {
+            part = part
+                .mime_str(&content_type)
+                .unwrap_or_else(|_| reqwest::multipart::Part::bytes(Vec::new()));
+        }
+        form = form.part(name, part);
+    }
+    let mut request = reqwest::Client::new()
+        .post(format!(
+            "{}/audio/transcriptions",
+            provider.api_base_url.trim_end_matches('/')
+        ))
+        .multipart(form);
+    if let Some(key) = provider.api_key {
+        request = request.bearer_auth(key);
+    }
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            let payload=response.json::<Value>().await.unwrap_or_else(|_|serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+            (status, Json(payload)).into_response()
+        }
+        Err(error) => error_response(
+            axum::http::StatusCode::BAD_GATEWAY,
+            &error.to_string(),
+            "upstream_error",
+        ),
+    }
+}
+
+async fn audio_speech(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    forward_json_api(&state, &headers, body, "/audio/speech", "authorization").await
+}
+
+async fn messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    forward_json_api(&state, &headers, body, "/messages", "x-api-key").await
+}
+
+async fn images(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    forward_json_api(
+        &state,
+        &headers,
+        body,
+        "/images/generations",
+        "authorization",
+    )
+    .await
+}
+
+async fn forward_json_api(
+    state: &AppState,
+    headers: &HeaderMap,
+    mut body: Value,
+    path: &str,
+    auth_header: &str,
+) -> Response {
+    let principal = match authenticate(state, headers) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let Some(model) = body.get("model").and_then(Value::as_str).map(str::to_owned) else {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "model is required",
+            "invalid_request_error",
+        );
+    };
+    let key_config = match &principal {
+        Principal::Limited { config, .. } => Some(config),
+        Principal::Admin => None,
+    };
+    let (provider_slug, upstream_model) = resolve_target(state, &model, key_config);
+    let Some(provider) = state
+        .inner
+        .providers
+        .read()
+        .unwrap()
+        .get(&provider_slug)
+        .cloned()
+    else {
+        return error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "No provider configured for model",
+            "model_not_found",
+        );
+    };
+    let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+        return error_response(
+            axum::http::StatusCode::BAD_GATEWAY,
+            "Provider API base URL is invalid",
+            "upstream_error",
+        );
+    };
+    body["model"] = Value::String(upstream_model);
+    let mut request = reqwest::Client::new()
+        .post(format!("{}{}", base.as_str().trim_end_matches('/'), path))
+        .json(&body);
+    if let Some(key) = provider.api_key {
+        request = if auth_header == "x-api-key" {
+            request.header("x-api-key", key)
+        } else {
+            request.bearer_auth(key)
+        };
+    }
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+            (status, Json(payload)).into_response()
+        }
+        Err(error) => error_response(
+            axum::http::StatusCode::BAD_GATEWAY,
+            &error.to_string(),
+            "upstream_error",
+        ),
+    }
+}
+
+async fn responses(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
+) -> Response {
+    let principal = match authenticate(&state, &headers) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let Some(model) = body.get("model").and_then(Value::as_str).map(str::to_owned) else {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "model is required",
+            "invalid_request_error",
+        );
+    };
+    let key_config = match &principal {
+        Principal::Limited { config, .. } => Some(config),
+        Principal::Admin => None,
+    };
+    let (provider_slug, upstream_model) = resolve_target(&state, &model, key_config);
+    let Some(provider) = state
+        .inner
+        .providers
+        .read()
+        .unwrap()
+        .get(&provider_slug)
+        .cloned()
+    else {
+        return error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "No provider configured for model",
+            "model_not_found",
+        );
+    };
+    let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+        return error_response(
+            axum::http::StatusCode::BAD_GATEWAY,
+            "Provider API base URL is invalid",
+            "upstream_error",
+        );
+    };
+    body["model"] = Value::String(upstream_model);
+    let mut request = reqwest::Client::new()
+        .post(format!("{}/responses", base.as_str().trim_end_matches('/')))
+        .json(&body);
+    if let Some(key) = provider.api_key {
+        request = request.bearer_auth(key);
+    }
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
+                let content_type = response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("text/event-stream");
+                return axum::http::Response::builder()
+                    .status(status)
+                    .header("content-type", content_type)
+                    .body(Body::from_stream(response.bytes_stream()))
+                    .unwrap()
+                    .into_response();
+            }
+            let payload=response.json::<Value>().await.unwrap_or_else(|_|serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+            (status, Json(payload)).into_response()
+        }
+        Err(error) => error_response(
+            axum::http::StatusCode::BAD_GATEWAY,
+            &error.to_string(),
+            "upstream_error",
+        ),
+    }
+}
+
+async fn get_response(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if authenticate(&state, &headers).is_err() {
+        return auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized");
+    }
+    let Some(pool) = &state.inner.database else {
+        return error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "Response not found",
+            "not_found_error",
+        );
+    };
+    match sqlx::query_scalar::<_, Option<String>>(
+        "SELECT output_items FROM responses WHERE id=$1",
+    )
+    .bind(&id)
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(Some(Some(value))) => Json(serde_json::from_str::<Value>(&value).unwrap_or_else(|_| serde_json::json!({"id":id}))).into_response(),
+        _ => error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "Response not found",
+            "not_found_error",
+        ),
+    }
+}
+
+async fn delete_response(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if authenticate(&state, &headers).is_err() {
+        return auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized");
+    }
+    let Some(pool) = &state.inner.database else {
+        return error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "Response not found",
+            "not_found_error",
+        );
+    };
+    match sqlx::query("DELETE FROM request_usage WHERE request_id=$1")
+        .bind(&id)
+        .execute(pool)
+        .await
+    {
+        Ok(result) if result.rows_affected() > 0 => {
+            Json(serde_json::json!({"deleted":true,"id":id})).into_response()
+        }
+        _ => error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "Response not found",
+            "not_found_error",
+        ),
+    }
+}
+
+async fn metadata_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<MetadataQuery>,
+) -> Response {
+    if authenticate(&state, &headers).is_err() {
+        return auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized");
+    }
+    let Some(source) = query
+        .source
+        .as_deref()
+        .filter(|source| ["openrouter", "models.dev", "catwalk"].contains(source))
+    else {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Missing or invalid 'source' parameter",
+            "invalid_request_error",
+        );
+    };
+    let q = query.q.unwrap_or_default().to_lowercase();
+    let results = state
+        .inner
+        .aliases
+        .read()
+        .unwrap()
+        .keys()
+        .filter(|id| q.is_empty() || id.to_lowercase().contains(&q))
+        .take(query.limit.unwrap_or(50).min(200))
+        .map(|id| serde_json::json!({"id":id,"source":source}))
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({"data":results,"count":results.len()})).into_response()
+}
+#[derive(serde::Deserialize)]
+struct MetadataQuery {
+    source: Option<String>,
+    q: Option<String>,
+    source_path: Option<String>,
+    limit: Option<usize>,
+}
+async fn metadata_lookup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<MetadataQuery>,
+) -> Response {
+    if authenticate(&state, &headers).is_err() {
+        return auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized");
+    }
+    if query
+        .source
+        .as_deref()
+        .is_none_or(|source| !["openrouter", "models.dev", "catwalk"].contains(&source))
+        || query.source_path.is_none()
+    {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Missing or invalid metadata parameters",
+            "invalid_request_error",
+        );
+    }
+    let path = query.source_path.unwrap();
+    if state.inner.aliases.read().unwrap().contains_key(&path) {
+        Json(serde_json::json!({"data":{"id":path}})).into_response()
+    } else {
+        error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "No metadata found",
+            "not_found_error",
+        )
+    }
+}
+async fn openrouter_models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<MetadataQuery>,
+) -> Response {
+    if authenticate(&state, &headers).is_err() {
+        return auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized");
+    }
+    let q = query.q.unwrap_or_default().to_lowercase();
+    let data = state
+        .inner
+        .aliases
+        .read()
+        .unwrap()
+        .keys()
+        .filter(|id| q.is_empty() || id.to_lowercase().contains(&q))
+        .map(|id| Value::String(id.clone()))
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({"data":data,"count":data.len()})).into_response()
+}
+async fn muse_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if authenticate(&state, &headers).is_err() {
+        return auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized");
+    }
+    let data = state
+        .inner
+        .aliases
+        .read()
+        .unwrap()
+        .keys()
+        .map(|id| serde_json::json!({"id":id,"object":"model","created":0,"owned_by":"meta","metadata":{"muse-code":{"name":id,"reasoning":false,"temperature":true,"tool_call":true,"attachment":false,"modalities":{"input":["text"],"output":["text"]}}}}))
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({"object":"list","data":data})).into_response()
+}
+
+async fn gemini(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(model_action): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(response) = authenticate(&state, &headers) {
+        return response;
+    }
+    let Some((model, action)) = model_action.split_once(':') else {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Model action is required",
+            "invalid_request_error",
+        );
+    };
+    if action != "generateContent" && action != "streamGenerateContent" {
+        return error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Unsupported Gemini action",
+            "invalid_request_error",
+        );
+    }
+    let (provider_slug, upstream_model) = resolve_target(&state, model, None);
+    let Some(provider) = state
+        .inner
+        .providers
+        .read()
+        .unwrap()
+        .get(&provider_slug)
+        .cloned()
+    else {
+        return error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "No provider configured for model",
+            "model_not_found",
+        );
+    };
+    let mut request = reqwest::Client::new()
+        .post(format!(
+            "{}/v1beta/models/{}:{}",
+            provider.api_base_url.trim_end_matches('/'),
+            upstream_model,
+            action
+        ))
+        .json(&body);
+    if let Some(key) = provider.api_key {
+        request = request.header("x-goog-api-key", key);
+    }
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            if action == "streamGenerateContent" {
+                let content_type = response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("text/event-stream");
+                return axum::http::Response::builder()
+                    .status(status)
+                    .header("content-type", content_type)
+                    .body(Body::from_stream(response.bytes_stream()))
+                    .unwrap()
+                    .into_response();
+            }
+            let payload=response.json::<Value>().await.unwrap_or_else(|_|serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+            (status, Json(payload)).into_response()
+        }
+        Err(error) => error_response(
+            axum::http::StatusCode::BAD_GATEWAY,
+            &error.to_string(),
+            "upstream_error",
+        ),
+    }
 }
 
 async fn completions(
@@ -847,9 +1374,17 @@ async fn enforce_request_quotas(state: &AppState, principal: &Principal) -> Resu
                 "server_error",
             )
         })?;
-    for (quota, limit, start, end) in windows {
-        match crate::database::reserve_request_quota(pool, key_name, &quota, limit, start, now_ms)
-            .await
+    for (quota, limit, start, end, rolling_duration_ms) in windows {
+        match crate::database::reserve_request_quota(
+            pool,
+            key_name,
+            &quota,
+            limit,
+            start,
+            rolling_duration_ms,
+            now_ms,
+        )
+        .await
         {
             Ok(None) => {}
             Ok(Some(current_usage)) => {

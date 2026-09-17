@@ -36,6 +36,59 @@ pub fn router() -> Router<AppState> {
                 .patch(patch_provider)
                 .delete(delete_provider),
         )
+        .route(
+            "/v0/management/providers/fetch-models",
+            axum::routing::post(fetch_models),
+        )
+}
+
+async fn fetch_models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(error) = require_admin(&state, &headers) {
+        return error.into_response();
+    }
+    let Some(url) = body.get("url").and_then(Value::as_str) else {
+        return ApiError::validation(vec![ValidationIssue::root("url is required")])
+            .into_response();
+    };
+    let Ok(parsed) = url::Url::parse(url) else {
+        return ApiError::Simple(StatusCode::BAD_REQUEST, "Invalid URL".into()).into_response();
+    };
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
+    {
+        return ApiError::Simple(StatusCode::BAD_REQUEST, "URL is not allowed".into())
+            .into_response();
+    }
+    let mut request = reqwest::Client::new().get(url);
+    if let Some(key) = body.get("apiKey").and_then(Value::as_str) {
+        request = request.bearer_auth(key);
+    }
+    match request
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => {
+            let payload = response
+                .json::<Value>()
+                .await
+                .unwrap_or_else(|_| serde_json::json!({"data":[]}));
+            Json(payload).into_response()
+        }
+        Ok(_) => ApiError::Simple(StatusCode::BAD_GATEWAY, "Provider request failed".into())
+            .into_response(),
+        Err(error) if error.is_timeout() => ApiError::Simple(
+            StatusCode::GATEWAY_TIMEOUT,
+            "Request timed out after 10 seconds".into(),
+        )
+        .into_response(),
+        Err(error) => ApiError::Simple(StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
+    }
 }
 
 enum ApiError {

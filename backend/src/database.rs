@@ -674,6 +674,19 @@ pub async fn update_request_usage_metrics(
         .execute(pool).await.map(|_| ())
 }
 
+pub async fn update_request_attempts(
+    pool: &PgPool,
+    request_id: &str,
+    attempts: i32,
+    provider: &str,
+    model: &str,
+    history: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE request_usage SET attempt_count=$2, final_attempt_provider=$3, final_attempt_model=$4, retry_history=$5 WHERE request_id=$1")
+        .bind(request_id).bind(attempts).bind(provider).bind(model).bind(history.to_string())
+        .execute(pool).await.map(|_| ())
+}
+
 /// Calendar window start (UTC, epoch ms) for daily/weekly/monthly quota
 /// types, matching Plexus's `QuotaEnforcer.getWindowStart` exactly: daily
 /// is UTC midnight, weekly is the most recent UTC Monday midnight, monthly
@@ -753,33 +766,65 @@ pub async fn reserve_request_quota(
     quota_name: &str,
     limit: i32,
     window_start: i64,
+    rolling_duration_ms: Option<i64>,
     now_ms: i64,
 ) -> Result<Option<i64>, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let current: Option<(f32, Option<i64>)> = sqlx::query_as(
-        "SELECT current_usage, window_start FROM quota_state WHERE key_name = $1 AND quota_name = $2 FOR UPDATE",
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))")
+        .bind(key_name)
+        .bind(quota_name)
+        .execute(&mut *tx)
+        .await?;
+    let current: Option<(f32, i64, Option<i64>, String)> = sqlx::query_as(
+        "SELECT current_usage, last_updated, window_start, limit_type FROM quota_state WHERE key_name = $1 AND quota_name = $2 FOR UPDATE",
     )
     .bind(key_name)
     .bind(quota_name)
     .fetch_optional(&mut *tx)
     .await?;
-    let (usage, stored_window) = current.unwrap_or((0.0, None));
-    let current_usage = f64::from(if stored_window == Some(window_start) {
-        usage
+    let (usage, last_updated, stored_window, stored_limit_type) =
+        current.unwrap_or((0.0, now_ms, None, "requests".into()));
+    let current_usage = if let Some(duration_ms) = rolling_duration_ms {
+        if stored_limit_type != "requests" {
+            0.0
+        } else {
+            let leak_per_ms = f64::from(limit) / duration_ms as f64;
+            (f64::from(usage) - (now_ms - last_updated).max(0) as f64 * leak_per_ms).max(0.0)
+        }
+    } else if stored_window == Some(window_start) {
+        f64::from(usage)
     } else {
         0.0
-    });
+    };
     if current_usage >= f64::from(limit) {
         tx.rollback().await?;
         return Ok(Some(current_usage.round() as i64));
     }
-    sqlx::query(
-        "INSERT INTO quota_state (key_name, quota_name, limit_type, current_usage, last_updated, window_start)
-         VALUES ($1,$2,'requests',1,$3,$4)
-         ON CONFLICT (key_name, quota_name) DO UPDATE SET current_usage = CASE WHEN quota_state.window_start IS DISTINCT FROM EXCLUDED.window_start THEN 1 ELSE quota_state.current_usage + 1 END, last_updated = EXCLUDED.last_updated, window_start = EXCLUDED.window_start",
-    )
-    .bind(key_name).bind(quota_name).bind(now_ms).bind(window_start)
-    .execute(&mut *tx).await?;
+    if rolling_duration_ms.is_some() {
+        sqlx::query(
+            "INSERT INTO quota_state (key_name, quota_name, limit_type, current_usage, last_updated, window_start)
+             VALUES ($1,$2,'requests',$3,$4,NULL)
+             ON CONFLICT (key_name, quota_name) DO UPDATE SET current_usage=EXCLUDED.current_usage, last_updated=EXCLUDED.last_updated, window_start=NULL, limit_type='requests'",
+        )
+        .bind(key_name)
+        .bind(quota_name)
+        .bind((current_usage + 1.0) as f32)
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO quota_state (key_name, quota_name, limit_type, current_usage, last_updated, window_start)
+             VALUES ($1,$2,'requests',1,$3,$4)
+             ON CONFLICT (key_name, quota_name) DO UPDATE SET current_usage = CASE WHEN quota_state.window_start IS DISTINCT FROM EXCLUDED.window_start THEN 1 ELSE quota_state.current_usage + 1 END, last_updated = EXCLUDED.last_updated, window_start = EXCLUDED.window_start, limit_type='requests'",
+        )
+        .bind(key_name)
+        .bind(quota_name)
+        .bind(now_ms)
+        .bind(window_start)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     Ok(None)
 }
@@ -788,7 +833,7 @@ pub async fn request_quota_windows(
     pool: &PgPool,
     quota_names: &[String],
     now_ms: i64,
-) -> Result<Vec<(String, i32, i64, i64)>, sqlx::Error> {
+) -> Result<Vec<(String, i32, i64, i64, Option<i64>)>, sqlx::Error> {
     let mut windows = Vec::new();
     for name in quota_names {
         let Some(row) = sqlx::query("SELECT quota_type::text, limit_type::text, limit_value, duration FROM user_quota_definitions WHERE name = $1")
@@ -799,18 +844,21 @@ pub async fn request_quota_windows(
         let kind: String = row.try_get("quota_type")?;
         let limit: i32 = row.try_get("limit_value")?;
         let duration: Option<String> = row.try_get("duration")?;
-        let (start, end) = match kind.as_str() {
+        let (start, end, rolling_duration) = match kind.as_str() {
             "rolling" => {
                 let duration_ms = parse_duration_ms(duration.as_deref()).unwrap_or(0);
-                (now_ms - duration_ms, now_ms + duration_ms)
+                if duration_ms <= 0 {
+                    continue;
+                }
+                (0, now_ms + duration_ms, Some(duration_ms))
             }
             "daily" | "weekly" | "monthly" => match calendar_window_start_ms(&kind, now_ms) {
-                Some(start) => (start, calendar_window_end_ms(&kind, start)),
+                Some(start) => (start, calendar_window_end_ms(&kind, start), None),
                 None => continue,
             },
             _ => continue,
         };
-        windows.push((name.clone(), limit, start, end));
+        windows.push((name.clone(), limit, start, end, rolling_duration));
     }
     Ok(windows)
 }

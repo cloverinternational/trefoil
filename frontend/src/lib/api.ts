@@ -3,6 +3,10 @@ import type { Principal } from './types';
 const ROLE_ADMIN = 'admin' as const;
 const ROLE_LIMITED = 'limited' as const;
 
+function authHeaders(): HeadersInit {
+  return { 'x-admin-key': localStorage.getItem('trefoil_admin_key') ?? '' };
+}
+
 /**
  * Verify a credential against the backend. Returns the resolved principal on
  * success, or null on 401/network error.
@@ -47,4 +51,22 @@ export async function verifyAdminKey(key: string): Promise<Principal | null> {
   } catch {
     return null;
   }
+}
+
+export async function getConfigStatus(): Promise<{
+  providerCount: number;
+  modelAliasCount: number;
+  keyCount: number;
+  quotaCount: number;
+  mcpServerCount: number;
+}> {
+  const response = await fetch('/v0/management/config/status', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load configuration status');
+  return response.json();
+}
+
+export async function getUsageSummary(): Promise<Record<string, number>> {
+  const response = await fetch('/v0/management/usage/summary', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load usage summary');
+  return response.json();
 }

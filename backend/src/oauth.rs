@@ -10,7 +10,7 @@ use crate::{
     AppState,
 };
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json, Router,
@@ -31,6 +31,26 @@ pub fn router() -> Router<AppState> {
             "/v0/management/oauth/credentials",
             axum::routing::delete(delete_credentials),
         )
+        .route(
+            "/v0/management/oauth/sessions/:id",
+            axum::routing::get(session_not_found),
+        )
+}
+
+async fn session_not_found(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let _ = id;
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"error":"OAuth session not found"})),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]

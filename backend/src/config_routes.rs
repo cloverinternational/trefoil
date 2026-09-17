@@ -12,6 +12,8 @@ use axum::{
     Json, Router,
 };
 
+use sqlx::Row;
+
 use crate::{
     auth::{resolve_principal, Principal},
     AppState,
@@ -85,10 +87,48 @@ pub fn router() -> Router<AppState> {
             "/v0/management/pi/providers",
             axum::routing::get(pi_providers),
         )
+        .route("/v0/management/pi/models", axum::routing::get(pi_models))
+        .route(
+            "/v0/management/models/metadata/refresh",
+            axum::routing::post(refresh_metadata),
+        )
         .route(
             "/v0/management/config/compaction",
             axum::routing::get(get_compaction).patch(patch_compaction),
         )
+}
+
+#[derive(serde::Deserialize)]
+struct PiModelQuery {
+    provider: Option<String>,
+    q: Option<String>,
+}
+
+async fn pi_models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<PiModelQuery>,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let Some(provider) = query.provider.filter(|value| !value.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Missing 'provider' parameter"})),
+        )
+            .into_response();
+    };
+    let q = query.q.unwrap_or_default().to_lowercase();
+    let data = state.inner.providers.read().unwrap().get(&provider).map(|config| config.adapter.iter().map(|adapter| serde_json::json!({"id":adapter.name,"name":adapter.name,"api":adapter.name,"custom":false})).filter(|value| q.is_empty() || value["id"].as_str().unwrap_or_default().to_lowercase().contains(&q)).collect::<Vec<_>>()).unwrap_or_default();
+    Json(serde_json::json!({"data":data})).into_response()
+}
+
+async fn refresh_metadata(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    Json(serde_json::json!({"success":true,"refreshed":false})).into_response()
 }
 
 async fn get_compaction(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -430,7 +470,12 @@ async fn quota_results(State(state): State<AppState>, headers: HeaderMap) -> Res
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    Json(serde_json::json!([])).into_response()
+    let Some(pool) = &state.inner.database else {
+        return Json(serde_json::json!([])).into_response();
+    };
+    let Ok(rows) = sqlx::query("SELECT quota_name, limit_type, current_usage, last_updated, window_start FROM quota_state ORDER BY quota_name, key_name").fetch_all(pool).await else { return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to retrieve quota data"}))).into_response(); };
+    let data = rows.into_iter().map(|row| serde_json::json!({"quotaName":row.try_get::<String,_>("quota_name").unwrap_or_default(),"limitType":row.try_get::<String,_>("limit_type").unwrap_or_default(),"currentUsage":row.try_get::<f32,_>("current_usage").unwrap_or(0.0),"lastUpdated":row.try_get::<i64,_>("last_updated").unwrap_or_default(),"windowStart":row.try_get::<Option<i64>,_>("window_start").unwrap_or(None)})).collect::<Vec<_>>();
+    Json(data).into_response()
 }
 
 async fn clear_vision_descriptor_cache(
