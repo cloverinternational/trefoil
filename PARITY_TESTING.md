@@ -76,7 +76,9 @@ For each parity case, add:
 - an Axum handler/integration test for HTTP behavior;
 - Rust unit tests for domain logic and transformations;
 - database tests only for Trefoil-owned persistence behavior; and
-- frontend tests for rendering, loading, error, and empty states.
+- frontend tests for rendering, loading, error, and empty states. The Models
+  catalog covers these states and search/refresh/delete behavior at `/models`;
+  browser-level assertions remain a follow-up.
 
 Keep differential tests separate from the Rust unit suite so Trefoil remains
 testable when the Plexus reference is unavailable.

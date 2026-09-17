@@ -310,7 +310,9 @@ Missing pages (each needs its own API adapter + component + tests):
 - [ ] `Mcp` — MCP server management UI (CRUD + process control + logs),
       depends on backend items already done (mcp.rs) but the UI doesn't
       exist.
-- [ ] `Models` — model metadata/catalog browser.
+- [x] `Models` — model catalog browser at `/models` with authenticated loading,
+      search, empty/error/loading states, target visibility, refresh, and
+      delete actions. Metadata editing remains available through `/aliases`.
 - [ ] `MyKey` — self-service key page (self_routes.rs backend exists;
       no frontend).
 - [ ] `Playground` — interactive request tester, depends on backend item #7.

@@ -17,6 +17,7 @@ import { CustomQuotaCheckers } from './pages/CustomQuotaCheckers';
 import { Debug } from './pages/Debug';
 import { Errors } from './pages/Errors';
 import { Logs } from './pages/Logs';
+import { Models } from './pages/Models';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { adminKey } = useAuth();
@@ -33,6 +34,7 @@ const AppRoutes = () => (
     <Route path="/login" element={<Login />} />
     <Route path="/providers" element={<ProtectedRoute><Providers /></ProtectedRoute>} />
     <Route path="/aliases" element={<ProtectedRoute><ModelAliases /></ProtectedRoute>} />
+    <Route path="/models" element={<ProtectedRoute><Models /></ProtectedRoute>} />
     <Route path="/keys" element={<ProtectedRoute><ApiKeys /></ProtectedRoute>} />
     <Route path="/quotas" element={<ProtectedRoute><Quotas /></ProtectedRoute>} />
     <Route path="/usage" element={<ProtectedRoute><DetailedUsage /></ProtectedRoute>} />
