@@ -353,6 +353,8 @@ async fn responses(
         );
     };
     let original_body = body.clone();
+    let request_id = new_request_id();
+    let start_time = now_ms();
     body["model"] = Value::String(upstream_model.clone());
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -376,6 +378,24 @@ async fn responses(
     match request.send().await {
         Ok(response) => {
             let status = response.status();
+            record_attempt(
+                &state,
+                &request_id,
+                1,
+                &provider_slug,
+                &upstream_model,
+                "responses",
+                if status.is_success() {
+                    "success"
+                } else {
+                    "failed"
+                },
+                None,
+                Some(status.as_u16() as i32),
+                false,
+                start_time,
+            )
+            .await;
             if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
                 let content_type = response
                     .headers()
@@ -443,6 +463,24 @@ async fn responses(
                         match fallback_request.send().await {
                             Ok(response) => {
                                 let status = response.status();
+                                record_attempt(
+                                    &state,
+                                    &request_id,
+                                    2,
+                                    &fallback_provider_slug,
+                                    &fallback_model,
+                                    "responses",
+                                    if status.is_success() {
+                                        "success"
+                                    } else {
+                                        "failed"
+                                    },
+                                    None,
+                                    Some(status.as_u16() as i32),
+                                    false,
+                                    start_time,
+                                )
+                                .await;
                                 if fallback_body
                                     .get("stream")
                                     .and_then(Value::as_bool)
@@ -464,6 +502,20 @@ async fn responses(
                                 return (status, Json(payload)).into_response();
                             }
                             Err(fallback_error) => {
+                                record_attempt(
+                                    &state,
+                                    &request_id,
+                                    2,
+                                    &fallback_provider_slug,
+                                    &fallback_model,
+                                    "responses",
+                                    "failed",
+                                    Some(&fallback_error.to_string()),
+                                    None,
+                                    false,
+                                    start_time,
+                                )
+                                .await;
                                 register_provider_failure(
                                     &state,
                                     &fallback_provider_slug,
@@ -901,6 +953,20 @@ async fn completions(
             response_with_request_id(status, payload, &request_id)
         }
         Err(error) => {
+            record_attempt(
+                &state,
+                &request_id,
+                1,
+                &provider_slug,
+                &model,
+                "inference",
+                "failed",
+                Some(&error.to_string()),
+                None,
+                true,
+                start_time,
+            )
+            .await;
             register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
             let (fallback_provider_slug, fallback_model) =
                 resolve_target(&state, &model, key_config);
@@ -932,6 +998,24 @@ async fn completions(
                         match fallback_request.send().await {
                             Ok(fallback) => {
                                 let status = fallback.status();
+                                record_attempt(
+                                    &state,
+                                    &request_id,
+                                    2,
+                                    &fallback_provider_slug,
+                                    &fallback_model,
+                                    "inference",
+                                    if status.is_success() {
+                                        "success"
+                                    } else {
+                                        "failed"
+                                    },
+                                    None,
+                                    Some(status.as_u16() as i32),
+                                    false,
+                                    start_time,
+                                )
+                                .await;
                                 let payload = fallback.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
                                 record_response_usage(
                                     &state,
@@ -1143,6 +1227,20 @@ async fn embeddings(
             response
         }
         Err(error) => {
+            record_attempt(
+                &state,
+                &request_id,
+                1,
+                &provider_slug,
+                &model,
+                "inference",
+                "failed",
+                Some(&error.to_string()),
+                None,
+                true,
+                start_time,
+            )
+            .await;
             register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
             let (fallback_provider_slug, fallback_model) =
                 resolve_target(&state, &model, key_config);
@@ -1174,6 +1272,24 @@ async fn embeddings(
                         match fallback_request.send().await {
                             Ok(fallback) => {
                                 let status = fallback.status();
+                                record_attempt(
+                                    &state,
+                                    &request_id,
+                                    2,
+                                    &fallback_provider_slug,
+                                    &fallback_model,
+                                    "inference",
+                                    if status.is_success() {
+                                        "success"
+                                    } else {
+                                        "failed"
+                                    },
+                                    None,
+                                    Some(status.as_u16() as i32),
+                                    false,
+                                    start_time,
+                                )
+                                .await;
                                 let payload = fallback.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
                                 let mut response =
                                     response_with_request_id(status, payload, &request_id);
@@ -1470,6 +1586,20 @@ async fn chat_completions(
             response
         }
         Err(error) => {
+            record_attempt(
+                &state,
+                &request_id,
+                1,
+                &provider_slug,
+                &model,
+                "inference",
+                "failed",
+                Some(&error.to_string()),
+                None,
+                true,
+                start_time,
+            )
+            .await;
             register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
             let (fallback_provider_slug, fallback_model) =
                 resolve_target(&state, &model, key_config);
@@ -1713,6 +1843,41 @@ async fn record_response_usage(
             output_tokens,
             total_cost,
             now_ms() - start_time,
+        )
+        .await;
+    }
+}
+
+/// Persist one provider attempt as soon as its outcome is known. The unique
+/// request/index constraint makes repeated recovery updates duplicate-safe.
+async fn record_attempt(
+    state: &AppState,
+    request_id: &str,
+    attempt_index: i32,
+    provider: &str,
+    model: &str,
+    api_type: &str,
+    status: &str,
+    reason: Option<&str>,
+    status_code: Option<i32>,
+    retryable: bool,
+    started_at: i64,
+) {
+    if let Some(pool) = &state.inner.database {
+        let _ = crate::database::insert_inference_attempt(
+            pool,
+            request_id,
+            attempt_index,
+            provider,
+            model,
+            Some(api_type),
+            status,
+            reason,
+            status_code,
+            retryable,
+            None,
+            started_at,
+            Some(now_ms()),
         )
         .await;
     }
