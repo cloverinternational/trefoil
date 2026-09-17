@@ -2514,7 +2514,11 @@ fn dispatch_provider_url(value: &str) -> Result<url::Url, ()> {
 }
 
 fn is_retryable_upstream_status(status: axum::http::StatusCode) -> bool {
-    status == axum::http::StatusCode::REQUEST_TIMEOUT
+    // A 404 commonly means that a provider does not expose the requested
+    // model/API route.  It is therefore failoverable just like the default
+    // management policy (which includes all non-2xx statuses except 413/422).
+    status == axum::http::StatusCode::NOT_FOUND
+        || status == axum::http::StatusCode::REQUEST_TIMEOUT
         || status == axum::http::StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()
 }
@@ -3082,5 +3086,89 @@ mod tests {
             resolve_target(&state, "model", None),
             ("second".into(), "model-b".into())
         );
+    }
+
+    #[tokio::test]
+    async fn messages_failover_retries_provider_not_found() {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        fn mock(status: &str, body: &str) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            std::thread::spawn({
+                let body = body.to_owned();
+                let status = status.to_owned();
+                move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                }
+            });
+            format!("http://{address}/v1")
+        }
+
+        let first = mock("404 Not Found", r#"{"error":{"message":"route missing"}}"#);
+        let second = mock(
+            "200 OK",
+            r#"{"id":"msg_1","model":"model-b","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+        );
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "model".to_owned(),
+            crate::state::ModelConfig {
+                target_groups: vec![crate::state::ModelTargetGroup {
+                    name: "fallback".into(),
+                    selector: "sequential".into(),
+                    targets: vec![
+                        crate::state::ModelTarget {
+                            provider: Some("first".into()),
+                            model: Some("model-a".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                        crate::state::ModelTarget {
+                            provider: Some("second".into()),
+                            model: Some("model-b".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        *state.inner.aliases.write().unwrap() = aliases;
+        state.inner.providers.write().unwrap().insert(
+            "first".into(),
+            crate::state::ProviderConfig {
+                api_base_url: first,
+                ..Default::default()
+            },
+        );
+        state.inner.providers.write().unwrap().insert(
+            "second".into(),
+            crate::state::ProviderConfig {
+                api_base_url: second,
+                ..Default::default()
+            },
+        );
+
+        let response = router().with_state(state).oneshot(
+            Request::post("/v1/messages")
+                .header("x-api-key", "admin")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["content"][0]["text"], "ok");
     }
 }
