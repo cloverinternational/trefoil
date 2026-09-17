@@ -8,6 +8,9 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 use crate::{
     auth::{resolve_principal, Principal},
@@ -33,7 +36,6 @@ struct CheckerPatch {
 #[derive(Debug, Deserialize)]
 struct TestInput {
     provider: Option<String>,
-    #[allow(dead_code)]
     options: Option<Value>,
     code: Option<String>,
 }
@@ -48,6 +50,10 @@ pub fn router() -> Router<AppState> {
                 .patch(patch)
                 .delete(delete)
                 .post(test),
+        )
+        .route(
+            "/v0/management/custom-checkers/:id/check",
+            axum::routing::post(check),
         )
 }
 
@@ -281,10 +287,120 @@ async fn test(
     Json(serde_json::json!({"success":true,"provider":provider,"meters":[],"codeValid":validate_code(code)})).into_response()
 }
 
+async fn check(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<TestInput>,
+) -> Response {
+    if let Err(r) = auth(&state, &headers) {
+        return r;
+    }
+    let Some(provider) = body.provider.as_deref().filter(|p| !p.trim().is_empty()) else {
+        return error(StatusCode::BAD_REQUEST, "provider is required");
+    };
+    let code = if let Some(code) = body.code {
+        code
+    } else {
+        let Some(pool) = &state.inner.database else {
+            return error(StatusCode::NOT_FOUND, "Custom checker not found");
+        };
+        match sqlx::query_scalar::<_, String>(
+            "SELECT code FROM custom_checkers WHERE id=$1 AND enabled=true",
+        )
+        .bind(&id)
+        .fetch_optional(pool)
+        .await
+        {
+            Ok(Some(code)) => code,
+            Ok(None) => {
+                return error(
+                    StatusCode::NOT_FOUND,
+                    "Custom checker not found or disabled",
+                )
+            }
+            Err(_) => {
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to retrieve custom checker",
+                )
+            }
+        }
+    };
+    if let Err(r) = valid_text(&code, "code") {
+        return r;
+    }
+    if !validate_code(&code) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Checker code contains forbidden operations",
+        );
+    }
+    let input =
+        serde_json::json!({"provider": provider, "options": body.options.unwrap_or(Value::Null)});
+    match run_checker(&code, &input).await {
+        Ok(meters) => Json(serde_json::json!({"success":true,"provider":provider,"meters":meters}))
+            .into_response(),
+        Err(message) => Json(
+            serde_json::json!({"success":false,"provider":provider,"meters":[],"error":message}),
+        )
+        .into_response(),
+    }
+}
+
+async fn run_checker(code: &str, input: &Value) -> Result<Value, String> {
+    const SCRIPT: &str = r#"
+const vm = require('vm'); let raw=''; process.stdin.setEncoding('utf8');
+process.stdin.on('data', c => raw += c); process.stdin.on('end', async () => {
+ try { const i=JSON.parse(raw); const s=Object.freeze({provider:i.provider,options:i.options});
+ const f=vm.runInNewContext(`(async function(){ ${i.code}\n})`,s,{timeout:900});
+ const r=await f(); if(!Array.isArray(r)) throw new Error('checker must return an array');
+ process.stdout.write(JSON.stringify(r)); } catch(e) { process.stderr.write(String(e&&e.message||e)); process.exitCode=1; }
+});"#;
+    let payload =
+        serde_json::json!({"provider":input["provider"],"options":input["options"],"code":code});
+    let mut child = Command::new("node")
+        .args(["--no-addons", "--disable-proto=throw", "-e", SCRIPT])
+        .env_clear()
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to start checker runtime: {e}"))?;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.to_string().as_bytes())
+        .await
+        .map_err(|e| format!("failed to send checker input: {e}"))?;
+    let output = timeout(Duration::from_secs(2), child.wait_with_output())
+        .await
+        .map_err(|_| "checker timed out".to_string())?
+        .map_err(|e| format!("checker runtime failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .chars()
+            .take(512)
+            .collect());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|_| "checker returned invalid JSON".to_string())
+}
+
 fn validate_code(code: &str) -> bool {
     let trimmed = code.trim();
     !trimmed.is_empty()
         && trimmed.len() <= 64 * 1024
         && !trimmed.contains("require(")
         && !trimmed.contains("process.exit")
+        && !trimmed.contains("process.")
+        && !trimmed.contains("require")
+        && !trimmed.contains("import(")
+        && !trimmed.contains("eval(")
+        && !trimmed.contains("Function(")
+        && !trimmed.contains("constructor")
+        && !trimmed.contains("globalThis")
+        && !trimmed.contains("__proto__")
+        && !trimmed.contains("prototype")
 }
