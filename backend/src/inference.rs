@@ -423,6 +423,23 @@ async fn forward_json_api(
             Ok(response) => {
                 let status = response.status();
                 let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                // Retry provider failures, but preserve deterministic client errors.
+                if failover && is_retryable_upstream_status(status) {
+                    register_provider_failure(
+                        state,
+                        &provider_slug,
+                        &upstream_model,
+                        format!("upstream returned HTTP {}", status.as_u16()),
+                    )
+                    .await;
+                    attempted = Some(
+                        payload["error"]["message"]
+                            .as_str()
+                            .unwrap_or("retryable upstream error")
+                            .to_owned(),
+                    );
+                    continue;
+                }
                 return (status, Json(payload)).into_response();
             }
             Err(error) => {
@@ -2141,6 +2158,12 @@ fn dispatch_provider_url(value: &str) -> Result<url::Url, ()> {
     } else {
         Err(())
     }
+}
+
+fn is_retryable_upstream_status(status: axum::http::StatusCode) -> bool {
+    status == axum::http::StatusCode::REQUEST_TIMEOUT
+        || status == axum::http::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
 }
 
 async fn enforce_request_quotas(state: &AppState, principal: &Principal) -> Result<(), Response> {
