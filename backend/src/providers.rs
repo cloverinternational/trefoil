@@ -19,6 +19,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crate::auth::{resolve_principal, Principal};
 use crate::state::{
@@ -42,6 +43,201 @@ pub fn router() -> Router<AppState> {
             "/v0/management/providers/fetch-models",
             axum::routing::post(fetch_models),
         )
+        .route("/v0/management/test", axum::routing::post(manual_probe))
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeBody {
+    provider: Option<String>,
+    model: Option<String>,
+    #[serde(rename = "apiType")]
+    api_type: Option<String>,
+}
+
+const PROBE_API_TYPES: [&str; 8] = [
+    "chat",
+    "messages",
+    "gemini",
+    "responses",
+    "embeddings",
+    "images",
+    "speech",
+    "oauth",
+];
+
+/// Run a small, direct request against one configured provider/model.  This
+/// intentionally does not use alias resolution, failover, cooldowns, or API
+/// key quotas: it is the admin UI's connectivity test for a target itself.
+async fn manual_probe(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ProbeBody>,
+) -> Response {
+    if let Err(error) = require_admin(&state, &headers) {
+        return error.into_response();
+    }
+    let (Some(provider_name), Some(model)) = (body.provider, body.model) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Both provider and model are required"
+            })),
+        )
+            .into_response();
+    };
+    if provider_name.trim().is_empty() || model.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Both provider and model are required"
+            })),
+        )
+            .into_response();
+    }
+    let api_type = body.api_type.unwrap_or_else(|| "chat".into());
+    if api_type == "transcriptions" {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "success": false,
+            "error": "Cannot test transcriptions API via test endpoint - requires file upload. Use the actual /v1/audio/transcriptions endpoint to test."
+        }))).into_response();
+    }
+    if !PROBE_API_TYPES.contains(&api_type.as_str()) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "success": false,
+            "error": format!("Invalid API type: {api_type}. Must be one of: {}", PROBE_API_TYPES.join(", "))
+        }))).into_response();
+    }
+
+    let started = Instant::now();
+    let result = probe_request(&state, &provider_name, &model, &api_type).await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let mut output = serde_json::json!({
+        "success": result.is_ok(), "durationMs": duration_ms, "apiType": api_type
+    });
+    match result {
+        Ok(response) => {
+            output["response"] = Value::String(probe_response_text(&response, &api_type));
+        }
+        Err(error) => output["error"] = Value::String(error),
+    }
+    Json(output).into_response()
+}
+
+async fn probe_request(
+    state: &AppState,
+    provider_name: &str,
+    model: &str,
+    api_type: &str,
+) -> Result<Value, String> {
+    let provider = state
+        .inner
+        .providers
+        .read()
+        .unwrap()
+        .get(provider_name)
+        .cloned()
+        .ok_or_else(|| format!("Provider '{provider_name}' not found"))?;
+    let base = url::Url::parse(&provider.api_base_url)
+        .map_err(|_| "Provider API base URL is invalid".to_string())?;
+    if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
+        return Err("Provider API base URL is invalid".into());
+    }
+    let (path, payload) = match api_type {
+        "messages" => (
+            "/messages",
+            serde_json::json!({"model":model,"max_tokens":100,"system":"You are a helpful assistant.","messages":[{"role":"user","content":"Just respond with the word acknowledged"}]}),
+        ),
+        "gemini" => (
+            "/v1beta/models/{model}:generateContent",
+            serde_json::json!({"contents":[{"role":"user","parts":[{"text":"Just respond with the word acknowledged"}]}],"generationConfig":{"maxOutputTokens":100}}),
+        ),
+        "responses" => (
+            "/responses",
+            serde_json::json!({"model":model,"input":"Just respond with the word acknowledged","instructions":"You are a helpful assistant."}),
+        ),
+        "embeddings" => (
+            "/embeddings",
+            serde_json::json!({"model":model,"input":["Hello world"]}),
+        ),
+        "images" => (
+            "/images/generations",
+            serde_json::json!({"model":model,"prompt":"A tiny red square","n":1}),
+        ),
+        "speech" => (
+            "/audio/speech",
+            serde_json::json!({"model":model,"input":"Hello world"}),
+        ),
+        _ => (
+            "/chat/completions",
+            serde_json::json!({"model":model,"messages":[{"role":"user","content":"Just respond with the word acknowledged"}],"max_tokens":100}),
+        ),
+    };
+    let path = path.replace("{model}", model);
+    let endpoint = format!("{}{}", base.as_str().trim_end_matches('/'), path);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut request = client.post(endpoint).json(&payload);
+    if let Some(key) = provider.api_key {
+        if api_type == "messages" {
+            request = request.header("x-api-key", key);
+        } else if api_type == "gemini" {
+            request = request.header("x-goog-api-key", key);
+        } else {
+            request = request.bearer_auth(key);
+        }
+    }
+    let response = request.send().await.map_err(|e| {
+        if e.is_timeout() {
+            "Request timed out after 30 seconds".into()
+        } else {
+            e.to_string()
+        }
+    })?;
+    let status = response.status();
+    let payload = response.json::<Value>().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(payload
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("Provider request failed")
+            .to_string());
+    }
+    Ok(payload)
+}
+
+fn probe_response_text(response: &Value, api_type: &str) -> String {
+    if api_type == "images" {
+        return format!(
+            "Success ({} image(s) created)",
+            response
+                .get("data")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len)
+        );
+    }
+    if api_type == "embeddings" {
+        return format!(
+            "Success ({} embedding(s))",
+            response
+                .get("data")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len)
+        );
+    }
+    response
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_str)
+        .map(|s| s.chars().take(100).collect())
+        .unwrap_or_else(|| "Success".into())
 }
 
 async fn fetch_models(
