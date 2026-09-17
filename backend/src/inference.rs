@@ -715,6 +715,18 @@ async fn forward_json_api(
         Principal::Limited { config, .. } => Some(config),
         Principal::Admin => None,
     };
+    if let Err(response) = enforce_request_quotas(state, &principal).await {
+        return response;
+    }
+    if let Some(config) = key_config {
+        if !model_allowed(config, &model) {
+            return error_response(
+                axum::http::StatusCode::FORBIDDEN,
+                &format!("Key is not allowed to access model '{model}'"),
+                "access_denied",
+            );
+        }
+    }
     crate::system_logs::event(
         state,
         "info",
@@ -1517,17 +1529,6 @@ async fn completions(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let principal = match authenticate(&state, &headers) {
-        Ok(principal) => principal,
-        Err(response) => return response,
-    };
-    let Some(model) = body.get("model").and_then(Value::as_str).map(str::to_owned) else {
-        return error_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            "model is required",
-            "invalid_request_error",
-        );
-    };
     if body.get("prompt").is_none() {
         return error_response(
             axum::http::StatusCode::BAD_REQUEST,
@@ -1535,206 +1536,15 @@ async fn completions(
             "invalid_request_error",
         );
     }
-    let usage_key_name = match &principal {
-        Principal::Limited { key_name, .. } => Some(key_name.as_str()),
-        Principal::Admin => None,
-    };
-    if let Err(response) = enforce_request_quotas(&state, &principal).await {
-        return response;
-    }
-    let key_config = if let Principal::Limited { config, .. } = &principal {
-        if !model_allowed(config, &model) {
-            return error_response(
-                axum::http::StatusCode::FORBIDDEN,
-                &format!("Key is not allowed to access model '{model}' for completions"),
-                "access_denied",
-            );
-        }
-        Some(config)
-    } else {
-        None
-    };
-    let original_body = body.clone();
-    let request_id = new_request_id();
-    let start_time = now_ms();
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                &error.to_string(),
-                "server_error",
-            )
-        }
-    };
-    let mut last_error = None;
-    let mut attempted = false;
-    let targets: Vec<_> = inference_targets(&state, &model, key_config).collect();
-    let target_count = targets.len();
-    for (attempt, (provider_slug, upstream_model)) in targets.into_iter().enumerate() {
-        attempted = true;
-        let Some(provider) = state
-            .inner
-            .providers
-            .read()
-            .unwrap()
-            .get(&provider_slug)
-            .cloned()
-        else {
-            continue;
-        };
-        let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
-            last_error = Some("Provider API base URL is invalid".to_owned());
-            continue;
-        };
-        let mut request_body = original_body.clone();
-        request_body["model"] = Value::String(upstream_model.clone());
-        let mut request = client
-            .post(format!(
-                "{}/completions",
-                base.as_str().trim_end_matches('/')
-            ))
-            .json(&request_body);
-        if let Some(key) = provider.api_key {
-            request = request.bearer_auth(key);
-        }
-        match request.send().await {
-            Ok(upstream) => {
-                let status = upstream.status();
-                if is_retryable_upstream_status(status) && attempt + 1 < target_count {
-                    let reason = format!("upstream returned HTTP {}", status.as_u16());
-                    record_attempt(
-                        &state,
-                        &request_id,
-                        (attempt + 1) as i32,
-                        &provider_slug,
-                        &upstream_model,
-                        "completions",
-                        "failed",
-                        Some(&reason),
-                        Some(status.as_u16() as i32),
-                        true,
-                        start_time,
-                    )
-                    .await;
-                    register_provider_failure(
-                        &state,
-                        &provider_slug,
-                        &upstream_model,
-                        reason.clone(),
-                    )
-                    .await;
-                    last_error = Some(reason);
-                    continue;
-                }
-                if request_body
-                    .get("stream")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    record_basic_usage(
-                        &state,
-                        &request_id,
-                        usage_key_name,
-                        &provider_slug,
-                        &model,
-                        "completions",
-                        if status.is_success() {
-                            "success"
-                        } else {
-                            "error"
-                        },
-                        true,
-                        start_time,
-                    )
-                    .await;
-                    let content_type = upstream
-                        .headers()
-                        .get("content-type")
-                        .and_then(|value| value.to_str().ok())
-                        .unwrap_or("text/event-stream");
-                    return axum::http::Response::builder()
-                        .status(status)
-                        .header("content-type", content_type)
-                        .header("cache-control", "no-cache")
-                        .header("x-request-id", &request_id)
-                        .body(accounted_sse_body(
-                            upstream.bytes_stream(),
-                            StreamAccounting {
-                                pool: state.inner.database.clone(),
-                                event_sender: state.inner.usage_events.clone(),
-                                request_id: request_id.clone(),
-                                key_name: usage_key_name.map(str::to_owned),
-                                provider: provider_slug.clone(),
-                                model: model.clone(),
-                                api_type: "chat".to_owned(),
-                                start_time,
-                                input_tokens: None,
-                                output_tokens: None,
-                                cost: None,
-                                terminal_on_usage: false,
-                                stream_success: status.is_success(),
-                                finalized: false,
-                            },
-                        ))
-                        .expect("valid streaming response")
-                        .into_response();
-                }
-                let payload = upstream.json::<Value>().await.unwrap_or_else(|_| {
-                    serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}})
-                });
-                record_response_usage(
-                    &state,
-                    &request_id,
-                    usage_key_name,
-                    &provider_slug,
-                    &model,
-                    "completions",
-                    status.is_success(),
-                    start_time,
-                    &payload,
-                    true,
-                )
-                .await;
-                return response_with_request_id(status, payload, &request_id);
-            }
-            Err(error) => {
-                let reason = error.to_string();
-                record_attempt(
-                    &state,
-                    &request_id,
-                    (attempt + 1) as i32,
-                    &provider_slug,
-                    &upstream_model,
-                    "completions",
-                    "failed",
-                    Some(&reason),
-                    None,
-                    true,
-                    start_time,
-                )
-                .await;
-                register_provider_failure(&state, &provider_slug, &upstream_model, reason.clone())
-                    .await;
-                last_error = Some(reason);
-            }
-        }
-    }
-    if !attempted {
-        return error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            "No provider configured for model",
-            "model_not_found",
-        );
-    }
-    error_response(
-        axum::http::StatusCode::BAD_GATEWAY,
-        &last_error.unwrap_or_else(|| "upstream error".into()),
-        "upstream_error",
+    forward_json_api(
+        &state,
+        &headers,
+        body,
+        "/completions",
+        "authorization",
+        true,
     )
+    .await
 }
 
 async fn embeddings(
@@ -1742,17 +1552,6 @@ async fn embeddings(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let principal = match authenticate(&state, &headers) {
-        Ok(principal) => principal,
-        Err(response) => return response,
-    };
-    let Some(model) = body.get("model").and_then(Value::as_str).map(str::to_owned) else {
-        return error_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            "model is required",
-            "invalid_request_error",
-        );
-    };
     if body.get("input").is_none() {
         return error_response(
             axum::http::StatusCode::BAD_REQUEST,
@@ -1760,252 +1559,7 @@ async fn embeddings(
             "invalid_request_error",
         );
     }
-    let usage_key_name = match &principal {
-        Principal::Limited { key_name, .. } => Some(key_name.as_str()),
-        Principal::Admin => None,
-    };
-    if let Err(response) = enforce_request_quotas(&state, &principal).await {
-        return response;
-    }
-    let key_config = if let Principal::Limited { config, .. } = &principal {
-        if !model_allowed(config, &model) {
-            return error_response(
-                axum::http::StatusCode::FORBIDDEN,
-                &format!("Key is not allowed to access model '{model}' for embeddings"),
-                "access_denied",
-            );
-        }
-        Some(config)
-    } else {
-        None
-    };
-    let (provider_slug, upstream_model) = resolve_target(&state, &model, key_config);
-    if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
-        return error_response(
-            axum::http::StatusCode::FORBIDDEN,
-            &format!("Key is not allowed to access any provider configured for model '{model}'"),
-            "access_denied",
-        );
-    }
-    if target_is_on_cooldown(&state, &provider_slug, &upstream_model) {
-        return error_response(
-            axum::http::StatusCode::BAD_GATEWAY,
-            &format!("Provider {provider_slug}/{upstream_model} is on cooldown"),
-            "upstream_error",
-        );
-    }
-    let Some(provider) = state
-        .inner
-        .providers
-        .read()
-        .unwrap()
-        .get(&provider_slug)
-        .cloned()
-    else {
-        return error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            "No provider configured for model",
-            "model_not_found",
-        );
-    };
-    let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
-        return error_response(
-            axum::http::StatusCode::BAD_GATEWAY,
-            "Provider API base URL is invalid",
-            "upstream_error",
-        );
-    };
-    let request_id = format!(
-        "trefoil-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default()
-    );
-    let start_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default();
-    let original_body = body.clone();
-    let mut request_body = body;
-    request_body["model"] = Value::String(upstream_model);
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                &error.to_string(),
-                "server_error",
-            )
-        }
-    };
-    let mut request = client
-        .post(format!(
-            "{}/embeddings",
-            base.as_str().trim_end_matches('/')
-        ))
-        .json(&request_body);
-    if let Some(key) = provider.api_key {
-        request = request.bearer_auth(key);
-    }
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
-            if let Some(pool) = &state.inner.database {
-                let duration_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|value| value.as_millis() as i64)
-                    .unwrap_or(start_time)
-                    - start_time;
-                let input_tokens = payload["usage"]["prompt_tokens"]
-                    .as_i64()
-                    .map(|value| value as i32);
-                let _ = crate::database::record_request_usage(
-                    pool,
-                    &request_id,
-                    usage_key_name,
-                    Some(&provider_slug),
-                    Some(&model),
-                    "embeddings",
-                    if status.is_success() {
-                        "success"
-                    } else {
-                        "error"
-                    },
-                    false,
-                    start_time,
-                )
-                .await;
-                let _ = crate::database::update_request_usage_metrics(
-                    pool,
-                    &request_id,
-                    input_tokens,
-                    Some(0),
-                    None,
-                    duration_ms,
-                )
-                .await;
-            }
-            let mut response = (status, Json(payload)).into_response();
-            if let Ok(value) = request_id.parse() {
-                response.headers_mut().insert("x-request-id", value);
-            }
-            response
-        }
-        Err(error) => {
-            record_attempt(
-                &state,
-                &request_id,
-                1,
-                &provider_slug,
-                &model,
-                "inference",
-                "failed",
-                Some(&error.to_string()),
-                None,
-                true,
-                start_time,
-            )
-            .await;
-            register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
-            let (fallback_provider_slug, fallback_model) =
-                resolve_target(&state, &model, key_config);
-            if fallback_provider_slug != provider_slug || fallback_model != model {
-                let fallback_provider = {
-                    state
-                        .inner
-                        .providers
-                        .read()
-                        .unwrap()
-                        .get(&fallback_provider_slug)
-                        .cloned()
-                };
-                if let Some(fallback_provider) = fallback_provider {
-                    if let Ok(fallback_base) =
-                        dispatch_provider_url(&fallback_provider.api_base_url)
-                    {
-                        let mut fallback_body = original_body;
-                        fallback_body["model"] = Value::String(fallback_model.clone());
-                        let mut fallback_request = client
-                            .post(format!(
-                                "{}/embeddings",
-                                fallback_base.as_str().trim_end_matches('/')
-                            ))
-                            .json(&fallback_body);
-                        if let Some(key) = fallback_provider.api_key {
-                            fallback_request = fallback_request.bearer_auth(key);
-                        }
-                        match fallback_request.send().await {
-                            Ok(fallback) => {
-                                let status = fallback.status();
-                                record_attempt(
-                                    &state,
-                                    &request_id,
-                                    2,
-                                    &fallback_provider_slug,
-                                    &fallback_model,
-                                    "inference",
-                                    if status.is_success() {
-                                        "success"
-                                    } else {
-                                        "failed"
-                                    },
-                                    None,
-                                    Some(status.as_u16() as i32),
-                                    false,
-                                    start_time,
-                                )
-                                .await;
-                                let payload = fallback.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
-                                let mut response =
-                                    response_with_request_id(status, payload, &request_id);
-                                if let Ok(value) = request_id.parse() {
-                                    response.headers_mut().insert("x-request-id", value);
-                                }
-                                return response;
-                            }
-                            Err(fallback_error) => {
-                                register_provider_failure(
-                                    &state,
-                                    &fallback_provider_slug,
-                                    &fallback_model,
-                                    fallback_error.to_string(),
-                                )
-                                .await
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(pool) = &state.inner.database {
-                let _ = crate::database::record_request_usage(
-                    pool,
-                    &request_id,
-                    usage_key_name,
-                    Some(&provider_slug),
-                    Some(&model),
-                    "embeddings",
-                    "error",
-                    false,
-                    start_time,
-                )
-                .await;
-            }
-            let mut response = error_response(
-                axum::http::StatusCode::BAD_GATEWAY,
-                &error.to_string(),
-                "upstream_error",
-            );
-            if let Ok(value) = request_id.parse() {
-                response.headers_mut().insert("x-request-id", value);
-            }
-            response
-        }
-    }
+    forward_json_api(&state, &headers, body, "/embeddings", "authorization", true).await
 }
 
 fn auth_error(status: axum::http::StatusCode, message: &'static str) -> Response {
