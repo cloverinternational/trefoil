@@ -83,7 +83,7 @@ fn rpc_result(id: Value, result: Value) -> Response {
         .into_response()
 }
 
-fn dispatch(state: &AppState, request: Value) -> Response {
+async fn dispatch(state: &AppState, request: Value) -> Response {
     let Some(object) = request.as_object() else {
         return rpc_error(Value::Null, -32600, "Invalid Request");
     };
@@ -120,20 +120,28 @@ fn dispatch(state: &AppState, request: Value) -> Response {
             id,
             json!({"contents":[{"uri":"plexus://management/guide","mimeType":"text/markdown","text":"Plexus management guide. Inspect before mutating."}]}),
         ),
-        "tools/call" => call_tool(
-            state,
-            id,
-            object
-                .get("params")
-                .and_then(|p| p.get("name"))
-                .and_then(Value::as_str),
-            object.get("params").and_then(|p| p.get("arguments")),
-        ),
+        "tools/call" => {
+            call_tool(
+                state,
+                id,
+                object
+                    .get("params")
+                    .and_then(|p| p.get("name"))
+                    .and_then(Value::as_str),
+                object.get("params").and_then(|p| p.get("arguments")),
+            )
+            .await
+        }
         _ => rpc_error(id, -32601, "Method not found"),
     }
 }
 
-fn call_tool(state: &AppState, id: Value, name: Option<&str>, args: Option<&Value>) -> Response {
+async fn call_tool(
+    state: &AppState,
+    id: Value,
+    name: Option<&str>,
+    args: Option<&Value>,
+) -> Response {
     let Some(name) = name else {
         return rpc_error(id, -32602, "Invalid params");
     };
@@ -144,6 +152,30 @@ fn call_tool(state: &AppState, id: Value, name: Option<&str>, args: Option<&Valu
     let result = match (name, operation) {
         ("plexus_config", "status") | ("plexus_config", "get") => {
             json!({"ok":true,"operation":operation,"data":{"mcpEnabled":enabled(state)}})
+        }
+        ("plexus_provider", "list") => {
+            let providers = state.inner.providers.read().unwrap();
+            json!({"ok":true,"operation":operation,"data":providers.keys().collect::<Vec<_>>()})
+        }
+        ("plexus_provider", "get") => {
+            let Some(provider_id) = args.and_then(|v| v.get("id")).and_then(Value::as_str) else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            let providers = state.inner.providers.read().unwrap();
+            match providers.get(provider_id) {
+                Some(provider) => {
+                    json!({"ok":true,"operation":operation,"data":{"id":provider_id,"provider":redact_provider(provider)}})
+                }
+                None => {
+                    json!({"ok":false,"operation":operation,"error":{"message":format!("Provider '{provider_id}' not found"),"type":"not_found","code":404}})
+                }
+            }
+        }
+        ("plexus_provider", "put")
+        | ("plexus_provider", "update")
+        | ("plexus_provider", "delete")
+        | ("plexus_provider", "fetch_models") => {
+            return provider_operation(state, id, operation, args).await;
         }
         _ if TOOLS.iter().any(|(tool, _)| *tool == name) => {
             json!({"ok":false,"operation":operation,"error":{"message":"Operation is not implemented yet","type":"invalid_request","code":400}})
@@ -161,6 +193,92 @@ fn call_tool(state: &AppState, id: Value, name: Option<&str>, args: Option<&Valu
     )
 }
 
+fn redact_provider(provider: &crate::state::ProviderConfig) -> Value {
+    let mut value = serde_json::to_value(provider).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.remove("api_key");
+    }
+    value
+}
+
+async fn provider_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    args: Option<&Value>,
+) -> Response {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    let Some(provider_id) = args.get("id").and_then(Value::as_str) else {
+        return rpc_error(id, -32602, "id is required");
+    };
+    let (method, path, body) = match operation {
+        "put" | "update" => {
+            let Some(body) = args.get("body") else {
+                return rpc_error(id, -32602, "body is required");
+            };
+            (
+                if operation == "put" { "PUT" } else { "PATCH" },
+                format!("/v0/management/providers/{provider_id}"),
+                Some(body.clone()),
+            )
+        }
+        "delete" => {
+            if args.get("destructive").and_then(Value::as_str) != Some("acknowledged") {
+                return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
+            }
+            (
+                "DELETE",
+                format!("/v0/management/providers/{provider_id}"),
+                None,
+            )
+        }
+        "fetch_models" => {
+            let Some(body) = args.get("body") else {
+                return rpc_error(id, -32602, "body is required");
+            };
+            (
+                "POST",
+                "/v0/management/providers/fetch-models".into(),
+                Some(body.clone()),
+            )
+        }
+        _ => unreachable!(),
+    };
+    let mut request = Request::builder().method(method).uri(path).header(
+        "x-admin-key",
+        state.inner.admin_key.clone().unwrap_or_default(),
+    );
+    let body = match body {
+        Some(v) => {
+            request = request.header("content-type", "application/json");
+            Body::from(v.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = crate::providers::router()
+        .with_state(state.clone())
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap();
+    let ok = response.status().is_success();
+    let payload: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+            .unwrap_or_else(|_| json!({"error":"Invalid provider response"}));
+    let result = if ok {
+        json!({"ok":true,"operation":operation,"data":payload})
+    } else {
+        json!({"ok":false,"operation":operation,"error":payload})
+    };
+    rpc_result(
+        id,
+        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
+    )
+}
+
 async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     if !enabled(&state) {
         return disabled();
@@ -175,7 +293,7 @@ async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) ->
     if request.is_array() {
         return rpc_error(Value::Null, -32600, "Invalid Request");
     }
-    dispatch(&state, request)
+    dispatch(&state, request).await
 }
 
 async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -189,6 +307,7 @@ async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
         &state,
         json!({"jsonrpc":"2.0","id":null,"method":"tools/list"}),
     )
+    .await
 }
 
 async fn delete(State(state): State<AppState>, headers: HeaderMap) -> Response {

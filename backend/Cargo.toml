@@ -22,7 +22,7 @@ flate2 = "1"
 tar = "0.4"
 csv = "1"
 thiserror = "1"
-
-[dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+[dev-dependencies]
