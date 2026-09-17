@@ -297,6 +297,15 @@ export async function disableKey(name: string): Promise<void> {
   }
 }
 
+export interface SelfKey { role: 'admin' | 'limited'; keyName?: string; allowedProviders?: string[]; allowedModels?: string[]; excludedProviders?: string[]; excludedModels?: string[]; allowRawPassthrough?: boolean; quotaName?: string | null; comment?: string | null; traceEnabled?: boolean; traceEnabledGlobal?: boolean; }
+export interface SelfQuota { key: string; quotaName: string | null; allowed: boolean; currentUsage: number; limit: number | null; remaining: number | null; resetsAt: string | null; limitType: string | null; }
+async function selfRequest(path: string, init?: RequestInit) { const response = await fetch(path, { ...init, headers: { ...authHeaders(), ...(init?.headers ?? {}) } }); if (!response.ok) { const body = await response.json().catch(() => null) as { error?: string | { message?: string } } | null; throw new Error(typeof body?.error === 'string' ? body.error : body?.error?.message || 'Unable to update your key'); } return response; }
+export async function getSelfKey(): Promise<SelfKey> { return (await selfRequest('/v0/management/self/me')).json(); }
+export async function getSelfQuota(): Promise<SelfQuota> { return (await selfRequest('/v0/management/self/quota')).json(); }
+export async function updateSelfComment(comment: string): Promise<void> { await selfRequest('/v0/management/self/comment', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ comment }) }); }
+export async function toggleSelfDebug(enabled: boolean): Promise<{ enabled: boolean; enabledGlobal: boolean }> { return (await selfRequest('/v0/management/self/debug/toggle', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) })).json(); }
+export async function rotateSelfKey(): Promise<{ secret: string; message: string }> { return (await selfRequest('/v0/management/self/rotate', { method: 'POST' })).json(); }
+
 export interface QuotaDefinition {
   type: 'rolling' | 'daily' | 'weekly' | 'monthly';
   limitType: 'requests' | 'tokens' | 'cost';
