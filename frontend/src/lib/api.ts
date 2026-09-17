@@ -175,6 +175,16 @@ export async function deleteProvider(name: string): Promise<void> {
   if (!response.ok) throw new Error('Unable to delete provider');
 }
 
+export interface McpServerConfig { upstreamUrl: string; enabled: boolean; mode: string; authScheme?: string | null; launcher?: string | null; packageName?: string | null; args?: string | null; env?: string | null; startupTimeoutMs?: number | null; }
+export interface McpKey { id: number; key: string; isActive: boolean; }
+async function mcpRequest(path: string, init?: RequestInit) { return fetch(path, { ...init, headers: { ...authHeaders(), ...(init?.headers ?? {}) } }); }
+export async function getMcpServers(): Promise<Record<string, McpServerConfig>> { const r = await mcpRequest('/v0/management/mcp-servers'); if (!r.ok) throw new Error('Unable to load MCP servers'); return r.json(); }
+export async function saveMcpServer(name: string, server: Record<string, unknown>, editing: boolean): Promise<void> { const r = await mcpRequest(`/v0/management/mcp-servers/${encodeURIComponent(name)}`, { method: editing ? 'PATCH' : 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(server) }); if (!r.ok) { const b = await r.json().catch(() => null) as { error?: string } | null; throw new Error(b?.error || 'Unable to save MCP server'); } }
+export async function deleteMcpServer(name: string): Promise<void> { const r = await mcpRequest(`/v0/management/mcp-servers/${encodeURIComponent(name)}`, { method: 'DELETE' }); if (!r.ok) throw new Error('Unable to delete MCP server'); }
+export async function getMcpKeys(name: string): Promise<McpKey[]> { const r = await mcpRequest(`/v0/management/mcp-servers/${encodeURIComponent(name)}/keys`); if (!r.ok) throw new Error('Unable to load MCP keys'); const b = await r.json() as { keys?: McpKey[] }; return Array.isArray(b.keys) ? b.keys : []; }
+export async function addMcpKey(name: string, key: string): Promise<void> { const r = await mcpRequest(`/v0/management/mcp-servers/${encodeURIComponent(name)}/keys`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key, is_active: true }) }); if (!r.ok) throw new Error('Unable to add MCP key'); }
+export async function deleteMcpKey(name: string, id: number): Promise<void> { const r = await mcpRequest(`/v0/management/mcp-servers/${encodeURIComponent(name)}/keys/${id}`, { method: 'DELETE' }); if (!r.ok) throw new Error('Unable to delete MCP key'); }
+
 export interface ModelTarget {
   provider?: string;
   model?: string;

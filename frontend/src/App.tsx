@@ -12,6 +12,7 @@ import { Quotas } from './pages/Quotas';
 import { DetailedUsage } from './pages/DetailedUsage';
 import { Configuration } from './pages/Configuration';
 import { SystemLogs } from './pages/SystemLogs';
+import { McpManagement } from './pages/McpManagement';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { adminKey } = useAuth();
@@ -35,6 +36,7 @@ const AppRoutes = () => (
     <Route path="/config" element={<ProtectedRoute><Configuration /></ProtectedRoute>} />
     <Route path="/configuration" element={<ProtectedRoute><Configuration /></ProtectedRoute>} />
     <Route path="/system-logs" element={<ProtectedRoute><SystemLogs /></ProtectedRoute>} />
+    <Route path="/mcp" element={<ProtectedRoute><McpManagement /></ProtectedRoute>} />
     <Route
       path="/"
       element={
