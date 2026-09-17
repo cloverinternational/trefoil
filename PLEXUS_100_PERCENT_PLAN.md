@@ -153,12 +153,7 @@ live provider credential to check against.
 
 ## 5. Admin MCP management shim (`/mcp/plexus`) tool depth — 🟡 partial
 
-This is a **bigger gap than the route inventory suggests.** All 12 tool
-names exist in `mcp_plexus.rs` and are correctly listed via `tools/list`,
-but `tools/call` only implements 2 of ~35 operations
-(`plexus_config` → `get`/`status`). Every other operation across every other
-tool returns `{"ok":false,"error":{"message":"Operation is not implemented
-yet"}}`.
+This is a **bigger gap than the route inventory suggests.** The management shim now implements the listed provider, alias, key, quota, gateway, settings, logs, usage, debug, and operations adapters. Remaining depth is concentrated in exact edge-case parity, checker-specific operations, and exhaustive differential coverage.
 
 Plexus reference: `routes/mcp/plexus/configuration.ts` (440 lines) +
 `operations.ts` (395 lines) + `management.ts` implement the full operation
@@ -166,18 +161,18 @@ set:
 
 | Tool | Operations in Plexus | Implemented in Trefoil |
 |---|---|---|
-| `plexus_config` | get, export, status | get, status (2/3) |
-| `plexus_provider` | list, get, put, update, delete, fetch_models | 0/6 |
-| `plexus_model_alias` | list, get, put, update, delete, delete_all | 0/6 |
-| `plexus_key` | list, get, put, update, delete, disable | 0/6 |
-| `plexus_quota` | list, get, put, update, delete, status, clear, recompute | 0/8 |
-| `plexus_quota_checker` | types, list, get | 0/3 |
-| `plexus_mcp_gateway` | servers_list, get, put, update, delete | 0/5 |
-| `plexus_settings` | get | 0/1 |
-| `plexus_system_logs` | recent, level, set_level, reset_level | 0/4 |
-| `plexus_usage` | list, summary | 0/2 |
-| `plexus_debug` | state | 0/1 |
-| `plexus_operations` | backup, restore, refresh_metadata, list_cooldowns, clear_cooldowns | 0/5 |
+| `plexus_config` | get, export, status | get, status, export (3/3) |
+| `plexus_provider` | list, get, put, update, delete, fetch_models | 6/6 |
+| `plexus_model_alias` | list, get, put, update, delete, delete_all | 6/6 |
+| `plexus_key` | list, get, put, update, delete, disable | 6/6 |
+| `plexus_quota` | list, get, put, update, delete, status, clear, recompute | 8/8 |
+| `plexus_quota_checker` | types, list, get | 3/3 |
+| `plexus_mcp_gateway` | servers_list, get, put, update, delete | 5/5 |
+| `plexus_settings` | get | 1/1 |
+| `plexus_system_logs` | recent, level, set_level, reset_level | 4/4 |
+| `plexus_usage` | list, summary | 2/2 |
+| `plexus_debug` | state | 1/1 |
+| `plexus_operations` | backup, restore, refresh_metadata, list_cooldowns, clear_cooldowns | 5/5 |
 
 To port: **~48 remaining operations.** Since every underlying management
 route already exists as a REST handler (aliases.rs, keys.rs, providers.rs,
@@ -205,7 +200,7 @@ how Plexus's `configuration.ts` shim wraps its own REST route handlers.
 - [ ] `destructive: "acknowledged"` gate for high-impact operations (delete,
       restore, clear) — check `security.ts` in Plexus for the exact
       contract.
-- [ ] Secret redaction on `plexus_key`/`plexus_provider` responses by
+- [x] Secret redaction on `plexus_key`/`plexus_provider` responses by
       default, with an explicit `redact: false` opt-out — check
       `responses.ts`/`management.ts` (`buildShimHeaders`) for the exact
       redaction rules.
@@ -237,9 +232,9 @@ how Plexus's `configuration.ts` shim wraps its own REST route handlers.
 
 ---
 
-## 7. Manual probe endpoint — 🔴 not started
+## 7. Manual probe endpoint — 🟢 implemented
 
-- [ ] `POST /v0/management/test` — send a canonical probe request through
+- [x] `POST /v0/management/test` — send a canonical probe request through
       the *real* dispatch path for a given provider/model/apiType, without
       needing an inference key. Reference: `routes/management/test.ts` (69
       lines) + `services/probes/probe-service.ts` (328 lines) +
@@ -293,8 +288,7 @@ not confirmed in this audit — needs a direct code check against
 
 ## 11. Frontend — 🟡 partial
 
-Trefoil: 6 pages (`Dashboard`, `Login`, `ApiKeys`, `ModelAliases`,
-`Providers`, `Quotas`), ~650 LOC, 0 tests.
+Trefoil now has dashboard, providers, aliases, keys, quotas, usage, configuration, MCP, system logs, debug, errors, logs, models, My Key, playground, metrics, and custom-checker pages. Core utility tests exist; browser tests remain.
 Plexus: 16+ top-level pages + decomposed sub-pages, 251 source files, 8 test
 files.
 
@@ -306,17 +300,17 @@ Missing pages (each needs its own API adapter + component + tests):
 - [x] `DetailedUsage` + 6 sub-modules (`Breakdown`, `Charts`, `Controls`,
       `Header`, `RequestLog`, `Stats`) — the main usage analytics dashboard.
 - [x] `Errors` — inference error log viewer at `/errors` with pagination, detail inspection, per-record deletion, and admin-only clear-all.
-- [ ] `Logs` — debug logs viewer (distinct from system logs).
-- [ ] `Mcp` — MCP server management UI (CRUD + process control + logs),
+- [x] `Logs` — debug logs viewer (distinct from system logs).
+- [x] `Mcp` — MCP server management UI (CRUD + process control + logs),
       depends on backend items already done (mcp.rs) but the UI doesn't
       exist.
 - [x] `Models` — model catalog browser at `/models` with authenticated loading,
       search, empty/error/loading states, target visibility, refresh, and
       delete actions. Metadata editing remains available through `/aliases`.
-- [ ] `MyKey` — self-service key page (self_routes.rs backend exists;
+- [x] `MyKey` — self-service key page (self_routes.rs backend exists;
       no frontend).
-- [ ] `Playground` — interactive request tester, depends on backend item #7.
-- [ ] `SystemLogs` — live syslog viewer, depends on backend item #6.
+- [x] `Playground` — interactive request tester, depends on backend item #7.
+- [x] `SystemLogs` — live syslog viewer, depends on backend item #6.
 - [x] Existing pages (`Keys`, `Providers`, `Quotas`) in Plexus are richer
       (modals for editing, quota status views, key lists decomposed into
       `keys/*` — 7 files) than Trefoil's single-file equivalents; audit
@@ -324,7 +318,7 @@ Missing pages (each needs its own API adapter + component + tests):
 - [~] Port the 8 Plexus frontend test areas (`format`, `currency`, `api`,
       `modelOptions`, `modelList`, `normalize`, `detailed-usage/helpers`):
       core `format`, `modelOptions`, and `normalize` helpers now have Vitest
-      coverage; currency, API, model-list, and detailed-usage helpers remain.
+      coverage (6 tests); currency, API, model-list, and detailed-usage helpers remain.
 - [ ] Browser/e2e test parity — the old `PARITY_TESTING.md` roadmap called
       for this; confirm scope once pages above exist.
 
@@ -348,11 +342,21 @@ fixtures per `parity/README.md`, not wired into CI).
 
 ---
 
+## Current parity estimate
+
+Using the 12 plan areas with equal weight, and scoring partial areas by
+checked capability items rather than route count, the current estimate is
+**approximately 82%**. This is a progress metric, not a claim of drop-in
+compatibility: several high-complexity unchecked items (provider-specific
+OAuth/masking, exact dispatch cancellation/retry policy, vision/compaction,
+frontend browser tests, and differential CI) still carry substantial risk.
+
 ## Current verified status
 
 - **Backend tests:** 174 passing.
+- **Frontend:** typecheck, build, and 6 Vitest utility tests pass.
 - **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
-- **Frontend:** dashboard, providers, aliases, keys, quotas, usage, and configuration pages build and typecheck successfully.
+- **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.
 - **Observability:** Prometheus metrics, usage SSE, and system-log SSE routes are implemented.
@@ -365,20 +369,11 @@ The completed work is recorded above; unchecked items remain intentionally open 
 
 ## Suggested order of attack
 
-1. **Shared dispatch service (#2)** — unblocks accurate failover parity and
-   is a prerequisite for the manual probe endpoint (#7) and cleaner future
-   work; also reduces the 4x logic duplication that's a correctness risk
-   today.
-2. **Quota aggregation (#3)** — small, self-contained, already flagged in
-   code comments.
-3. **Admin MCP shim operations (#5)** — mostly thin wrappers around routes
-   that already exist; high leverage-to-effort ratio (~48 operations, but
-   each is a few lines once the REST handler is reused).
-4. **Observability endpoints (#6)** — metrics is pure read/format over
-   existing tables; SSE streams need a broadcast channel but are
-   self-contained.
-5. **Conversations resource (#8)** and **vision descriptor (#9)** — small,
-   isolated.
+1. **Provider-specific OAuth/masking (#1)** — the largest remaining backend capability gap.
+2. **Compaction and vision execution (#9/#10)** — currently config/route-level or no-op behavior.
+3. **Exact MCP shim edge cases and checker-specific operations (#4/#5).
+4. **Frontend test coverage and remaining pages/depth (#11).
+5. **Differential CI and inference-focused differential cases (#12).
 6. **Provider OAuth login flow (#1)** — largest single effort (~1800+ lines
    of reference logic across 6+ provider-specific flows), but unlocks
    custom quota checkers (#4) and is the only item that blocks a class of
