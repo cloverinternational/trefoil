@@ -1471,31 +1471,55 @@ fn resolve_target(
     if state.inner.providers.read().unwrap().contains_key(model) {
         return (model.to_string(), model.to_string());
     }
-    if let Some(alias) = state.inner.aliases.read().unwrap().get(model) {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as i64)
-            .unwrap_or_default();
+
+    let mut current = model.to_string();
+    let mut visited = std::collections::HashSet::new();
+    for _ in 0..16 {
+        if !visited.insert(current.clone()) {
+            break;
+        }
+        let Some(alias) = state.inner.aliases.read().unwrap().get(&current).cloned() else {
+            break;
+        };
+        let now = now_ms();
         let providers = state.inner.providers.read().unwrap();
         let cooldowns = state.inner.cooldowns.read().unwrap();
-        if let Some(target) = alias
-            .target_groups
-            .iter()
-            .flat_map(|group| group.targets.iter())
-            .filter(|target| target.enabled && target.provider.is_some() && target.model.is_some())
-            .filter(|target| {
-                let provider = target.provider.as_deref().unwrap_or_default();
-                let model = target.model.as_deref().unwrap_or_default();
-                providers.contains_key(provider)
-                    && key_config.is_none_or(|config| provider_allowed(config, provider))
-                    && !cooldown_is_active(&cooldowns, provider, model, now_ms)
-            })
-            .find(|_| true)
-        {
-            return (
-                target.provider.clone().unwrap(),
-                target.model.clone().unwrap(),
-            );
+        for group in &alias.target_groups {
+            let mut candidates: Vec<_> = group
+                .targets
+                .iter()
+                .filter(|target| {
+                    let (Some(provider), Some(target_model)) = (&target.provider, &target.model)
+                    else {
+                        return false;
+                    };
+                    target.enabled
+                        && providers.contains_key(provider)
+                        && key_config.is_none_or(|config| provider_allowed(config, provider))
+                        && !cooldown_is_active(&cooldowns, provider, target_model, now)
+                })
+                .collect();
+            if group.selector == "random" && candidates.len() > 1 {
+                let index = (now.unsigned_abs() as usize) % candidates.len();
+                candidates.rotate_left(index);
+            }
+            if let Some(target) = candidates.into_iter().next() {
+                if let (Some(provider), Some(target_model)) = (&target.provider, &target.model) {
+                    return (provider.clone(), target_model.clone());
+                }
+            }
+            if let Some(next) = group
+                .targets
+                .iter()
+                .find(|target| target.enabled && target.alias.is_some())
+                .and_then(|target| target.alias.clone())
+            {
+                current = next;
+                break;
+            }
+        }
+        if !state.inner.aliases.read().unwrap().contains_key(&current) {
+            break;
         }
     }
     (model.to_string(), model.to_string())
