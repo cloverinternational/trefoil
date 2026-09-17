@@ -15,6 +15,7 @@ use axum::{
 };
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
+use sqlx::Row;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -198,6 +199,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v1/responses/:response_id",
             axum::routing::get(get_response).delete(delete_response),
+        )
+        .route(
+            "/v1/conversations/:conversation_id",
+            axum::routing::get(get_conversation),
         )
         .route("/v1/responses", axum::routing::post(responses))
         .route("/v1/codex/responses", axum::routing::post(responses))
@@ -1173,6 +1178,72 @@ async fn get_response(
         _ => error_response(
             axum::http::StatusCode::NOT_FOUND,
             "Response not found",
+            "not_found_error",
+        ),
+    }
+}
+
+/// Retrieve a stored Responses API conversation.
+///
+/// Conversation items are persisted as JSON in the `items` column.  Keep the
+/// stored representation opaque here: the Responses API permits several item
+/// variants and clients expect those objects to be returned unchanged.
+async fn get_conversation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if authenticate(&state, &headers).is_err() {
+        return auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized");
+    }
+    let Some(pool) = &state.inner.database else {
+        return error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "Conversation not found",
+            "not_found_error",
+        );
+    };
+
+    let row = sqlx::query(
+        "SELECT id, created_at, updated_at, items, metadata FROM conversations WHERE id=$1",
+    )
+    .bind(&id)
+    .fetch_optional(pool)
+    .await;
+
+    match row {
+        Ok(Some(row)) => {
+            let items = row
+                .try_get::<String, _>("items")
+                .ok()
+                .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+                .unwrap_or_else(|| serde_json::json!([]));
+            let metadata = row
+                .try_get::<Option<String>, _>("metadata")
+                .ok()
+                .flatten()
+                .and_then(|value| serde_json::from_str::<Value>(&value).ok());
+
+            let mut conversation = serde_json::json!({
+                "id": row.try_get::<String, _>("id").unwrap_or(id),
+                "object": "conversation",
+                "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+                "updated_at": row.try_get::<i64, _>("updated_at").unwrap_or_default(),
+                "items": items,
+            });
+            if let Some(metadata) = metadata {
+                conversation["metadata"] = metadata;
+            }
+            Json(conversation).into_response()
+        }
+        Ok(None) => error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "Conversation not found",
+            "not_found_error",
+        ),
+        Err(_) => error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "Conversation not found",
             "not_found_error",
         ),
     }
