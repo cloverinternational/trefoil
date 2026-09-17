@@ -71,12 +71,12 @@ impl StreamAccounting {
         .await;
     }
 
-    fn observe(&mut self, data: &str) -> bool {
+    fn observe(&mut self, data: &str) -> Option<bool> {
         if data.trim() == "[DONE]" {
-            return true;
+            return Some(true);
         }
         let Ok(value) = serde_json::from_str::<Value>(data) else {
-            return false;
+            return None;
         };
         let usage = value
             .get("usage")
@@ -105,7 +105,13 @@ impl StreamAccounting {
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        event.ends_with(".completed") || event == "message_stop" || event == "completion"
+        if event.ends_with(".completed") || event == "message_stop" || event == "completion" {
+            Some(true)
+        } else if event.ends_with(".failed") || event.ends_with(".incomplete") {
+            Some(false)
+        } else {
+            None
+        }
     }
 }
 
@@ -119,7 +125,7 @@ where
         let (bytes, mut terminal, error) = match item {
             Ok(bytes) => {
                 buffer.push_str(&String::from_utf8_lossy(&bytes));
-                let terminal = false;
+                let terminal: Option<bool> = None;
                 let mut events = Vec::new();
                 while let Some(index) = buffer.find('\n') {
                     let line = buffer[..index].trim_end_matches('\r').to_owned();
@@ -130,16 +136,18 @@ where
                 }
                 (Some((bytes, events)), terminal, None)
             }
-            Err(error) => (None, false, Some(error)),
+            Err(error) => (None, None, Some(error)),
         };
         Box::pin(async move {
             if let Some((bytes, events)) = bytes {
                 let mut accounting = state.lock().await;
                 for event in events {
-                    terminal |= accounting.observe(&event);
+                    if let Some(success) = accounting.observe(&event) {
+                        terminal = Some(success);
+                    }
                 }
-                if terminal {
-                    accounting.finalize(true).await;
+                if let Some(success) = terminal {
+                    accounting.finalize(success).await;
                 }
                 Some(Ok(bytes))
             } else {
@@ -446,6 +454,10 @@ async fn responses(
         Principal::Limited { config, .. } => Some(config),
         Principal::Admin => None,
     };
+    let usage_key_name = match &principal {
+        Principal::Limited { key_name, .. } => Some(key_name.as_str()),
+        Principal::Admin => None,
+    };
     let (provider_slug, upstream_model) = resolve_target(&state, &model, key_config);
     if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
         return error_response(
@@ -532,10 +544,41 @@ async fn responses(
                     .get("content-type")
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("text/event-stream");
+                record_basic_usage(
+                    &state,
+                    &request_id,
+                    usage_key_name,
+                    &provider_slug,
+                    &model,
+                    "responses",
+                    if status.is_success() {
+                        "success"
+                    } else {
+                        "error"
+                    },
+                    true,
+                    start_time,
+                )
+                .await;
                 return axum::http::Response::builder()
                     .status(status)
                     .header("content-type", content_type)
-                    .body(Body::from_stream(response.bytes_stream()))
+                    .body(accounted_sse_body(
+                        response.bytes_stream(),
+                        StreamAccounting {
+                            pool: state.inner.database.clone(),
+                            request_id: request_id.clone(),
+                            key_name: usage_key_name.map(str::to_owned),
+                            provider: provider_slug.clone(),
+                            model: model.clone(),
+                            api_type: "responses".to_owned(),
+                            start_time,
+                            input_tokens: None,
+                            output_tokens: None,
+                            cost: None,
+                            finalized: false,
+                        },
+                    ))
                     .unwrap()
                     .into_response();
             }
@@ -621,10 +664,41 @@ async fn responses(
                                         .get("content-type")
                                         .and_then(|v| v.to_str().ok())
                                         .unwrap_or("text/event-stream");
+                                    record_basic_usage(
+                                        &state,
+                                        &request_id,
+                                        usage_key_name,
+                                        &fallback_provider_slug,
+                                        &model,
+                                        "responses",
+                                        if status.is_success() {
+                                            "success"
+                                        } else {
+                                            "error"
+                                        },
+                                        true,
+                                        start_time,
+                                    )
+                                    .await;
                                     return axum::http::Response::builder()
                                         .status(status)
                                         .header("content-type", content_type)
-                                        .body(Body::from_stream(response.bytes_stream()))
+                                        .body(accounted_sse_body(
+                                            response.bytes_stream(),
+                                            StreamAccounting {
+                                                pool: state.inner.database.clone(),
+                                                request_id: request_id.clone(),
+                                                key_name: usage_key_name.map(str::to_owned),
+                                                provider: fallback_provider_slug.clone(),
+                                                model: model.clone(),
+                                                api_type: "responses".to_owned(),
+                                                start_time,
+                                                input_tokens: None,
+                                                output_tokens: None,
+                                                cost: None,
+                                                finalized: false,
+                                            },
+                                        ))
                                         .unwrap()
                                         .into_response();
                                 }
