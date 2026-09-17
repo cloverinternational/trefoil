@@ -215,6 +215,31 @@ async fn call_tool(
         ("plexus_quota", "status") | ("plexus_quota", "clear") | ("plexus_quota", "recompute") => {
             return quota_operation(state, id, operation, args).await;
         }
+        ("plexus_quota_checker", "types")
+        | ("plexus_quota_checker", "list")
+        | ("plexus_quota_checker", "get") => {
+            return quota_checker_operation(state, id, operation, args).await;
+        }
+        ("plexus_config", "export") => {
+            return forwarded_operation(
+                state,
+                id,
+                operation,
+                "GET",
+                "/v0/management/config/export",
+                None,
+            )
+            .await
+        }
+        ("plexus_operations", "backup")
+        | ("plexus_operations", "restore")
+        | ("plexus_operations", "restart")
+        | ("plexus_operations", "list_cooldowns")
+        | ("plexus_operations", "clear_cooldowns")
+        | ("plexus_operations", "reset_logs")
+        | ("plexus_operations", "refresh_metadata") => {
+            return operations_operation(state, id, operation, args).await
+        }
         _ if TOOLS.iter().any(|(tool, _)| *tool == name) => {
             json!({"ok":false,"operation":operation,"error":{"message":"Operation is not implemented yet","type":"invalid_request","code":400}})
         }
@@ -229,6 +254,149 @@ async fn call_tool(
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":result.get("ok").and_then(Value::as_bool)==Some(false)}),
     )
+}
+
+async fn forwarded_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Response {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let mut request = Request::builder().method(method).uri(path).header(
+        "x-admin-key",
+        state.inner.admin_key.clone().unwrap_or_default(),
+    );
+    let input = match body {
+        Some(value) => {
+            request = request.header("content-type", "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = crate::app(state.clone())
+        .oneshot(request.body(input).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let payload = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+        .unwrap_or_else(|_| json!({"success": status.is_success()}));
+    let result = if status.is_success() {
+        json!({"ok":true,"operation":operation,"data":payload})
+    } else {
+        json!({"ok":false,"operation":operation,"error":payload})
+    };
+    rpc_result(
+        id,
+        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!status.is_success()}),
+    )
+}
+
+async fn quota_checker_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    let path = match operation {
+        "types" => "/v0/management/quota-checker-types".to_string(),
+        "list" => "/v0/management/quota-checkers".to_string(),
+        "get" => match args.get("id").and_then(Value::as_str) {
+            Some(id) => format!("/v0/management/quota-checkers/{id}"),
+            None => return rpc_error(id, -32602, "id is required"),
+        },
+        _ => unreachable!(),
+    };
+    forwarded_operation(state, id, operation, "GET", &path, None).await
+}
+
+async fn operations_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    if matches!(
+        operation,
+        "restore" | "restart" | "clear_cooldowns" | "reset_logs"
+    ) && args.get("destructive").and_then(Value::as_str) != Some("acknowledged")
+    {
+        return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
+    }
+    match operation {
+        "backup" => {
+            forwarded_operation(state, id, operation, "GET", "/v0/management/backup", None).await
+        }
+        "restore" => match args.get("body").cloned() {
+            Some(body) => {
+                forwarded_operation(
+                    state,
+                    id,
+                    operation,
+                    "POST",
+                    "/v0/management/restore",
+                    Some(body),
+                )
+                .await
+            }
+            None => rpc_error(id, -32602, "body is required"),
+        },
+        "restart" => {
+            forwarded_operation(state, id, operation, "POST", "/v0/management/restart", None).await
+        }
+        "list_cooldowns" => {
+            forwarded_operation(
+                state,
+                id,
+                operation,
+                "GET",
+                "/v0/management/cooldowns",
+                None,
+            )
+            .await
+        }
+        "clear_cooldowns" => {
+            forwarded_operation(
+                state,
+                id,
+                operation,
+                "DELETE",
+                "/v0/management/cooldowns",
+                None,
+            )
+            .await
+        }
+        "reset_logs" => {
+            forwarded_operation(
+                state,
+                id,
+                operation,
+                "DELETE",
+                "/v0/management/mcp-logs",
+                None,
+            )
+            .await
+        }
+        "refresh_metadata" => {
+            forwarded_operation(
+                state,
+                id,
+                operation,
+                "POST",
+                "/v0/management/models/metadata/refresh",
+                None,
+            )
+            .await
+        }
+        _ => unreachable!(),
+    }
 }
 
 async fn settings_operation(state: &AppState, id: Value) -> Response {
