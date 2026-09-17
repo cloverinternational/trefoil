@@ -146,7 +146,15 @@ async fn audio_speech(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    forward_json_api(&state, &headers, body, "/audio/speech", "authorization").await
+    forward_json_api(
+        &state,
+        &headers,
+        body,
+        "/audio/speech",
+        "authorization",
+        false,
+    )
+    .await
 }
 
 async fn messages(
@@ -154,7 +162,7 @@ async fn messages(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    forward_json_api(&state, &headers, body, "/messages", "x-api-key").await
+    forward_json_api(&state, &headers, body, "/messages", "x-api-key", true).await
 }
 
 async fn images(
@@ -168,6 +176,7 @@ async fn images(
         body,
         "/images/generations",
         "authorization",
+        false,
     )
     .await
 }
@@ -175,9 +184,10 @@ async fn images(
 async fn forward_json_api(
     state: &AppState,
     headers: &HeaderMap,
-    mut body: Value,
+    body: Value,
     path: &str,
     auth_header: &str,
+    failover: bool,
 ) -> Response {
     let principal = match authenticate(state, headers) {
         Ok(value) => value,
@@ -194,51 +204,74 @@ async fn forward_json_api(
         Principal::Limited { config, .. } => Some(config),
         Principal::Admin => None,
     };
-    let (provider_slug, upstream_model) = resolve_target(state, &model, key_config);
-    let Some(provider) = state
-        .inner
-        .providers
-        .read()
-        .unwrap()
-        .get(&provider_slug)
-        .cloned()
-    else {
-        return error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            "No provider configured for model",
-            "model_not_found",
-        );
-    };
-    let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
-        return error_response(
-            axum::http::StatusCode::BAD_GATEWAY,
-            "Provider API base URL is invalid",
-            "upstream_error",
-        );
-    };
-    body["model"] = Value::String(upstream_model);
-    let mut request = reqwest::Client::new()
-        .post(format!("{}{}", base.as_str().trim_end_matches('/'), path))
-        .json(&body);
-    if let Some(key) = provider.api_key {
-        request = if auth_header == "x-api-key" {
-            request.header("x-api-key", key)
-        } else {
-            request.bearer_auth(key)
-        };
-    }
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
-            (status, Json(payload)).into_response()
+    let client = reqwest::Client::new();
+    let original_body = body.clone();
+    let mut attempted = None;
+    for _ in 0..=usize::from(failover) {
+        let (provider_slug, upstream_model) = resolve_target(state, &model, key_config);
+        if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
+            return error_response(
+                axum::http::StatusCode::FORBIDDEN,
+                "Key is not allowed to access any provider configured for model",
+                "access_denied",
+            );
         }
-        Err(error) => error_response(
-            axum::http::StatusCode::BAD_GATEWAY,
-            &error.to_string(),
-            "upstream_error",
-        ),
+        let Some(provider) = state
+            .inner
+            .providers
+            .read()
+            .unwrap()
+            .get(&provider_slug)
+            .cloned()
+        else {
+            return error_response(
+                axum::http::StatusCode::NOT_FOUND,
+                "No provider configured for model",
+                "model_not_found",
+            );
+        };
+        let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+            return error_response(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "Provider API base URL is invalid",
+                "upstream_error",
+            );
+        };
+        let mut request_body = original_body.clone();
+        request_body["model"] = Value::String(upstream_model.clone());
+        let mut request = client
+            .post(format!("{}{}", base.as_str().trim_end_matches('/'), path))
+            .json(&request_body);
+        if let Some(key) = provider.api_key {
+            request = if auth_header == "x-api-key" {
+                request.header("x-api-key", key)
+            } else {
+                request.bearer_auth(key)
+            };
+        }
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                return (status, Json(payload)).into_response();
+            }
+            Err(error) => {
+                register_provider_failure(
+                    state,
+                    &provider_slug,
+                    &upstream_model,
+                    error.to_string(),
+                )
+                .await;
+                attempted = Some(error.to_string());
+            }
+        }
     }
+    error_response(
+        axum::http::StatusCode::BAD_GATEWAY,
+        attempted.as_deref().unwrap_or("upstream error"),
+        "upstream_error",
+    )
 }
 
 async fn responses(
@@ -621,57 +654,72 @@ async fn gemini(
             "invalid_request_error",
         );
     }
-    let (provider_slug, upstream_model) = resolve_target(&state, model, None);
-    let Some(provider) = state
-        .inner
-        .providers
-        .read()
-        .unwrap()
-        .get(&provider_slug)
-        .cloned()
-    else {
-        return error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            "No provider configured for model",
-            "model_not_found",
-        );
-    };
-    let mut request = reqwest::Client::new()
-        .post(format!(
-            "{}/v1beta/models/{}:{}",
-            provider.api_base_url.trim_end_matches('/'),
-            upstream_model,
-            action
-        ))
-        .json(&body);
-    if let Some(key) = provider.api_key {
-        request = request.header("x-goog-api-key", key);
-    }
-    match request.send().await {
-        Ok(response) => {
-            let status = response.status();
-            if action == "streamGenerateContent" {
-                let content_type = response
-                    .headers()
-                    .get("content-type")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("text/event-stream");
-                return axum::http::Response::builder()
-                    .status(status)
-                    .header("content-type", content_type)
-                    .body(Body::from_stream(response.bytes_stream()))
-                    .unwrap()
-                    .into_response();
-            }
-            let payload=response.json::<Value>().await.unwrap_or_else(|_|serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
-            (status, Json(payload)).into_response()
+    let mut last_error = None;
+    for _ in 0..2 {
+        let (provider_slug, upstream_model) = resolve_target(&state, model, None);
+        let Some(provider) = state
+            .inner
+            .providers
+            .read()
+            .unwrap()
+            .get(&provider_slug)
+            .cloned()
+        else {
+            return error_response(
+                axum::http::StatusCode::NOT_FOUND,
+                "No provider configured for model",
+                "model_not_found",
+            );
+        };
+        let mut request = reqwest::Client::new()
+            .post(format!(
+                "{}/v1beta/models/{}:{}",
+                provider.api_base_url.trim_end_matches('/'),
+                upstream_model,
+                action
+            ))
+            .json(&body);
+        if let Some(key) = provider.api_key {
+            request = request.header("x-goog-api-key", key);
         }
-        Err(error) => error_response(
-            axum::http::StatusCode::BAD_GATEWAY,
-            &error.to_string(),
-            "upstream_error",
-        ),
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                if action == "streamGenerateContent" {
+                    return axum::http::Response::builder()
+                        .status(status)
+                        .header(
+                            "content-type",
+                            response
+                                .headers()
+                                .get("content-type")
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("text/event-stream"),
+                        )
+                        .body(Body::from_stream(response.bytes_stream()))
+                        .unwrap()
+                        .into_response();
+                }
+                let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
+                return (status, Json(payload)).into_response();
+            }
+            Err(error) => {
+                register_provider_failure(
+                    &state,
+                    &provider_slug,
+                    &upstream_model,
+                    error.to_string(),
+                )
+                .await;
+                last_error = Some(error.to_string());
+            }
+        }
     }
+    error_response(
+        axum::http::StatusCode::BAD_GATEWAY,
+        &last_error.unwrap_or_else(|| "upstream error".into()),
+        "upstream_error",
+    )
 }
 
 async fn completions(
