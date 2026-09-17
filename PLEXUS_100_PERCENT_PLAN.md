@@ -301,8 +301,8 @@ files.
 Missing pages (each needs its own API adapter + component + tests):
 - [x] `Config` — full config editor (failover/cooldown/compaction/timeout/
       stall/trusted-proxies/vision-fallthrough/mcp-enabled).
-- [ ] `CustomQuotaCheckers` — depends on backend item #4.
-- [ ] `Debug` — debug trace viewer/toggle.
+- [x] `CustomQuotaCheckers` — CRUD and test UI is implemented.
+- [x] `Debug` — debug trace viewer/toggle with trace list, detail, and deletion.
 - [x] `DetailedUsage` + 6 sub-modules (`Breakdown`, `Charts`, `Controls`,
       `Header`, `RequestLog`, `Stats`) — the main usage analytics dashboard.
 - [ ] `Errors` — inference error log viewer.

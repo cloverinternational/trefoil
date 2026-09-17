@@ -80,15 +80,15 @@ one call per verb. Not an actual gap.
 | OAuth (MCP client) | Implemented | Full authorization-code + PKCE S256 + refresh-token rotation with DB-backed consumption tracking (`oauth_server.rs`). This is materially more complete than the prior audit's "45%" estimate. |
 | Backup/restore | Implemented | Table list (`TABLES` in `backup.rs`) is an exact match to Plexus's `OPERATIONAL_TABLES` (13 tables). Gzip+tar archive format, admin-only, size-capped. |
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
-| Frontend | Minimal | Trefoil: 6 pages (Dashboard, Login, ApiKeys, ModelAliases, Providers, Quotas), ~650 LOC, 0 tests. Plexus: 16+ top-level pages plus decomposed sub-pages (detailed-usage/*, keys/*), 251 source files, 8 test files. Missing pages: Config, CustomQuotaCheckers, Debug, DetailedUsage (+6 sub-modules), Errors, Logs, Mcp, Models, MyKey, Playground, SystemLogs. |
+| Frontend | Partial | Trefoil now includes configuration, detailed usage, custom quota checkers, system logs, MCP management, and debug trace management; remaining major pages include Errors, Logs, Models, MyKey, and Playground. |
 | Rust test suite | 173/173 passing | Green, fast (<1s). No regressions from latest commit. |
 | Differential harness | ~275 named cases in `parity/differential.ts` | Requires manually running both live servers side-by-side (Plexus TS + Trefoil against Postgres) — not wired into CI per the README; last-run status unverified in this pass. |
 
 ## What's actually left (ranked by size/impact)
 
-1. **Frontend** — biggest raw gap by volume. 10+ pages, all browser tests,
-   API adapters for the newer route surfaces (metrics, events stream, custom
-   checkers, MCP admin UI, playground, debug/logs viewers) don't exist yet.
+1. **Frontend** — biggest raw gap by volume. Remaining pages, browser tests,
+   and API adapters for newer route surfaces (metrics, events stream, custom
+   MCP admin UI, playground, and the distinct logs viewer) remain.
 2. **Shared dispatch/failover service** — inference handlers duplicate
    retry/fallback logic per-route and only try one fallback target instead of
    iterating a full ordered candidate list; no dedicated `dispatch` module.

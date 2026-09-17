@@ -98,6 +98,16 @@ export async function getModuleFilter(): Promise<{ modules: string[] }> { const 
 export async function setModuleFilter(modules: string[]): Promise<{ modules: string[] }> { const r = await fetch('/v0/management/logging/modules', { method: 'PUT', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ modules }) }); if (!r.ok) throw new Error('Unable to update module filter'); return r.json(); }
 export async function clearModuleFilter(): Promise<{ modules: string[] }> { const r = await fetch('/v0/management/logging/modules', { method: 'DELETE', headers: authHeaders() }); if (!r.ok) throw new Error('Unable to clear module filter'); return r.json(); }
 
+export interface DebugState { enabled: boolean; enabledGlobal: boolean; enabledKeys?: string[]; providers: string[] | null; keys: string[]; aliases: string[]; }
+export interface DebugLogSummary { requestId: string; createdAt: number; responseStatus: number | null; }
+export interface DebugLog { requestId: string; createdAt: number; rawRequest: string | null; transformedRequest: string | null; rawResponse: string | null; transformedResponse: string | null; rawResponseSnapshot: string | null; transformedResponseSnapshot: string | null; requestHeaders: string | null; responseHeaders: string | null; responseStatus: number | null; }
+export async function getDebugState(): Promise<DebugState> { const r = await fetch('/v0/management/debug', { headers: authHeaders() }); if (!r.ok) throw new Error('Unable to load debug settings'); return r.json(); }
+export async function patchDebugState(update: Partial<Pick<DebugState, 'enabled' | 'providers' | 'keys' | 'aliases'>>): Promise<DebugState> { const r = await fetch('/v0/management/debug', { method: 'PATCH', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(update) }); if (!r.ok) throw new Error('Unable to update debug settings'); return r.json(); }
+export async function getDebugLogs(limit = 25, offset = 0): Promise<{ data: DebugLogSummary[]; total: number }> { const r = await fetch(`/v0/management/debug/logs?limit=${limit}&offset=${offset}`, { headers: authHeaders() }); if (!r.ok) throw new Error('Unable to load debug logs'); return r.json(); }
+export async function getDebugLog(requestId: string): Promise<DebugLog> { const r = await fetch(`/v0/management/debug/logs/${encodeURIComponent(requestId)}`, { headers: authHeaders() }); if (!r.ok) throw new Error('Unable to load debug log'); return r.json(); }
+export async function deleteDebugLog(requestId: string): Promise<void> { const r = await fetch(`/v0/management/debug/logs/${encodeURIComponent(requestId)}`, { method: 'DELETE', headers: authHeaders() }); if (!r.ok) throw new Error('Unable to delete debug log'); }
+export async function deleteDebugLogs(): Promise<void> { const r = await fetch('/v0/management/debug/logs', { method: 'DELETE', headers: authHeaders() }); if (!r.ok) throw new Error('Unable to delete debug logs'); }
+
 export async function getUsageSummary(): Promise<Record<string, number>> {
   const response = await fetch('/v0/management/usage/summary', { headers: authHeaders() });
   if (!response.ok) throw new Error('Unable to load usage summary');
