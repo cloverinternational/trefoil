@@ -874,6 +874,60 @@ pub async fn reserve_request_quota(
     Ok(None)
 }
 
+pub async fn reserve_request_quotas(
+    pool: &PgPool,
+    key_name: &str,
+    windows: &[(String, i32, i64, i64, Option<i64>)],
+    now_ms: i64,
+) -> Result<Vec<(String, i32, i64, i64)>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let mut blocked = Vec::new();
+    let mut usage = Vec::new();
+    for (name, limit, start, end, rolling) in windows {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))")
+            .bind(key_name)
+            .bind(name)
+            .execute(&mut *tx)
+            .await?;
+        let row: Option<(f32, i64, Option<i64>, String)> = sqlx::query_as(
+            "SELECT current_usage,last_updated,window_start,limit_type FROM quota_state WHERE key_name=$1 AND quota_name=$2 FOR UPDATE")
+            .bind(key_name).bind(name).fetch_optional(&mut *tx).await?;
+        let (old, updated, old_start, kind) = row.unwrap_or((0.0, now_ms, None, "requests".into()));
+        let current = if let Some(duration) = rolling {
+            if kind != "requests" {
+                0.0
+            } else {
+                (f64::from(old)
+                    - (now_ms - updated).max(0) as f64 * f64::from(*limit) / *duration as f64)
+                    .max(0.0)
+            }
+        } else if old_start == Some(*start) {
+            f64::from(old)
+        } else {
+            0.0
+        };
+        if current >= f64::from(*limit) {
+            blocked.push((name.clone(), *limit, current.round() as i64, *end));
+        }
+        usage.push((name, *start, *rolling, current));
+    }
+    if !blocked.is_empty() {
+        tx.rollback().await?;
+        return Ok(blocked);
+    }
+    for (name, start, rolling, current) in usage {
+        if rolling.is_some() {
+            sqlx::query("INSERT INTO quota_state (key_name,quota_name,limit_type,current_usage,last_updated,window_start) VALUES ($1,$2,'requests',$3,$4,NULL) ON CONFLICT (key_name,quota_name) DO UPDATE SET current_usage=EXCLUDED.current_usage,last_updated=EXCLUDED.last_updated,window_start=NULL,limit_type='requests'")
+                .bind(key_name).bind(name).bind((current + 1.0) as f32).bind(now_ms).execute(&mut *tx).await?;
+        } else {
+            sqlx::query("INSERT INTO quota_state (key_name,quota_name,limit_type,current_usage,last_updated,window_start) VALUES ($1,$2,'requests',1,$3,$4) ON CONFLICT (key_name,quota_name) DO UPDATE SET current_usage=CASE WHEN quota_state.window_start IS DISTINCT FROM EXCLUDED.window_start THEN 1 ELSE quota_state.current_usage+1 END,last_updated=EXCLUDED.last_updated,window_start=EXCLUDED.window_start,limit_type='requests'")
+                .bind(key_name).bind(name).bind(now_ms).bind(start).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(blocked)
+}
+
 pub async fn request_quota_windows(
     pool: &PgPool,
     quota_names: &[String],

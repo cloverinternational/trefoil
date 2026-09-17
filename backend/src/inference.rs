@@ -2601,30 +2601,17 @@ async fn enforce_request_quotas(state: &AppState, principal: &Principal) -> Resu
                 "server_error",
             )
         })?;
-    for (quota, limit, start, end, rolling_duration_ms) in windows {
-        match crate::database::reserve_request_quota(
-            pool,
-            key_name,
-            &quota,
-            limit,
-            start,
-            rolling_duration_ms,
-            now_ms,
-        )
+    let blocked = crate::database::reserve_request_quotas(pool, key_name, &windows, now_ms)
         .await
-        {
-            Ok(None) => {}
-            Ok(Some(current_usage)) => {
-                return Err(quota_exceeded_response(&quota, limit, current_usage, end));
-            }
-            Err(error) => {
-                return Err(error_response(
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    &error.to_string(),
-                    "server_error",
-                ));
-            }
-        }
+        .map_err(|error| {
+            error_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &error.to_string(),
+                "server_error",
+            )
+        })?;
+    if !blocked.is_empty() {
+        return Err(quota_exceeded_response(&blocked));
     }
     Ok(())
 }
@@ -2633,13 +2620,9 @@ async fn enforce_request_quotas(state: &AppState, principal: &Principal) -> Resu
 /// most-constrained quota is reported here; Trefoil doesn't yet aggregate
 /// multiple simultaneously-blocking quotas into `blocking_quotas`, so that
 /// array always has exactly one entry -- a documented partial-parity gap).
-fn quota_exceeded_response(
-    quota_name: &str,
-    limit: i32,
-    current_usage: i64,
-    resets_at_ms: i64,
-) -> Response {
-    let resets_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(resets_at_ms)
+fn quota_exceeded_response(blocked: &[(String, i32, i64, i64)]) -> Response {
+    let (quota_name, limit, current_usage, resets_at_ms) = &blocked[0];
+    let resets_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(*resets_at_ms)
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
         .unwrap_or_default();
     (
@@ -2652,14 +2635,12 @@ fn quota_exceeded_response(
                 "current_usage": current_usage,
                 "limit": limit,
                 "resets_at": resets_at,
-                "blocking_quotas": [{
-                    "quotaName": quota_name,
-                    "limitType": "requests",
-                    "limit": limit,
-                    "currentUsage": current_usage,
-                    "remaining": (limit as i64 - current_usage).max(0),
-                    "resetsAt": resets_at,
-                }],
+                "blocking_quotas": blocked.iter().map(|(name, limit, usage, end)| serde_json::json!({
+                    "quotaName": name, "limitType": "requests", "limit": limit,
+                    "currentUsage": usage, "remaining": (*limit as i64 - *usage).max(0),
+                    "resetsAt": chrono::DateTime::<chrono::Utc>::from_timestamp_millis(*end)
+                        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)).unwrap_or_default(),
+                })).collect::<Vec<_>>(),
             }
         })),
     )
