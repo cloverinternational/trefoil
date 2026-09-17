@@ -1190,6 +1190,7 @@ async fn chat_completions(
             response
         }
         Err(error) => {
+            register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
             record_basic_usage(
                 &state,
                 &request_id,
@@ -1209,6 +1210,28 @@ async fn chat_completions(
                 &request_id,
             )
         }
+    }
+}
+
+async fn register_provider_failure(state: &AppState, provider: &str, model: &str, message: String) {
+    let entry = {
+        let mut cooldowns = state.inner.cooldowns.write().unwrap();
+        let key = (provider.to_owned(), model.to_owned());
+        let failures = cooldowns
+            .get(&key)
+            .map(|e| e.consecutive_failures)
+            .unwrap_or(0)
+            + 1;
+        let entry = crate::state::CooldownEntry {
+            expiry_ms: now_ms() + 60_000,
+            consecutive_failures: failures,
+            last_error: Some(message),
+        };
+        cooldowns.insert(key, entry.clone());
+        entry
+    };
+    if let Some(pool) = &state.inner.database {
+        let _ = crate::database::upsert_cooldown(pool, provider, model, &entry).await;
     }
 }
 
