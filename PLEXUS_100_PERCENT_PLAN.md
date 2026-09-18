@@ -372,8 +372,8 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 303 unit + 4 integration tests pass |
-| OAuth storage / dispatch / checker integration | 10 disposable PostgreSQL tests pass |
+| `cargo test --all-targets` | 306 unit + 4 integration tests pass |
+| OAuth storage / dispatch / checker integration | 11 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
@@ -662,3 +662,24 @@ normalizing away the trigger contract.
 Full eight-lane gate: seven pass; live comparison 406/407 (recent logs). Backend
 303 unit + 4 stdio, **10 executed PostgreSQL integration tests**, 45 frontend,
 3 browser and 12 harness tests pass. Remaining plan items remain open.
+
+## Latest Copilot device-flow pass
+
+GitHub Copilot now starts actual github.com device authorization, exposes only
+the user code/verification URL, polls with RFC 8628 pending/slow-down handling,
+checks cancellation/expiry between requests, exchanges the GitHub token for a
+Copilot subscription token, and completes encrypted persistence transactionally.
+The refresh scheduler now uses the Copilot subscription-token endpoint rather
+than a generic refresh-token form. Expired device sessions are persisted.
+
+Inference resolves selected encrypted Copilot credentials, attaches the reference
+client headers, and restricts token-derived API hosts to the Copilot domain.
+Mock HTTP tests verify device/poll/token wire contracts; a PostgreSQL plus HTTP
+integration test verifies inference actually sends the decrypted token and client
+headers. Live account acceptance, enterprise domains, policy enablement and
+resuming an interrupted device flow remain open; no claim of full Copilot parity.
+
+Latest full gate: seven of eight lanes pass; live comparison 406/407. Backend
+coverage after the final endpoint test is 306 unit + 4 stdio integration;
+11 executed PostgreSQL tests, 45 frontend, 3 browser and 12 harness tests pass.
+Other provider flows and remaining dispatch semantics are still incomplete.

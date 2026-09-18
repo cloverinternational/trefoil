@@ -34,3 +34,10 @@ The unified `./verify-parity.sh` and CI now run `parity/test-oauth-storage.sh`.
 It creates and removes its own PostgreSQL container and checks encryption,
 account binding, cancelled/completed exchange rejection, and concurrent claim
 exclusivity. Login completion writes credentials and terminal state atomically.
+
+GitHub Copilot login now uses github.com device authorization. The device secret
+is held only by the polling task (never serialized to management clients), while
+user code/verification URL and lifecycle status are persisted. Restarting during
+onboarding requires a new login. Successful GitHub/Copilot tokens are encrypted;
+refresh uses the GitHub token to request a fresh Copilot subscription token.
+Enterprise domains and model-policy enablement are not yet implemented.
