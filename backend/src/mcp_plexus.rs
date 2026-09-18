@@ -950,7 +950,11 @@ async fn system_logs_operation(
         ),
         "level" => ("GET", "/v0/management/logging/level".into(), None, false),
         "set_level" => {
-            let Some(level) = args.get("level").and_then(Value::as_str) else {
+            let Some(level) = args
+                .get("level")
+                .or_else(|| args.get("body").and_then(|body| body.get("level")))
+                .and_then(Value::as_str)
+            else {
                 return rpc_error(id, -32602, "level is required");
             };
             (
@@ -1888,6 +1892,40 @@ mod tests {
             );
             assert_ne!(structured["data"]["mcpEnabled"], true);
         }
+    }
+
+    #[tokio::test]
+    async fn system_logs_set_level_accepts_body_and_validates_level() {
+        let response = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 45, "method":"tools/call",
+                    "params":{"name":"plexus_system_logs","arguments":{"operation":"set_level","body":{"level":" DEBUG "}}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(response["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["level"],
+            "debug"
+        );
+
+        let missing = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 46, "method":"tools/call",
+                    "params":{"name":"plexus_system_logs","arguments":{"operation":"set_level"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(missing["error"]["code"], -32602);
+        assert_eq!(missing["error"]["message"], "level is required");
     }
 
     #[tokio::test]
