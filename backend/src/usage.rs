@@ -56,6 +56,15 @@ pub fn publish_event(state: &AppState, event: UsageEvent) {
     }
 }
 
+// Unscoped activity must never leak to limited principals. Heartbeats are
+// generated separately and contain no request data.
+fn event_visible_to(principal: &Principal, event: &UsageEvent) -> bool {
+    match principal {
+        Principal::Admin => true,
+        Principal::Limited { key_name, .. } => event.api_key.as_ref() == Some(key_name),
+    }
+}
+
 async fn events(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let principal = match admin(&state, &headers) {
         Ok(value) => value,
@@ -73,18 +82,24 @@ async fn events(State(state): State<AppState>, headers: HeaderMap) -> Response {
         (
             receiver,
             principal,
-            tokio::time::interval(Duration::from_secs(10)),
+            tokio::time::interval_at(
+                tokio::time::Instant::now() + Duration::from_secs(10),
+                Duration::from_secs(10),
+            ),
         ),
         |(mut receiver, principal, mut interval)| async move {
             loop {
                 tokio::select! {
-                    result = receiver.recv() => { let event = match result { Ok(event) => event, Err(broadcast::error::RecvError::Lagged(_)) => UsageEvent { kind: "ping".into(), id: chrono::Utc::now().timestamp_millis(), api_key: None, data: serde_json::json!("subscriber lagged") }, Err(broadcast::error::RecvError::Closed) => return None }; if matches!((&principal, &event.api_key), (Principal::Limited { key_name, .. }, Some(key)) if key_name != key) { continue; } let sse = Event::default().event(event.kind).id(event.id.to_string()).json_data(event.data).unwrap_or_else(|_| Event::default().event("ping").data("pong")); return Some((Ok::<Event, Infallible>(sse), (receiver, principal, interval))); }
+                    result = receiver.recv() => { let event = match result { Ok(event) => event, Err(broadcast::error::RecvError::Lagged(_)) => UsageEvent { kind: "ping".into(), id: chrono::Utc::now().timestamp_millis(), api_key: None, data: serde_json::json!("subscriber lagged") }, Err(broadcast::error::RecvError::Closed) => return None }; if !event_visible_to(&principal, &event) { continue; } let sse = Event::default().event(event.kind).id(event.id.to_string()).json_data(event.data).unwrap_or_else(|_| Event::default().event("ping").data("pong")); return Some((Ok::<Event, Infallible>(sse), (receiver, principal, interval))); }
                     _ = interval.tick() => { let id = chrono::Utc::now().timestamp_millis(); return Some((Ok::<Event, Infallible>(Event::default().event("ping").id(id.to_string()).data("pong")), (receiver, principal, interval))); }
                 }
             }
         },
     );
     let mut response = Sse::new(stream).into_response();
+    response
+        .headers_mut()
+        .insert("access-control-allow-origin", "*".parse().unwrap());
     response
         .headers_mut()
         .insert("cache-control", "no-cache".parse().unwrap());
@@ -284,5 +299,64 @@ async fn delete_usage(
             Json(serde_json::json!({"error":error.to_string()})),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn limited_stream_filters_foreign_and_unscoped_events_and_cleans_up() {
+        let keys = [(
+            "limited".into(),
+            crate::state::KeyConfig {
+                secret: "secret".into(),
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect();
+        let state = AppState::new(Some("admin".into()), keys);
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v0/management/events")
+                    .header("x-admin-key", "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        for (id, key) in [(1, None), (2, Some("other")), (3, Some("limited"))] {
+            publish_event(
+                &state,
+                UsageEvent {
+                    kind: "usage".into(),
+                    id,
+                    api_key: key.map(str::to_owned),
+                    data: serde_json::json!({"marker": id}),
+                },
+            );
+        }
+        let mut body = response.into_body();
+        let frame = tokio::time::timeout(Duration::from_secs(1), body.frame())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = std::str::from_utf8(frame.data_ref().unwrap()).unwrap();
+        assert!(text.contains("id: 3"), "{text}");
+        assert!(!text.contains("id: 1") && !text.contains("id: 2"));
+        drop(body);
+        assert_eq!(
+            state.inner.usage_events.as_ref().unwrap().receiver_count(),
+            0
+        );
     }
 }

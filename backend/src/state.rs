@@ -222,6 +222,8 @@ pub struct AppStateInner {
     /// database transaction, while this gate prevents duplicate refreshes.
     pub oauth_refresh_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub usage_events: Option<tokio::sync::broadcast::Sender<crate::usage::UsageEvent>>,
+    /// Bounded recent logs, newest entries at the back.
+    pub recent_system_logs: std::sync::Mutex<std::collections::VecDeque<crate::system_logs::SystemLog>>,
     /// Subscribers for the admin-only live system log stream.
     pub system_logs: Option<tokio::sync::broadcast::Sender<crate::system_logs::SystemLog>>,
     /// Production state is being migrated to PostgreSQL repository by
@@ -264,6 +266,7 @@ impl AppState {
                 oauth_refresh_locks: std::sync::Mutex::new(HashMap::new()),
                 usage_events: Some(tokio::sync::broadcast::channel(256).0),
                 system_logs: Some(tokio::sync::broadcast::channel(256).0),
+                recent_system_logs: Default::default(),
                 database: None,
                 admin_key,
                 keys: RwLock::new(keys),
