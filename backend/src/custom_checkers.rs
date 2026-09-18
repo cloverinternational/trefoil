@@ -582,39 +582,85 @@ async fn fetch_builtin_meters(id: &str, endpoint: &str, token: &str) -> Result<V
     if !status.is_success() {
         return Err(format!("quota request failed with status {status}"));
     }
+    if id == "openai-codex" && payload.get("rate_limit").is_none_or(Value::is_null) {
+        return Err("codex usage response missing rate_limit".into());
+    }
     Ok(builtin_meters(id, &payload))
 }
 
+fn reset_iso(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|date| date.to_utc().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
+fn allowance(key: &str, label: &str, used: f64, hours: bool, reset: Option<String>, scope: Option<&str>) -> Value {
+    let remaining=(100.0-used).max(0.0);
+    let percent=(used/(used+remaining)*100.0).min(100.0);
+    let mut meter=serde_json::json!({"key":key,"label":label,"kind":"allowance","unit":"percentage","used":used,"remaining":remaining,"utilizationPercent":percent,"status":meter_status(percent),"periodValue":if hours {5} else {7},"periodUnit":if hours {"hour"} else {"day"},"periodCycle":"rolling"});
+    if let Some(reset)=reset { meter["resetsAt"]=Value::String(reset); }
+    if let Some(scope)=scope { meter["scope"]=Value::String(scope.into()); }
+    meter
+}
+
+fn normalized_scope(name: &str) -> String {
+    let mut normalized=String::new();
+    for character in name.to_ascii_lowercase().chars() {
+        if character.is_ascii_alphanumeric() { normalized.push(character); }
+        else if !normalized.ends_with('_') { normalized.push('_'); }
+    }
+    normalized.trim_matches('_').into()
+}
+
 fn builtin_meters(id: &str, payload: &Value) -> Value {
-    let mut meters = Vec::new();
+    let mut meters=Vec::new();
     if id == "claude-code" {
-        for (key, label, field) in [
-            ("five_hour", "5-hour quota", "five_hour"),
-            ("weekly", "Weekly quota", "seven_day"),
-            ("weekly_model_opus", "Weekly · Opus", "seven_day_opus"),
-            (
-                "weekly_model_omelette",
-                "Weekly · Omelette",
-                "seven_day_omelette",
-            ),
-        ] {
-            if let Some(w) = payload.get(field) {
-                if let Some(raw) = w.get("utilization").and_then(Value::as_f64) {
-                    let used = raw.clamp(0.0, 100.0);
-                    meters.push(serde_json::json!({"key":key,"label":label,"kind":"allowance","unit":"percentage","used":used,"remaining":100.0-used,"utilizationPercent":used,"status":meter_status(used),"periodValue":if key == "five_hour" {5} else {7},"periodUnit":if key == "five_hour" {"hour"} else {"day"},"periodCycle":"rolling","resetsAt":w.get("resets_at")}));
+        let fields=[("five_hour","5-hour quota","five_hour"),("weekly","Weekly quota","seven_day")];
+        // Reference schema rejects the whole response when a legacy window is malformed.
+        for field in ["five_hour","seven_day","seven_day_opus","seven_day_omelette"] {
+            if payload.get(field).is_some_and(|v| !v.is_null() && (v.get("utilization").and_then(Value::as_f64).is_none() || v.get("resets_at").is_some_and(|r|!r.is_null()&&!r.is_string()))) { return Value::Array(vec![]); }
+        }
+        for (key,label,field) in fields {
+            if let Some(window)=payload.get(field) {
+                if let Some(used)=window["utilization"].as_f64() { meters.push(allowance(key,label,used,key=="five_hour",reset_iso(window.get("resets_at")),None)); }
+            }
+        }
+        // (dimension, id, display name, utilization, reset)
+        let mut scoped:Vec<(String,Option<String>,String,Option<f64>,Option<String>)>=Vec::new();
+        for (field,name) in [("seven_day_opus","Opus"),("seven_day_omelette","Omelette")] {
+            if let Some(used)=payload.get(field).and_then(|v|v["utilization"].as_f64()) {
+                scoped.push(("model".into(),None,name.into(),Some(used),reset_iso(payload[field].get("resets_at"))));
+            }
+        }
+        if let Some(limits)=payload.get("limits").and_then(Value::as_array) {
+            for limit in limits {
+                if limit["kind"]!="weekly_scoped" || limit.get("percent").is_some_and(|v|!v.is_null()&&!v.is_number()) {continue;}
+                for dimension in ["model","surface"] {
+                    let entry=&limit["scope"][dimension];
+                    let scope_id=entry["id"].as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned);
+                    let name=entry["display_name"].as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned).or_else(||scope_id.clone());
+                    let Some(name)=name else {continue};
+                    let mut next=(dimension.to_owned(),scope_id,name,limit["percent"].as_f64(),reset_iso(limit.get("resets_at")));
+                    let index=scoped.iter().position(|old|old.0==next.0 && match (&old.1,&next.1) {(Some(a),Some(b))=>a==b,_=>normalized_scope(&old.2)==normalized_scope(&next.2)});
+                    if let Some(index)=index {next.3=next.3.or(scoped[index].3);next.4=next.4.or(scoped[index].4.clone());scoped[index]=next;}
+                    else {scoped.push(next);}
+                    break;
                 }
             }
         }
-    } else if let Some(rate) = payload.get("rate_limit") {
-        for (key, label) in [
-            ("primary", "Primary rate limit"),
-            ("secondary", "Secondary rate limit"),
-        ] {
-            if let Some(w) = rate.get(format!("{key}_window")) {
-                if let Some(raw) = w.get("used_percent").and_then(Value::as_f64) {
-                    let used = raw.clamp(0.0, 100.0);
-                    meters.push(serde_json::json!({"key":key,"label":label,"kind":"allowance","unit":"percentage","used":used,"remaining":100.0-used,"utilizationPercent":used,"status":meter_status(used),"periodValue":if w.get("limit_window_seconds").and_then(Value::as_u64)==Some(18000) {5} else {7},"periodUnit":if w.get("limit_window_seconds").and_then(Value::as_u64)==Some(18000) {"hour"} else {"day"},"periodCycle":"rolling"}));
-                }
+        let mut taken=std::collections::HashSet::new();
+        for (dimension,id,name,used,reset) in scoped {
+            let base=format!("weekly_{dimension}_{}",id.unwrap_or_else(||normalized_scope(&name)));
+            let mut key=base.clone();let mut suffix=2;
+            while !taken.insert(key.clone()) {key=format!("{base}_{suffix}");suffix+=1;}
+            meters.push(allowance(&key,&format!("Weekly · {name}"),used.unwrap_or(0.0),false,reset,Some(&dimension)));
+        }
+    } else if let Some(rate)=payload.get("rate_limit") {
+        if rate["limit_reached"]==true { return Value::Array(vec![allowance("primary","Primary rate limit",100.0,true,None,None)]); }
+        for (key,label) in [("primary","Primary rate limit"),("secondary","Secondary rate limit")] {
+            if let Some(window)=rate.get(format!("{key}_window")).filter(|v|!v.is_null()) {
+                let used=window["used_percent"].as_f64().unwrap_or(0.0).clamp(0.0,100.0);
+                let reset=window["reset_at"].as_i64().filter(|v|*v>0).and_then(|v|chrono::DateTime::from_timestamp(v,0)).map(|d|d.to_rfc3339_opts(chrono::SecondsFormat::Millis,true));
+                meters.push(allowance(key,label,used,window["limit_window_seconds"].as_u64()==Some(18000),reset,None));
             }
         }
     }
@@ -869,5 +915,40 @@ mod scheduling_tests {
             start + Duration::from_secs(1800),
             30
         ));
+    }
+}
+
+#[cfg(test)]
+mod provider_window_tests {
+    use super::*;
+    #[test]
+    fn claude_reconciles_legacy_scopes_with_new_limits_without_losing_usage() {
+        let meters=builtin_meters("claude-code",&serde_json::json!({
+            "five_hour":{"utilization":120,"resets_at":"bad date"},
+            "seven_day_opus":{"utilization":82,"resets_at":"2026-09-18T12:00:00Z"},
+            "limits":[{"kind":"weekly_scoped","percent":null,"scope":{"model":{"id":"opus-v2","display_name":"Opus"}}},
+              {"kind":"weekly_scoped","percent":12,"scope":{"surface":{"id":"chat","display_name":"Chat"}}}]
+        }));
+        assert_eq!(meters.as_array().unwrap().len(),3);
+        assert_eq!(meters[0]["used"],120.0);
+        assert_eq!(meters[0]["utilizationPercent"],100.0);
+        assert!(meters[0].get("resetsAt").is_none());
+        assert_eq!(meters[1]["key"],"weekly_model_opus-v2");
+        assert_eq!(meters[1]["used"],82.0);
+        assert_eq!(meters[1]["resetsAt"],"2026-09-18T12:00:00.000Z");
+        assert_eq!(meters[2]["scope"],"surface");
+    }
+    #[test]
+    fn codex_exhaustion_overrides_windows_and_missing_percentage_is_zero() {
+        let exhausted=builtin_meters("openai-codex",&serde_json::json!({"rate_limit":{"limit_reached":true,"primary_window":{"used_percent":1}}}));
+        assert_eq!(exhausted[0]["used"],100.0);
+        assert_eq!(exhausted[0]["status"],"exhausted");
+        let windows=builtin_meters("openai-codex",&serde_json::json!({"rate_limit":{"primary_window":{"reset_at":1,"limit_window_seconds":18000}}}));
+        assert_eq!(windows[0]["used"],0.0);
+        assert_eq!(windows[0]["resetsAt"],"1970-01-01T00:00:01.000Z");
+    }
+    #[test]
+    fn malformed_legacy_window_rejects_all_claude_meters() {
+        assert_eq!(builtin_meters("claude-code",&serde_json::json!({"five_hour":{"utilization":1},"seven_day":{"utilization":"bad"}})),serde_json::json!([]));
     }
 }
