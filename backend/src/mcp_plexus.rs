@@ -277,6 +277,7 @@ async fn call_tool(
             return system_logs_operation(state, id, operation, args).await;
         }
         ("plexus_debug", "state") => return debug_operation(state, id).await,
+        ("plexus_debug", "update") => return debug_update_operation(state, id, args).await,
         ("plexus_debug", "logs") => return debug_logs_operation(state, id, operation, args).await,
         ("plexus_debug", "get_log") => {
             return debug_logs_operation(state, id, operation, args).await
@@ -1058,6 +1059,25 @@ async fn debug_operation(state: &AppState, id: Value) -> Response {
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
     )
+}
+
+async fn debug_update_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
+    let body = args
+        .and_then(|value| value.get("body"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if !body.is_object() {
+        return rpc_error(id, -32602, "body must be an object");
+    }
+    forwarded_operation(
+        state,
+        id,
+        "update",
+        "PATCH",
+        "/v0/management/debug",
+        Some(body),
+    )
+    .await
 }
 
 async fn debug_logs_operation(
