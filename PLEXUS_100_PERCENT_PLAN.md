@@ -363,7 +363,7 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** `cargo test --all-targets` passes 257 tests, including
+- **Backend tests:** `cargo test --all-targets` passes 259 tests, including
   OAuth cancellation cleanup and late-callback rejection, image-generation,
   image-edit, speech, and transcription failover ordering, terminal failure
   behavior, and disabled-failover limits.
@@ -401,9 +401,8 @@ and repeatable differential CI.
 The checklist is capability-based: a checked route means the route exists and
 has real behavior, not that every Plexus edge case or frontend test has been
 ported. The unified gate now emits lane-level JSON reports and preserves the
-first failing lane exit code; a live run remains environment-dependent. Registered differential cases are coverage inventory, not evidence of
-an end-to-end pass until the live runner is executed. The latest runner
-completed all cases but remains failing on the documented OAuth shape difference.
+first failing lane exit code; a live run remains environment-dependent. The
+current 313-case inventory is not a current end-to-end pass claim.
 
 ## Latest progress
 
