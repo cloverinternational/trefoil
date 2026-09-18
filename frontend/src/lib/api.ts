@@ -147,7 +147,8 @@ export async function getUsage(limit = 25, offset = 0): Promise<{ data: UsageRec
   const response = await fetch(`/v0/management/usage?limit=${limit}&offset=${offset}`, { headers: authHeaders() });
   if (!response.ok) throw new Error('Unable to load usage records');
   const body = (await response.json()) as { data?: UsageRecord[]; total?: number };
-  return { data: Array.isArray(body.data) ? body.data : [], total: Number(body.total ?? 0) };
+  const total = Number(body.total ?? 0);
+  return { data: Array.isArray(body.data) ? body.data : [], total: Number.isFinite(total) ? total : 0 };
 }
 
 export async function deleteUsage(requestId: string): Promise<void> {

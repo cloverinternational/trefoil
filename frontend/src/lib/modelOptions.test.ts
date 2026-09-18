@@ -12,4 +12,26 @@ describe('model option parity helpers', () => {
     const groups = [{ name: 'a', selector: 'in_order', targets: [{ provider: 'p', model: 'm' }] }, { name: 'b', selector: 'in_order', targets: [{ provider: 'p', model: 'm' }, { alias: 'fallback' }] }];
     expect(dedupeAliasTargets(groups)[1].targets).toEqual([{ alias: 'fallback' }]);
   });
+  it('keeps distinct models when providers differ or fields are absent', () => {
+    const models = [
+      { id: 'm', providerId: undefined },
+      { id: 'm', providerId: 'openai' },
+      { id: 'm', providerId: undefined },
+    ];
+    expect(dedupeModels(models)).toEqual([models[0], models[1]]);
+    expect(getModelOptionKey(undefined, undefined)).toBe('\u0000');
+    expect(getModelOptionKey('p', undefined)).not.toBe(getModelOptionKey(undefined, 'p'));
+  });
+  it('uses aliases as global keys and does not mutate input groups', () => {
+    const groups = [
+      { name: 'first', selector: 'fallback', targets: [{ alias: 'shared' }, { provider: 'p', model: 'm' }] },
+      { name: 'second', selector: 'fallback', targets: [{ alias: 'shared' }, { provider: 'p', model: 'm' }, { provider: 'p', model: 'n' }] },
+    ];
+    const result = dedupeAliasTargets(groups);
+    expect(result).toEqual([
+      { ...groups[0], targets: groups[0].targets },
+      { ...groups[1], targets: [{ provider: 'p', model: 'n' }] },
+    ]);
+    expect(groups[1].targets).toHaveLength(3);
+  });
 });

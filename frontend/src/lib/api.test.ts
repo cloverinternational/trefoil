@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deleteKey,
+  deleteUsage,
   getAliases,
   getConfigStatus,
   getMetrics,
   getProviders,
+  getRecentUsage,
+  getUsageSummary,
   getUsage,
   patchSystemSettings,
   saveKey,
@@ -87,5 +90,35 @@ describe('frontend management API wire contracts', () => {
     await expect(getMetrics()).rejects.toThrow('Administrator access required');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     await expect(verifyAdminKey('bad')).resolves.toBeNull();
+  });
+
+  it('normalizes usage list responses and requests recent and summary data', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'usage-key') });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ inputTokens: 12, outputTokens: 8, totalCost: 0.4 }))
+      .mockResolvedValueOnce(response({ data: [{ requestId: 'recent-1' }] }))
+      .mockResolvedValueOnce(response({ data: 'not-an-array', total: 'bad' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getUsageSummary()).resolves.toEqual({ inputTokens: 12, outputTokens: 8, totalCost: 0.4 });
+    await expect(getRecentUsage(3)).resolves.toEqual([{ requestId: 'recent-1' }]);
+    await expect(getUsage()).resolves.toEqual({ data: [], total: 0 });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/v0/management/usage/summary',
+      '/v0/management/usage?limit=3&offset=0',
+      '/v0/management/usage?limit=25&offset=0',
+    ]);
+  });
+
+  it('encodes usage deletion paths and reports usage failures', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'usage-key') });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(response({}, 500));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(deleteUsage('request/id')).resolves.toBeUndefined();
+    await expect(getUsageSummary()).rejects.toThrow('Unable to load usage summary');
+    expect(fetchMock.mock.calls[0]).toEqual(['/v0/management/usage/request%2Fid', { method: 'DELETE', headers: { 'x-admin-key': 'usage-key' } }]);
   });
 });
