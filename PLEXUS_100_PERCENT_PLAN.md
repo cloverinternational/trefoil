@@ -372,7 +372,7 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 312 unit + 4 integration tests pass |
+| `cargo test --all-targets` | 313 unit + 4 integration tests pass |
 | OAuth storage / dispatch / checker integration | 12 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
@@ -723,3 +723,16 @@ handoff into the standard encrypted OAuth exchange. Unit HTTP tests validate
 JSON payloads and interval parsing. The implementation retains a fixed 15-minute
 expiry and reference device redirect URI. Browser callback login and all live
 provider acceptance remain unverified; the plan remains incomplete.
+
+## Latest complete-device coverage pass
+
+OpenRouter, Anthropic callback, GitHub Copilot device, Kimi Code device, xAI
+device, and OpenAI Codex device paths now have provider-specific request helpers
+or flows. Codex uses its device authorization-code/verifier handoff; explicit
+provider base URLs are preserved while OAuth placeholders resolve canonical
+subscription bases. A regression test caught and fixed placeholder resolution
+wrongly overriding explicit Codex test/provider URLs. The final post-Codex full
+gate has seven passing lanes and 406/407 live cases; backend 313 unit + 4 stdio
+and 12 PostgreSQL integration tests pass. Device mocks are not proof of live
+subscription acceptance, and provider browser callback/enterprise/policy
+features remain unfinished.
