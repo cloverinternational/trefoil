@@ -166,7 +166,7 @@ fn openrouter_authorization_url(origin: &str, session_id: &str, verifier: &str) 
 
 fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option<String> {
     let endpoint = match provider {
-        "anthropic" => "https://console.anthropic.com/oauth/authorize",
+        "anthropic" => "https://claude.ai/oauth/authorize",
         "github-copilot" => "https://github.com/login/oauth/authorize",
         "kimi-coding" => "https://auth.kimi.com/oauth/authorize",
         "openai-codex" => "https://auth.openai.com/oauth/authorize",
@@ -183,11 +183,14 @@ fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option
     let redirect = format!("/v0/management/oauth/sessions/{session_id}/callback");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
-        .append_pair("client_id", "trefoil")
+        .append_pair("client_id", crate::oauth_transport::provider_spec(provider)?.client_id)
         .append_pair("redirect_uri", &redirect)
         .append_pair("state", session_id)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
+    if provider == "anthropic" {
+        url.query_pairs_mut().append_pair("code", "true").append_pair("scope", "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload");
+    }
     Some(url.to_string())
 }
 
@@ -377,12 +380,13 @@ async fn callback(
     }
     let redirect = format!("/v0/management/oauth/sessions/{id}/callback");
     let transport = crate::oauth_transport::ReqwestTransport;
-    let token = match crate::oauth_transport::exchange(
+    let token = match crate::oauth_transport::exchange_with_state(
         &transport,
         &session.provider_id,
         &code,
         &verifier,
         &redirect,
+        Some(&id),
     )
     .await
     {

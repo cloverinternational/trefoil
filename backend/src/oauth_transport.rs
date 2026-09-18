@@ -35,15 +35,15 @@ pub fn provider_spec(provider: &str) -> Option<ProviderSpec> {
     Some(match provider {
         "anthropic" => ProviderSpec {
             id: "anthropic",
-            token_endpoint: "https://console.anthropic.com/v1/oauth/token",
+            token_endpoint: "https://platform.claude.com/v1/oauth/token",
             token_field: TokenField::AccessToken,
-            client_id: "9dcf250a-e61b-4d95-88ed-594d1962f5e",
+            client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
         },
         "github-copilot" => ProviderSpec {
             id: "github-copilot",
             token_endpoint: "https://github.com/login/oauth/access_token",
             token_field: TokenField::AccessToken,
-            client_id: "Iv1.b507da08c87ecfe98",
+            client_id: "Iv1.b507a08c87ecfe98",
         },
         "kimi-coding" => ProviderSpec {
             id: "kimi-coding",
@@ -135,7 +135,7 @@ pub async fn refresh<T: OAuthTransport + ?Sized>(
                 ("refresh_token".into(), refresh_token.into()),
                 ("client_id".into(), spec.client_id.into()),
             ],
-            json: false,
+            json: provider == "anthropic",
             timeout: Duration::from_secs(15),
         })
         .await?;
@@ -154,12 +154,22 @@ pub async fn exchange<T: OAuthTransport + ?Sized>(
     verifier: &str,
     redirect_uri: &str,
 ) -> Result<TokenResponse, OAuthTransportError> {
+    exchange_with_state(transport, provider, code, verifier, redirect_uri, None).await
+}
+
+pub async fn exchange_with_state<T: OAuthTransport + ?Sized>(
+    transport: &T, provider: &str, code: &str, verifier: &str, redirect_uri: &str, state: Option<&str>,
+) -> Result<TokenResponse, OAuthTransportError> {
     let spec = provider_spec(provider).ok_or(OAuthTransportError::UnsupportedProvider)?;
-    let (fields, json) = if provider == "openrouter" {
+    let (mut fields, json) = if provider == "openrouter" {
         (vec![("code".into(), code.into()), ("code_verifier".into(), verifier.into()), ("code_challenge_method".into(), "S256".into())], true)
     } else {
-        (vec![("grant_type".into(), "authorization_code".into()), ("code".into(), code.into()), ("client_id".into(), spec.client_id.into()), ("redirect_uri".into(), redirect_uri.into()), ("code_verifier".into(), verifier.into())], false)
+        (vec![("grant_type".into(), "authorization_code".into()), ("code".into(), code.into()), ("client_id".into(), spec.client_id.into()), ("redirect_uri".into(), redirect_uri.into()), ("code_verifier".into(), verifier.into())], provider == "anthropic")
     };
+    if provider == "anthropic" {
+        let state = state.filter(|state| !state.is_empty()).ok_or(OAuthTransportError::MissingFields)?;
+        fields.push(("state".into(), state.into()));
+    }
     let response = transport
         .send(OAuthRequest {
             provider: provider.to_owned(),
@@ -287,6 +297,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn anthropic_exchange_and_refresh_use_current_json_contract() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mock = Mock { requests: requests.clone(), response: OAuthResponse { status:200, body:serde_json::json!({"access_token":"access","refresh_token":"refresh","expires_in":3600}) } };
+        exchange_with_state(&mock,"anthropic","code","verifier","http://localhost:53692/callback",Some("state")).await.unwrap();
+        refresh(&mock,"anthropic","refresh").await.unwrap();
+        let requests = requests.lock().unwrap();
+        for request in requests.iter() {
+            assert!(request.json);
+            assert_eq!(request.url,"https://platform.claude.com/v1/oauth/token");
+            assert!(request.fields.contains(&("client_id".into(),"9d1c250a-e61b-44d9-88ed-5944d1962f5e".into())));
+        }
+        assert!(requests[0].fields.contains(&("state".into(),"state".into())));
+        assert!(requests[0].fields.contains(&("code_verifier".into(),"verifier".into())));
+        assert!(requests[1].fields.contains(&("grant_type".into(),"refresh_token".into())));
+    }
+
+    #[tokio::test]
     async fn failures_are_classified_without_secret_details() {
         let mock = Mock {
             requests: Arc::new(Mutex::new(Vec::new())),
@@ -340,12 +367,13 @@ mod tests {
                 body: Value::Null,
             },
         };
-        let error = exchange(
+        let error = exchange_with_state(
             &mock,
             "anthropic",
             "secret-code",
             "secret-verifier",
             "/callback",
+            Some("state"),
         )
         .await
         .unwrap_err()
