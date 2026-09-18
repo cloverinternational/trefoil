@@ -372,8 +372,8 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 296 unit + 4 integration tests pass |
-| OAuth storage / dispatch integration | 7 disposable PostgreSQL tests pass |
+| `cargo test --all-targets` | 300 unit + 4 integration tests pass |
+| OAuth storage / dispatch / checker integration | 9 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
@@ -607,3 +607,24 @@ Full gate: 296 backend unit + 4 stdio integration, **7 executed PostgreSQL
 integration tests**, 45 frontend unit, 3 browser, 12 harness tests pass. Live
 comparison remains 406/407 (recent system logs), with no missing cases. The plan
 is not complete; remaining limitations above still apply.
+
+## Latest quota-checker semantics and persistence pass
+
+Claude meters now reconcile legacy Opus/Omelette windows with scoped model/surface
+limits, preserve usage above 100%, deduplicate scope identifiers and normalize
+valid reset timestamps. Codex handles `limit_reached`, missing utilization,
+window periods and epoch reset timestamps; usage calls include account/client
+headers and reject expired stored credentials. Deterministic HTTP/value tests
+cover these behaviors; proactive checker refresh remains open.
+
+A real persistence defect was fixed: meter inserts referenced nonexistent
+`group_name`/`limit_value` columns instead of quoted `group`/`limit`. Numeric
+utilization is now recorded as `reported`, ISO resets become milliseconds, and
+successful empty checks persist an `_empty` sentinel hidden from returned meters.
+Two added PostgreSQL integration tests prove stored meter fields and empty-result
+success responses. No claim is made that all scheduler/query semantics match.
+
+Full gate: 300 backend unit + 4 stdio integration, **9 executed PostgreSQL
+integration tests**, 45 frontend unit, 3 browser, 12 harness pass; live suite
+remains 406/407. Remaining provider onboarding and API-specific dispatch parity
+still prevent declaring the goal complete.
