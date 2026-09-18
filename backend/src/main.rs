@@ -60,6 +60,7 @@ async fn main() {
     *state.inner.settings.write().unwrap() = settings;
     *state.inner.cooldowns.write().unwrap() = cooldowns;
     trefoil_backend::custom_checkers::start_poller(state.clone());
+    let _metadata_refresh = trefoil_backend::metadata::start_scheduler();
 
     let port = std::env::var("PORT")
         .ok()

@@ -273,7 +273,10 @@ async fn fetch_openrouter(source: &str) -> Result<BTreeMap<String, ModelMetadata
 }
 
 pub async fn refresh(urls: SourceUrls, trigger: &str) -> RefreshReport {
+    static REFRESH_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    let _gate=REFRESH_GATE.get_or_init(||tokio::sync::Mutex::new(())).lock().await;
     let start = Instant::now();
+    let refreshed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
     let (or, md, cw) = tokio::join!(
         fetch_openrouter(&urls.openrouter),
         fetch(&urls.models_dev),
@@ -328,12 +331,24 @@ pub async fn refresh(urls: SourceUrls, trigger: &str) -> RefreshReport {
         }
         .into(),
         trigger: trigger.into(),
-        refreshed_at: chrono::Utc::now().to_rfc3339(),
+        refreshed_at,
         duration_ms: start.elapsed().as_millis(),
         interval_minutes: 60,
         had_errors: errors,
         sources: reports,
     }
+}
+
+/// One startup refresh and an hourly refresh thereafter. The task owns no
+/// credentials and keeps the last good catalog when a public source fails.
+pub fn start_scheduler() -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async {
+        refresh(SourceUrls::default(), "startup").await;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            refresh(SourceUrls::default(), "scheduled").await;
+        }
+    })
 }
 
 pub fn initialized(source: &str) -> bool {
