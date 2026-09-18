@@ -104,6 +104,14 @@ shape difference. That historical run is not evidence that the current 313
 registered cases passed. Provider-backed success and SSE cases still require
 an explicitly configured disposable upstream as described above.
 
+The deterministic backend suite currently passes 261 tests, including
+`mcp_stdio::tests::request_and_notification_preserve_stdio_wire_contract`,
+`child_eof_completes_pending_request_and_cleanup_is_repeatable`, and
+`malformed_child_output_is_reported_to_pending_request`. Together these tests
+verify stdio framing, terminal EOF/error propagation, and repeatable child
+cleanup after the lifecycle fix; they are local transport evidence, not a
+live differential claim.
+
 ### Backup and restore parity coverage
 
 `BACKUP_CASES` in `parity/differential.ts` is the authoritative live parity

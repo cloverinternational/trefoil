@@ -4,7 +4,7 @@
 
 - Plexus backend registers approximately 169 route handlers across inference,
   management, MCP, OAuth, raw passthrough, and OpenAPI.
-- Trefoil has approximately 75 route declarations and 159 Rust tests.
+- Trefoil has approximately 129 route declarations and 261 Rust tests.
 - PostgreSQL uses the imported Plexus `migrations_pg` history.
 - The implemented management/config/observability slice is tested locally and
   the live differential harness has closed all 302 currently registered MCP
