@@ -3500,6 +3500,77 @@ mod tests {
         (format!("http://{address}/v1"), captured)
     }
 
+    fn inference_mock_with_headers(
+        status: &str,
+        content_type: &str,
+        response_body: &str,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Option<(String, Value)>>>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured_thread = captured.clone();
+        let status = status.to_owned();
+        let content_type = content_type.to_owned();
+        let response_body = response_body.to_owned();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let body_start;
+            loop {
+                let Ok(size) = stream.read(&mut chunk) else {
+                    return;
+                };
+                if size == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..size]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    body_start = index + 4;
+                    break;
+                }
+            }
+            let headers = String::from_utf8_lossy(&request[..body_start]).into_owned();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let lower = line.to_ascii_lowercase();
+                    lower
+                        .strip_prefix("content-length:")?
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            while request.len() < body_start + content_length {
+                let Ok(size) = stream.read(&mut chunk) else {
+                    return;
+                };
+                if size == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..size]);
+            }
+            let body: Value =
+                serde_json::from_slice(&request[body_start..body_start + content_length]).unwrap();
+            *captured_thread.lock().unwrap() = Some((headers, body));
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (format!("http://{address}/v1"), captured)
+    }
+
     fn provider_state(api_base_url: String) -> AppState {
         let state = AppState::new(Some("admin".into()), HashMap::new());
         state.inner.providers.write().unwrap().insert(
@@ -3561,6 +3632,103 @@ mod tests {
             .clone()
             .expect("provider request captured");
         assert_eq!(forwarded["messages"][0]["content"], "abc");
+    }
+
+    #[tokio::test]
+    async fn oauth_anthropic_masks_request_at_http_boundary() {
+        let (base_url, captured) = inference_mock_with_headers(
+            "200 OK",
+            "application/json",
+            r#"{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+        );
+        let state = provider_state(base_url);
+        state
+            .inner
+            .providers
+            .write()
+            .unwrap()
+            .get_mut("mock")
+            .unwrap()
+            .oauth_provider = Some("anthropic".into());
+        state
+            .inner
+            .providers
+            .write()
+            .unwrap()
+            .get_mut("mock")
+            .unwrap()
+            .api_key = Some("oauth-secret".into());
+        let response = router().with_state(state).oneshot(
+            Request::post("/v1/messages")
+                .header("x-api-key", "admin")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"mock/model","max_tokens":8,"system":[{"type":"text","text":"private instruction"}],"messages":[{"role":"user","content":"hello"}]}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let (headers, body) = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider request captured");
+        assert!(headers.contains("user-agent: claude-cli/2.1.258 (external, cli)"));
+        assert!(headers.contains("x-app: cli"));
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("x-api-key: oauth-secret"),
+            "{headers}"
+        );
+        assert_eq!(
+            body["system"][1]["text"],
+            "You are Claude Code, Anthropic's official CLI for Claude."
+        );
+        assert!(!body.to_string().contains("private instruction"));
+    }
+
+    #[tokio::test]
+    async fn oauth_codex_forwards_provider_request_identity_and_payload() {
+        let (base_url, captured) = inference_mock_with_headers(
+            "200 OK",
+            "application/json",
+            r#"{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+        );
+        let state = provider_state(base_url);
+        let mut providers = state.inner.providers.write().unwrap();
+        let provider = providers.get_mut("mock").unwrap();
+        provider.oauth_provider = Some("openai-codex".into());
+        provider.api_key = Some("oauth-token".into());
+        drop(providers);
+        let response = router().with_state(state).oneshot(
+            Request::post("/v1/messages")
+                .header("x-api-key", "admin")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"mock/model","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let (headers, body) = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider request captured");
+        assert!(headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer oauth-token"));
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("originator: codex_cli_rs"),
+            "{headers}"
+        );
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("user-agent: codex_cli_rs/0.125.0"),
+            "{headers}"
+        );
+        assert_eq!(body["model"], "model");
+        assert_eq!(body["messages"][0]["content"], "hello");
     }
 
     #[tokio::test]
