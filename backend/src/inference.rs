@@ -4416,4 +4416,85 @@ data: [DONE]
             }
         }
     }
+
+    #[tokio::test]
+    async fn speech_failover_preserves_target_order_after_upstream_failure() {
+        let (first, first_request) = inference_mock_with_capture(
+            "500 Internal Server Error",
+            "application/json",
+            r#"{"error":{"message":"speech unavailable"}}"#,
+        );
+        let (second, second_request) = inference_mock_with_capture(
+            "200 OK",
+            "application/json",
+            r#"{"audio":"fallback-audio"}"#,
+        );
+        let aliases = HashMap::from([(
+            "voice".to_owned(),
+            crate::state::ModelConfig {
+                target_groups: vec![crate::state::ModelTargetGroup {
+                    name: "fallback".into(),
+                    selector: "sequential".into(),
+                    targets: vec![
+                        crate::state::ModelTarget {
+                            provider: Some("first".into()),
+                            model: Some("speech-a".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                        crate::state::ModelTarget {
+                            provider: Some("second".into()),
+                            model: Some("speech-b".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        )]);
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        *state.inner.aliases.write().unwrap() = aliases;
+        state.inner.providers.write().unwrap().extend([
+            (
+                "first".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: first,
+                    ..Default::default()
+                },
+            ),
+            (
+                "second".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: second,
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::post("/v1/audio/speech")
+                    .header("x-api-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"voice","input":"hello"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+
+        assert_eq!(body, serde_json::json!({"audio":"fallback-audio"}));
+        assert_eq!(
+            first_request.lock().unwrap().as_ref().unwrap()["model"],
+            "speech-a"
+        );
+        assert_eq!(
+            second_request.lock().unwrap().as_ref().unwrap()["model"],
+            "speech-b"
+        );
+    }
 }
