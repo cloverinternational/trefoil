@@ -164,6 +164,35 @@ async fn call_tool(
     {
         return tool_error(id, operation, "This destructive operation requires destructive: \"acknowledged\".", "confirmation_required", 400);
     }
+    let allowed: &[&str] = match name {
+        "plexus_config" => &["get", "export", "status"],
+        "plexus_provider" => &["list", "get", "put", "create", "update", "delete", "fetch_models"],
+        "plexus_model_alias" => &["list", "get", "put", "create", "update", "delete", "delete_all"],
+        "plexus_key" => &["list", "get", "put", "create", "update", "delete", "disable"],
+        "plexus_quota" => &["list", "get", "put", "create", "update", "delete", "status", "clear", "recompute"],
+        "plexus_quota_checker" => &["list", "get", "types"],
+        "plexus_system_logs" => &["recent", "level", "set_level", "reset_level"],
+        "plexus_mcp_gateway" => &["servers_list", "list", "get", "put", "create", "update", "delete", "status", "logs", "start", "stop", "restart"],
+        _ => &[],
+    };
+    if !allowed.is_empty() && !allowed.contains(&operation) {
+        return tool_error(id, operation, &format!("Unsupported operation '{operation}'. Allowed operations: {}.", allowed.join(", ")), "invalid_request", 400);
+    }
+    let resource = match (name, operation) {
+        ("plexus_provider", "get" | "put" | "create" | "update" | "delete") => Some("provider"),
+        ("plexus_model_alias", "get" | "put" | "create" | "update" | "delete") => Some("model_alias"),
+        ("plexus_key", "get" | "put" | "create" | "update" | "delete" | "disable") => Some("key"),
+        ("plexus_quota", "get" | "put" | "create" | "update" | "delete") => Some("quota"),
+        ("plexus_quota", "status") => Some("key"),
+        ("plexus_quota_checker", "get") => Some("quota checker"),
+        ("plexus_mcp_gateway", "get" | "put" | "create" | "update" | "delete" | "status" | "start" | "stop" | "restart" | "logs") => Some("mcp_gateway"),
+        _ => None,
+    };
+    if let Some(resource) = resource {
+        if args.and_then(|args| args.get("id")).and_then(Value::as_str).is_none_or(str::is_empty) {
+            return tool_error(id, operation, &format!("Missing id for {resource} operation."), "invalid_request", 400);
+        }
+    }
     let result = match (name, operation) {
         ("plexus_config", "status") => {
             return forwarded_operation(
@@ -2037,74 +2066,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_logs_module_operations_round_trip_through_management_router() {
-        let _lock = logging_test_lock();
-        let changed = body(
-            dispatch(
-                &state(),
-                json!({
-                    "jsonrpc":"2.0", "id": 50, "method":"tools/call",
-                    "params":{"name":"plexus_system_logs","arguments":{"operation":"set_modules","modules":["routing","routing","quota"]}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(changed["result"]["structuredContent"]["ok"], true);
-        assert_eq!(
-            changed["result"]["structuredContent"]["data"]["modules"],
-            json!(["routing", "quota"])
-        );
-
-        let read = body(
-            dispatch(
-                &state(),
-                json!({
-                    "jsonrpc":"2.0", "id": 51, "method":"tools/call",
-                    "params":{"name":"plexus_system_logs","arguments":{"operation":"modules"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(
-            read["result"]["structuredContent"]["data"]["modules"],
-            json!(["routing", "quota"])
-        );
-
-        let reset = body(
-            dispatch(
-                &state(),
-                json!({
-                    "jsonrpc":"2.0", "id": 52, "method":"tools/call",
-                    "params":{"name":"plexus_system_logs","arguments":{"operation":"reset_modules"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(reset["result"]["structuredContent"]["ok"], true);
-        assert_eq!(
-            reset["result"]["structuredContent"]["data"]["modules"],
-            json!([])
-        );
+    async fn unsupported_system_log_modules_are_tool_errors() {
+        for operation in ["modules", "set_modules", "reset_modules"] {
+            let response = body(dispatch(&state(), json!({"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"plexus_system_logs","arguments":{"operation":operation}}})).await).await;
+            assert_eq!(response["result"]["isError"], true);
+            assert_eq!(response["result"]["structuredContent"]["error"]["message"], format!("Unsupported operation '{operation}'. Allowed operations: recent, level, set_level, reset_level."));
+        }
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     #[tokio::test]
     async fn post_enforces_auth_and_reports_parse_errors() {
@@ -2147,8 +2115,8 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(missing_id["error"]["code"], -32602);
-        assert_eq!(missing_id["error"]["message"], "id is required");
+        assert_eq!(missing_id["result"]["structuredContent"]["error"]["code"], 400);
+        assert_eq!(missing_id["result"]["structuredContent"]["error"]["message"], "Missing id for mcp_gateway operation.");
 
         let unknown = body(
             dispatch(
@@ -2194,14 +2162,14 @@ mod tests {
                 &state(),
                 json!({
                     "jsonrpc":"2.0", "id": 12, "method":"tools/call",
-                    "params":{"name":"plexus_mcp_gateway","arguments":{"operation":"process_logs"}}
+                    "params":{"name":"plexus_mcp_gateway","arguments":{"operation":"logs"}}
                 }),
             )
             .await,
         )
         .await;
-        assert_eq!(response["error"]["code"], -32602);
-        assert_eq!(response["error"]["message"], "id is required");
+        assert_eq!(response["result"]["structuredContent"]["error"]["code"], 400);
+        assert_eq!(response["result"]["structuredContent"]["error"]["message"], "Missing id for mcp_gateway operation.");
     }
 
 
