@@ -1765,6 +1765,19 @@ async function main() {
     }
   }
 
+  // Drain startup refresh on both services before comparing manual refresh
+  // triggers. Coalescing into a startup job is valid on either server but
+  // differs nondeterministically with network timing.
+  for (const base of [PLEXUS_BASE_URL, TREFOIL_BASE_URL]) {
+    const response = await fetch(`${base}/v0/management/models/metadata/refresh`, {
+      method: 'POST', headers: { 'x-admin-key': ADMIN_KEY },
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) throw new Error(`Metadata initialization failed at ${base}: ${response.status}`);
+    const report = await response.json();
+    if (report.success !== true || report.hadErrors !== false) throw new Error(`Metadata sources unavailable at ${base}`);
+  }
+
   for (const testCase of CASES) {
     let plexus, trefoil;
     try {
