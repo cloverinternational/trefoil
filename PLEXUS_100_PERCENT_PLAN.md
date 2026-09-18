@@ -283,7 +283,8 @@ not confirmed in this audit — needs a direct code check against
 `headroom-compactor.ts` (320 lines) equivalence.
 
 - [x] Implement native and local headroom compaction application before dispatch.
-- [ ] External LLM-based headroom compaction remains unsupported and explicit.
+- [ ] External LLM-based headroom compaction remains unsupported and explicit;
+      configuration rejects `strategy: "external"` before dispatch.
 
 ---
 
@@ -329,7 +330,7 @@ Missing pages (each needs its own API adapter + component + tests):
 
 ## 12. Differential harness — 🟡 partial
 
-`parity/differential.ts` currently has 283 named cases. OAuth provider
+`parity/differential.ts` currently has 302 named cases. OAuth provider
 discovery now matches Plexus's response shape: Trefoil omits its internal
 `capabilities` metadata while preserving the provider descriptors.
 
@@ -357,7 +358,7 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** 216 passing (`cargo test --all-targets`), including generic
+- **Backend tests:** 218 passing (`cargo test --all-targets`), including generic
   non-chat and speech failover plus custom-checker runtime tests.
 - **Frontend:** typecheck, build, and 34 Vitest tests pass across 8 files, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
@@ -367,9 +368,10 @@ and repeatable differential CI.
   and returns the last upstream error after all candidates fail, with no extra
   attempt; provider-not-found and chat transport-failure fallback tests remain
   green.
-- **Differential harness:** 304 named cases are registered in
-  `parity/differential.ts`; the live run at Trefoil `91c1925` against Plexus
-  `31b09ce` completed with all 283 cases matching. OAuth provider discovery
+- **Differential harness:** 302 named cases are registered in
+  `parity/differential.ts`; the latest executed MCP/custom-checker lane at
+  Trefoil `a5bc1a6` against Plexus `31b09ce` completed with all 302 cases
+  matching. OAuth provider discovery
   omits the internal `capabilities` metadata and matches the Plexus wire
   shape.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
@@ -386,7 +388,7 @@ completed all cases but remains failing on the documented OAuth shape difference
 
 ## Latest progress
 
-The completed work is recorded above; unchecked items remain intentionally open until directly verified by tests or source comparison. The current strongest remaining work items are provider-specific OAuth exchanges/masking, shared dispatch extraction/cancellation semantics, built-in checker upstream calls, external LLM compaction, MCP edge cases, frontend browser tests, and differential CI.
+The completed work is recorded above; unchecked items remain intentionally open until directly verified by tests or source comparison. The current strongest remaining work items are provider-specific OAuth exchanges/masking, shared dispatch extraction/cancellation semantics, built-in checker upstream calls, external LLM compaction, MCP edge cases, frontend browser tests, and differential CI. Unsupported modes are now explicit: external compaction and manual OAuth probes fail with actionable errors rather than entering provider dispatch.
 
 ## Suggested order of attack
 

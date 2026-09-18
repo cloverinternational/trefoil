@@ -7,8 +7,9 @@
 - Trefoil has approximately 75 route declarations and 159 Rust tests.
 - PostgreSQL uses the imported Plexus `migrations_pg` history.
 - The implemented management/config/observability slice is tested locally and
-  the live differential harness has closed all registered MCP and custom-
-  checker mismatches (308/308 cases matching at the current baseline).
+  the live differential harness has closed all 302 currently registered MCP
+  and custom-checker cases (302/302 in the executed lane at the current
+  baseline).
 
 ## Choreography
 
@@ -47,6 +48,13 @@
 10. **Final parity gate.** Run Plexus's full suite, Trefoil's full suite, all
     deterministic differential cases, and a documented unsupported-feature
     report with no placeholder routes counted as complete.
+
+### Explicit unsupported modes
+
+Unsupported behavior is rejected before dispatch rather than reported as
+successful parity: external LLM-based compaction returns a validation error,
+and `POST /v0/management/test` rejects `apiType: "oauth"` with guidance to use
+the OAuth session flow. These modes remain documented gaps until implemented.
 
 ## Breaking points to control
 
