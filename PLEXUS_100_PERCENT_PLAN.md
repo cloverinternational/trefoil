@@ -76,7 +76,7 @@ Plexus reference: `services/dispatch/` — `dispatcher.ts` (1086 lines),
 lines), `empty-completion.ts` (265 lines) — ~4800 lines total.
 
 To port:
-- [ ] Extract a single `dispatch()` entry point that all inference routes
+- [~] Extract a single `dispatch()` entry point that all inference routes
       call, parameterized by API type (chat/completions/embeddings/
       messages/responses/images/speech/transcriptions/gemini).
 - [x] Full ordered-target iteration: try every enabled, non-cooling-down
@@ -372,8 +372,8 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 295 unit + 4 integration tests pass |
-| OAuth storage / dispatch integration | 4 disposable PostgreSQL tests pass |
+| `cargo test --all-targets` | 296 unit + 4 integration tests pass |
+| OAuth storage / dispatch integration | 7 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
@@ -586,3 +586,24 @@ backend coverage to **295 unit + 4 stdio integration**. The separate disposable
 PostgreSQL lane continues to execute 4 storage/dispatch integration tests.
 The overall plan is still incomplete; the remaining live comparison is not a
 substitute for provider-flow, shared-dispatch and exhaustive parity work.
+
+## Latest shared admission and credential dispatch pass
+
+All inference families now enter `dispatch()` with typed payload families and
+receive one authenticated principal. Shared admission enforces model access and
+request quotas before provider work; Responses previously omitted quota checks.
+A real PostgreSQL test verifies Responses is rejected at 429 before target
+selection when its request quota is exhausted. API-specific retry/transform loops
+remain, so full shared-service extraction remains partial rather than checked off.
+
+Provider OAuth account selections now persist via migration 0087 and survive
+reload/update. OpenRouter inference resolves the selected encrypted credential,
+rejects missing/expired credentials, maps its OAuth placeholder to the actual
+API base, and forwards the decrypted key. A disposable PostgreSQL + mock upstream
+test proves the actual HTTP Authorization header. Other subscription adapters
+remain open and no live provider credentials were used.
+
+Full gate: 296 backend unit + 4 stdio integration, **7 executed PostgreSQL
+integration tests**, 45 frontend unit, 3 browser, 12 harness tests pass. Live
+comparison remains 406/407 (recent system logs), with no missing cases. The plan
+is not complete; remaining limitations above still apply.
