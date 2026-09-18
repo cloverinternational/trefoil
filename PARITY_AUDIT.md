@@ -73,11 +73,11 @@ one call per verb. Not an actual gap.
 
 | Area | Route coverage | Depth vs Plexus | Notes |
 |---|---:|---|---|
-| Management CRUD/config/auth | ~95% of routes ported | Strong | Field-level config schema (failover, cooldown, compaction, vision-fallthrough, trusted-proxies, MCP servers, OAuth discovery) all present with matching validation error shapes and ~265 registered differential cases plus 203 passing Rust unit tests. |
+| Management CRUD/config/auth | ~95% of routes ported | Strong | Field-level config schema (failover, cooldown, compaction, vision-fallthrough, trusted-proxies, MCP servers, OAuth discovery) all present with matching validation error shapes and 135 registered differential cases plus 213 passing Rust unit tests. |
 | Custom quota checkers | Implemented, depth partial | Migration, CRUD, check/test routes, validation, and polling are present in `custom_checkers.rs`; sandbox/runtime and exact built-in upstream checker behavior still need parity audit. |
 | Quota checker results | Partial | `/v0/management/quotas` and `/quota/status/:key` exist (real DB-backed `quota_state` reads) but the per-checker `/quotas/:checkerId`, `/history`, `/check` routes are absent — no scheduled provider-quota polling (`QuotaScheduler`) exists. |
 | Provider OAuth login flow | Routes and session state implemented; provider exchanges partial | **Partial** | `oauth.rs` implements session lifecycle, PKCE callback/manual-code capability reporting, credential persistence, and model discovery. Provider-specific exchanges and request masking remain incomplete; `backend/src/oauth.rs` tests assert every advertised provider exposes exactly one supported login flow. |
-| Inference dispatch/failover | Route-complete | Partial | Chat now snapshots eligible ordered targets and advances through every candidate after transport failures; deterministic Rust evidence covers two transport failures followed by success, exhaustion, and provider-not-found fallback traversal (`backend/src/inference.rs` failover tests). The handlers still hand-roll route-specific dispatch/retry/usage-recording logic rather than sharing Plexus's dedicated `services/dispatch/` package, so cross-route behavior remains only partially aligned. |
+| Inference dispatch/failover | Route-complete | Partial | Chat now snapshots eligible ordered targets and advances through every candidate after transport failures; generic non-chat evidence covers configured ordering, exhaustion without an extra attempt, and provider-not-found fallback traversal (`backend/src/inference.rs` failover tests). The handlers still hand-roll route-specific dispatch/retry/usage-recording logic rather than sharing Plexus's dedicated `services/dispatch/` package, so cross-route behavior remains only partially aligned. |
 | Quota enforcement | Functional, documented gap | `enforce_request_quotas` only reports the single most-constrained quota in `blocking_quotas`; Plexus aggregates all simultaneously-blocking quotas. Comment in code acknowledges this. |
 | Observability/metrics | Implemented, depth partial | Prometheus metrics, usage SSE, and system-log SSE routes are present; metric dimensions and stream edge cases still need reference comparison. |
 | Vision descriptor | Stub | `/cache/vision-descriptor/clear` is a truthful no-op (feature doesn't exist upstream in Trefoil), matches Plexus route but not Plexus behavior (Plexus actually generates/caches descriptors). |
@@ -141,7 +141,7 @@ These are inventory measures, not a claim that every route or case is
 behaviorally complete. The JSON output is the fixture for this table and
 includes hashes and revisions needed to detect drift.
 
-- [historical] 173/173 Rust unit tests pass (`cargo test --release`, <1s).
+- [x] 213/213 Rust tests pass (`cargo test --all-targets`, <1s), including generic non-chat failover ordering and exhaustion coverage.
 - [historical] 156 route entries confirmed live in `lib.rs`/module routers.
 - [x] Backup table list is an exact 13-table match to Plexus.
 - [historical] Migration count was 84 (Trefoil) vs 83 (Plexus), consistent history.
@@ -158,6 +158,9 @@ includes hashes and revisions needed to detect drift.
       encoded paths, JSON mutation bodies, text metrics, HTTP failures, and
       transport failures, plus OAuth session lifecycle, unauthenticated/server
       failures, and malformed session responses.
+- [x] Generic failover coverage verifies non-chat requests preserve configured
+      target order and return the final upstream error after exhausting targets
+      without an extra attempt (`backend/src/inference.rs`).
 - [ ] Differential harness (~275 cases) run end-to-end against live Plexus +
       Trefoil in this pass — not executed (requires two live servers +
       Postgres fixture provisioning per `parity/README.md`); route/config

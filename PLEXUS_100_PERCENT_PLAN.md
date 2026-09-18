@@ -357,11 +357,16 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** 209 passing (`cargo test --all-targets`).
+- **Backend tests:** 213 passing (`cargo test --all-targets`), including generic
+  non-chat failover ordering and exhaustion tests.
 - **Frontend:** typecheck, build, and 23 Vitest tests pass across 5 files, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
+- **Generic failover:** non-chat inference preserves configured candidate order
+  and returns the last upstream error after all candidates fail, with no extra
+  attempt; provider-not-found and chat transport-failure fallback tests remain
+  green.
 - **Differential harness:** 135 named cases are registered in
   `parity/differential.ts`; no live Plexus/Trefoil run was performed in this
   refresh, so no end-to-end pass count is claimed.

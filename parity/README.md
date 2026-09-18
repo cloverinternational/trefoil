@@ -92,6 +92,7 @@ authentication, required fields, streaming-request validation, and unknown
 model/provider errors without contacting a real model provider. Provider-backed
 success and SSE cases require an explicitly configured disposable upstream and
 must not use production credentials. The Rust unit suite provides deterministic
-disposable-upstream evidence for chat failover: it proves ordered traversal
-across two transport failures followed by success, exhaustion, and independent
-provider-not-found fallback behavior.
+disposable-upstream evidence for inference failover: chat proves ordered
+traversal across two transport failures followed by success, while generic
+non-chat coverage proves configured target ordering and exhaustion returns the
+final error without an extra attempt.
