@@ -60,7 +60,9 @@ def main() -> int:
             raise RuntimeError(f"OpenAPI paths is not an object: {openapi_path}")
         differential = required(root / "parity" / "differential.ts").read_text()
         counts = {
-            "differential_named_cases": len(re.findall(r"^\s*name:\s*(['\"])", differential, re.MULTILINE)),
+            # Case objects are often kept inline with their surrounding
+            # array entry, so line anchoring silently undercounts them.
+            "differential_named_cases": len(re.findall(r"\bname:\s*(['\"])", differential)),
             "trefoil_router_declarations": rust_text.count(".route("),
             "plexus_openapi_paths": len(openapi["paths"]),
             "plexus_openapi_operations": sum(
