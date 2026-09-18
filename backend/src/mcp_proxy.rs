@@ -90,7 +90,11 @@ fn validate_jsonrpc(body: &[u8]) -> Result<(Option<String>, Option<String>), Res
                 ));
             }
         }
-        method = Some(name.to_owned());
+        // A batch containing a write operation requires write scope, even if
+        // a later read operation is the last entry in the batch.
+        if method.is_none() || name == "tools/call" {
+            method = Some(name.to_owned());
+        }
         if name == "tools/call" {
             tool = object
                 .get("params")

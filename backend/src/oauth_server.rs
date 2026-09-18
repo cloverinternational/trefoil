@@ -47,8 +47,13 @@ async fn authorization_server(State(_state): State<AppState>, _headers: HeaderMa
 }
 
 async fn protected_resource(State(_state): State<AppState>, Path(name): Path<String>) -> Response {
-    Json(serde_json::json!({"resource":format!("/mcp/{name}"),"authorization_servers":["/"]}))
-        .into_response()
+    Json(serde_json::json!({
+        "resource":format!("/mcp/{name}"),
+        "authorization_servers":["/"],
+        "scopes_supported":["mcp:read","mcp:write"],
+        "resource_supported":true
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
