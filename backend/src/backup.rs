@@ -216,6 +216,19 @@ async fn restore_config(
     let keys: HashMap<String, crate::state::KeyConfig> =
         serde_json::from_value(data.get("keys").cloned().ok_or("missing keys")?)
             .map_err(|_| "invalid keys")?;
+
+    // A restore is a replacement, not an upsert.  Clear records that are not
+    // present in the backup so removed providers, models, and keys do not
+    // survive a full restore.
+    crate::database::delete_all_aliases(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    crate::database::delete_all_providers(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    crate::database::delete_all_keys(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     for (name, config) in &keys {
         crate::database::upsert_key(pool, name, config)
             .await

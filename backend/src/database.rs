@@ -212,6 +212,13 @@ pub async fn delete_key(pool: &PgPool, name: &str) -> Result<(), sqlx::Error> {
         .map(|_| ())
 }
 
+pub async fn delete_all_keys(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM api_keys")
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
 pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderConfig>, sqlx::Error> {
     let rows = sqlx::query("SELECT slug, display_name, api_base_url, api_key, oauth_provider_type, enabled, disable_cooldown, stall_cooldown, allow_100_percent_utilization, discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled, auto_compat, adapter, model_autosync_enabled, model_autosync_interval, raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled, quota_checker_interval, quota_checker_options, retry_policy FROM providers")
         .fetch_all(pool).await?;
@@ -342,6 +349,13 @@ pub async fn upsert_provider(
 pub async fn delete_provider(pool: &PgPool, slug: &str) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM providers WHERE slug = $1")
         .bind(slug)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+pub async fn delete_all_providers(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM providers")
         .execute(pool)
         .await
         .map(|_| ())
