@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildReport, recordCase, reconcileCaseCount, type CaseResult } from './differential';
+import { buildReport, recordCase, reconcileCaseCount, reconcileCaseInventory, type CaseResult } from './differential';
 
 const result = (name: string, status: CaseResult['status']): CaseResult => ({ name, status });
 
@@ -27,5 +27,18 @@ describe('differential reconciliation', () => {
   test('accepts exact inventory and rejects drift', () => {
     expect(() => reconcileCaseCount(3, 3)).not.toThrow();
     expect(() => reconcileCaseCount(2, 3)).toThrow('inventory reconciliation failed: expected 3, observed 2');
+  });
+
+  test('rejects replacement, missing, and duplicate case names', () => {
+    expect(() => reconcileCaseInventory(['a', 'replacement'], ['a', 'b'])).toThrow(
+      'case inventory reconciliation failed: missing: b; unexpected: replacement'
+    );
+    expect(() => reconcileCaseInventory(['a', 'a'], ['a', 'b'])).toThrow(
+      'case inventory reconciliation failed: missing: b'
+    );
+    expect(() => reconcileCaseInventory(['a', 'b'], ['a', 'a'])).toThrow(
+      'case inventory reconciliation failed: duplicate registered: a; unexpected: b'
+    );
+    expect(() => reconcileCaseInventory(['a', 'b'], ['a', 'b'])).not.toThrow();
   });
 });

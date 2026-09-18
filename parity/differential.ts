@@ -66,6 +66,28 @@ export function reconcileCaseCount(observed: number, expected = EXPECTED_CASE_CO
   }
 }
 
+/**
+ * Reconcile names, rather than only counts.  A count-only check can miss a
+ * particularly dangerous edit where one case is accidentally dropped while
+ * another is added.  Keep this independent of the live runner so the
+ * deterministic report tests exercise the same gate as production runs.
+ */
+export function reconcileCaseInventory(observed: string[], registered: string[]) {
+  const registeredSet = new Set(registered);
+  const observedSet = new Set(observed);
+  const duplicateRegistered = registered.filter((name, index) => registered.indexOf(name) !== index);
+  const missing = registered.filter((name) => !observedSet.has(name));
+  const unexpected = observed.filter((name) => !registeredSet.has(name));
+  if (duplicateRegistered.length || missing.length || unexpected.length || observed.length !== registered.length) {
+    const details = [
+      duplicateRegistered.length ? `duplicate registered: ${[...new Set(duplicateRegistered)].join(', ')}` : '',
+      missing.length ? `missing: ${missing.join(', ')}` : '',
+      unexpected.length ? `unexpected: ${unexpected.join(', ')}` : '',
+    ].filter(Boolean).join('; ');
+    throw new Error(`case inventory reconciliation failed: ${details || `expected ${registered.length}, observed ${observed.length}`}`);
+  }
+}
+
 async function writeReport(status: 'complete' | 'incomplete') {
   const report = buildReport(caseResults, status);
   const destination = Bun.file(REPORT_PATH);
@@ -73,47 +95,53 @@ async function writeReport(status: 'complete' | 'incomplete') {
 }
 
 function registeredCaseCount(): number {
-  return CASES.length +
-    KEYS_CASES.length +
-    PROVIDERS_CASES.length +
-    ALIASES_CASES.length +
-    USER_QUOTAS_CASES.length +
-    SYSTEM_SETTINGS_CASES.length +
-    COOLDOWNS_CASES.length +
-    DEBUG_CASES.length +
-    CONFIG_STATUS_CASES.length +
-    TIMEOUT_CONFIG_CASES.length +
-    MCP_ENABLED_CASES.length +
-    EXPLORATION_RATE_CASES.length +
-    FAILOVER_COOLDOWN_CASES.length +
-    CAPTURE_TRACE_CASES.length +
-    STALL_CONFIG_CASES.length +
-    VISION_FALLTHROUGH_CASES.length +
-    LOGGING_CASES.length +
-    BACKGROUND_EXPLORATION_CASES.length +
-    TRUSTED_PROXIES_CASES.length +
-    ERRORS_CASES.length +
-    PERFORMANCE_CASES.length +
-    CONFIG_SNAPSHOT_CASES.length +
-    CONFIG_EXPORT_CASES.length +
-    BACKUP_CASES.length +
-    OBSERVABILITY_CASES.length +
-    CONCURRENCY_CASES.length +
-    VISION_CACHE_CASES.length +
-    OAUTH_PROVIDER_CASES.length +
-    QUOTA_CHECKER_TYPE_CASES.length +
-    PI_PROVIDER_CASES.length +
-    OAUTH_STATUS_CASES.length +
-    OAUTH_DELETE_CASES.length +
-    COMPACTION_CASES.length +
-    QUOTA_DISCOVERY_CASES.length +
-    QUOTA_CLEAR_CASES.length +
-    CUSTOM_CHECKER_CASES.length +
-    MCP_CASES.length +
-    DEBUG_LOG_CASES.length +
-    MCP_LOG_CASES.length +
-    INFERENCE_CASES.length +
-    SELF_CASES.length;
+  return registeredCaseGroups().reduce((total, cases) => total + cases.length, 0);
+}
+
+function registeredCaseGroups(): Case[][] {
+  return [
+    CASES,
+    KEYS_CASES,
+    PROVIDERS_CASES,
+    ALIASES_CASES,
+    USER_QUOTAS_CASES,
+    SYSTEM_SETTINGS_CASES,
+    COOLDOWNS_CASES,
+    DEBUG_CASES,
+    CONFIG_STATUS_CASES,
+    TIMEOUT_CONFIG_CASES,
+    MCP_ENABLED_CASES,
+    EXPLORATION_RATE_CASES,
+    FAILOVER_COOLDOWN_CASES,
+    CAPTURE_TRACE_CASES,
+    STALL_CONFIG_CASES,
+    VISION_FALLTHROUGH_CASES,
+    LOGGING_CASES,
+    BACKGROUND_EXPLORATION_CASES,
+    TRUSTED_PROXIES_CASES,
+    ERRORS_CASES,
+    PERFORMANCE_CASES,
+    CONFIG_SNAPSHOT_CASES,
+    CONFIG_EXPORT_CASES,
+    BACKUP_CASES,
+    OBSERVABILITY_CASES,
+    CONCURRENCY_CASES,
+    VISION_CACHE_CASES,
+    OAUTH_PROVIDER_CASES,
+    QUOTA_CHECKER_TYPE_CASES,
+    PI_PROVIDER_CASES,
+    OAUTH_STATUS_CASES,
+    OAUTH_DELETE_CASES,
+    COMPACTION_CASES,
+    QUOTA_DISCOVERY_CASES,
+    QUOTA_CLEAR_CASES,
+    CUSTOM_CHECKER_CASES,
+    MCP_CASES,
+    DEBUG_LOG_CASES,
+    MCP_LOG_CASES,
+    INFERENCE_CASES,
+    SELF_CASES,
+  ];
 }
 
 interface Case {
@@ -1648,6 +1676,8 @@ async function main() {
   }
   failures += await runCases(selfRestCases);
 
+  const registeredNames = registeredCaseGroups().flat().map((testCase) => testCase.name);
+  reconcileCaseInventory(caseResults.map((result) => result.name), registeredNames);
   reconcileCaseCount(caseResults.length);
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
