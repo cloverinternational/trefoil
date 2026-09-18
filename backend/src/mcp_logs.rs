@@ -33,7 +33,7 @@ struct Params {
 }
 #[allow(clippy::result_large_err)]
 fn admin(state: &AppState, h: &HeaderMap) -> Result<(), Response> {
-    match resolve_principal(state,h.get("x-admin-key").and_then(|v|v.to_str().ok())){Some(Principal::Admin)=>Ok(()),Some(Principal::Limited{..})=>Err((StatusCode::FORBIDDEN,Json(serde_json::json!({"error":{"message":"Admin privileges required","type":"forbidden","code":403}}))).into_response()),None=>Err((StatusCode::UNAUTHORIZED,Json(serde_json::json!({"error":{"message":"Unauthorized","type":"auth_error","code":401}}))).into_response())}
+    match resolve_principal(state,h.get("x-admin-key").and_then(|v|v.to_str().ok())){Some(Principal::Admin)=>Ok(()),Some(Principal::Limited{..})|None=>Err((StatusCode::UNAUTHORIZED,Json(serde_json::json!({"error":{"message":"Unauthorized","type":"auth_error","code":401}}))).into_response())}
 }
 async fn list(
     State(state): State<AppState>,
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(r.status(), StatusCode::OK);
     }
     #[tokio::test]
-    async fn limited_is_forbidden() {
+    async fn limited_is_unauthorized() {
         let r = router()
             .with_state(fixture())
             .oneshot(
@@ -168,6 +168,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
     }
 }
