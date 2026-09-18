@@ -215,6 +215,29 @@ where
     }))
 }
 
+fn accounted_binary_body<S>(stream: S, accounting: StreamAccounting) -> Body
+where S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static {
+    let state = Arc::new(tokio::sync::Mutex::new(accounting));
+    let guard = Arc::new(AccountingGuard { state:state.clone(), finished:Arc::new(AtomicBool::new(false)) });
+    let stream_guard = guard.clone();
+    let output = futures_util::stream::unfold((Box::pin(stream), state, stream_guard), |(mut stream,state,guard)| async move {
+        match stream.next().await {
+            Some(Ok(bytes)) => Some((Ok(bytes),(stream,state,guard))),
+            Some(Err(error)) => {
+                guard.finished.store(true,Ordering::Release);
+                state.lock().await.finalize("error").await;
+                Some((Err(error),(stream,state,guard)))
+            }
+            None => {
+                guard.finished.store(true,Ordering::Release);
+                state.lock().await.finalize("success").await;
+                None
+            }
+        }
+    });
+    Body::from_stream(output.map(move |item| {let _keep=&guard;item}))
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/models", axum::routing::get(list_models))
@@ -1047,7 +1070,15 @@ async fn forward_json_api(
         match response_result {
             Ok(response) => {
                 let status = response.status();
-                if original_body
+                if status.is_success() && path == "/audio/speech" {
+                    let content_type = response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("application/octet-stream").to_owned();
+                    record_attempt(state,&request_id,(attempt+1) as i32,&provider_slug,&upstream_model,"audio_speech","success",None,Some(status.as_u16() as i32),false,start_time).await;
+                    return axum::http::Response::builder().status(status).header("content-type",content_type).header("x-request-id",&request_id)
+                        .body(accounted_binary_body(response.bytes_stream(),StreamAccounting {
+                            permit:_permit.take(),pool:state.inner.database.clone(),event_sender:state.inner.usage_events.clone(),request_id:request_id.clone(),key_name:usage_key_name.map(str::to_owned),provider:provider_slug.clone(),model:model.clone(),api_type:"audio_speech".into(),start_time,input_tokens:None,output_tokens:None,cost:None,terminal_on_usage:false,stream_success:true,finalized:false
+                        })).unwrap().into_response();
+                }
+                if status.is_success() && original_body
                     .get("stream")
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
@@ -5332,6 +5363,31 @@ mod chat_stream_failover_tests {
             assert!(crate::concurrency::snapshot(&state).is_empty());
         }
         assert_eq!(hits.load(Ordering::SeqCst),1);
+        server.abort();
+    }
+}
+
+#[cfg(test)]
+mod binary_speech_tests {
+    use super::*;
+    use axum::{routing::post, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn speech_forwards_non_utf8_audio_bytes_and_releases_concurrency() {
+        let audio=vec![0xff,0xfb,0x90,0x00,0x80,0x00,0xfe];
+        let expected=audio.clone();
+        let app=Router::new().route("/audio/speech",post(move || {let audio=audio.clone();async move { ([("content-type","audio/mpeg")],audio) }}));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+        let state=AppState::new(Some("admin".into()),Default::default());
+        state.inner.providers.write().unwrap().insert("mock".into(),crate::state::ProviderConfig{api_base_url:format!("http://{addr}"),enabled:true,..Default::default()});
+        let response=router().with_state(state.clone()).oneshot(Request::post("/v1/audio/speech").header("x-api-key","admin").header("content-type","application/json").body(Body::from(r#"{"model":"mock/tts","input":"hello"}"#)).unwrap()).await.unwrap();
+        assert_eq!(response.status(),axum::http::StatusCode::OK);
+        assert_eq!(response.headers()["content-type"],"audio/mpeg");
+        assert_eq!(response.into_body().collect().await.unwrap().to_bytes().to_vec(),expected);
+        assert!(crate::concurrency::snapshot(&state).is_empty());
         server.abort();
     }
 }
