@@ -372,7 +372,7 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 291 unit + 4 integration tests pass |
+| `cargo test --all-targets` | 295 unit + 4 integration tests pass |
 | OAuth storage / dispatch integration | 4 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
@@ -567,3 +567,22 @@ PostgreSQL integration tests**, 45 frontend unit, 3 browser, 12 harness tests
 pass; live comparison remains **406/407**. Shared entry-point extraction and
 uniform semantics for all nine APIs are still open; this is consolidation and
 verified bug-fixing, not completion of section 2.
+
+## Latest media dispatch and metadata-consumer pass
+
+Speech responses now stream opaque bytes with the upstream content type instead
+of JSON-decoding audio. Tests exercise non-UTF-8 MPEG bytes and concurrency
+release. Native streaming only starts on successful status, allowing retryable
+errors to follow normal failover. Malformed multipart input is rejected before
+transcription dispatch rather than silently accepting the parsed prefix.
+
+Model authorization precedes external Headroom calls: tests verify denied input
+never reaches the compactor. Metadata search/lookup now use the loaded catalog,
+not local aliases, with real normalized metadata exposed and tested.
+
+The latest full eight-lane gate passed seven lanes and matched 406/407 live
+cases; a final multipart fix additionally passed all backend tests, bringing
+backend coverage to **295 unit + 4 stdio integration**. The separate disposable
+PostgreSQL lane continues to execute 4 storage/dispatch integration tests.
+The overall plan is still incomplete; the remaining live comparison is not a
+substitute for provider-flow, shared-dispatch and exhaustive parity work.
