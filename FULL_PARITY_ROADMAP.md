@@ -6,9 +6,9 @@
   management, MCP, OAuth, raw passthrough, and OpenAPI.
 - Trefoil has approximately 75 route declarations and 159 Rust tests.
 - PostgreSQL uses the imported Plexus `migrations_pg` history.
-- The implemented management/config/observability slice is tested locally;
-  full differential execution is still blocked by reference-server lifecycle
-  setup and must be repaired before claiming endpoint parity.
+- The implemented management/config/observability slice is tested locally and
+  the live differential harness has closed all registered MCP and custom-
+  checker mismatches (308/308 cases matching at the current baseline).
 
 ## Choreography
 
@@ -28,7 +28,7 @@
 4. **Complete quotas and usage.** Implement token/cost limits, scoped quotas,
    warning/reset headers, quota checker management, usage event streaming,
    exact summary breakdowns, and atomic reservation/accounting tests.
-5. **Complete MCP.** Implement server/key CRUD parity, MCP proxy forwarding,
+5. **Complete MCP.** Extend beyond the currently verified server/key CRUD parity, MCP proxy forwarding,
    JSON-RPC tool surface, streamable HTTP GET/POST/DELETE behavior, upstream
    authentication, MCP usage/debug logs, key cooldowns, and safe local-process
    lifecycle with explicit sandbox/allowlist controls.

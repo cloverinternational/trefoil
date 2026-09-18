@@ -349,7 +349,7 @@ discovery now matches Plexus's response shape: Trefoil omits its internal
 
 Using the 12 plan areas with equal weight, and scoring partial areas by
 checked capability items rather than route count, the current estimate is
-**approximately 80%**. This is a progress metric, not a claim of drop-in
+**approximately 82%**. This is a progress metric, not a claim of drop-in
 compatibility. Remaining risk is concentrated in provider-specific OAuth
 exchanges, complete dispatch cancellation/attempt-history semantics,
 custom-checker runtime parity, MCP edge cases, frontend browser coverage,
@@ -367,7 +367,7 @@ and repeatable differential CI.
   and returns the last upstream error after all candidates fail, with no extra
   attempt; provider-not-found and chat transport-failure fallback tests remain
   green.
-- **Differential harness:** 283 named cases are registered in
+- **Differential harness:** 308 named cases are registered in
   `parity/differential.ts`; the live run at Trefoil `91c1925` against Plexus
   `31b09ce` completed with all 283 cases matching. OAuth provider discovery
   omits the internal `capabilities` metadata and matches the Plexus wire

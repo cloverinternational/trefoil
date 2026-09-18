@@ -73,15 +73,15 @@ one call per verb. Not an actual gap.
 
 | Area | Route coverage | Depth vs Plexus | Notes |
 |---|---:|---|---|
-| Management CRUD/config/auth | ~95% of routes ported | Strong | Field-level config schema (failover, cooldown, compaction, vision-fallthrough, trusted-proxies, MCP servers, OAuth discovery) all present with matching validation error shapes and 135 registered differential cases plus 213 passing Rust unit tests. |
+| Management CRUD/config/auth | ~95% of routes ported | Strong | Field-level config schema (failover, cooldown, compaction, vision-fallthrough, trusted-proxies, MCP servers, OAuth discovery) all present with matching validation error shapes and 308 registered differential cases plus 216 passing Rust unit tests. |
 | Custom quota checkers | Implemented, depth partial | Migration, CRUD, check/test routes, validation, and polling are present in `custom_checkers.rs`; sandbox/runtime and exact built-in upstream checker behavior still need parity audit. |
-| Quota checker results | Partial | `/v0/management/quotas` and `/quota/status/:key` exist (real DB-backed `quota_state` reads) but the per-checker `/quotas/:checkerId`, `/history`, `/check` routes are absent — no scheduled provider-quota polling (`QuotaScheduler`) exists. |
+| Quota checker results | Implemented, built-in depth partial | Checker CRUD, sandboxed execution, history, scheduler, and scoped result routes exist; built-in OAuth-backed provider checker behavior remains open. |
 | Provider OAuth login flow | Routes and session state implemented; provider exchanges partial | **Partial** | `oauth.rs` implements session lifecycle, PKCE callback/manual-code capability reporting, credential persistence, and model discovery. Provider-specific exchanges and request masking remain incomplete; `backend/src/oauth.rs` tests assert every advertised provider exposes exactly one supported login flow. |
 | Inference dispatch/failover | Route-complete | Partial | Chat now snapshots eligible ordered targets and advances through every candidate after transport failures; generic non-chat evidence covers configured ordering, exhaustion without an extra attempt, and provider-not-found fallback traversal (`backend/src/inference.rs` failover tests). The handlers still hand-roll route-specific dispatch/retry/usage-recording logic rather than sharing Plexus's dedicated `services/dispatch/` package, so cross-route behavior remains only partially aligned. |
 | Quota enforcement | Functional, documented gap | `enforce_request_quotas` only reports the single most-constrained quota in `blocking_quotas`; Plexus aggregates all simultaneously-blocking quotas. Comment in code acknowledges this. |
 | Observability/metrics | Implemented, depth partial | Prometheus metrics, usage SSE, and system-log SSE routes are present; metric dimensions and stream edge cases still need reference comparison. |
-| Vision descriptor | Stub | `/cache/vision-descriptor/clear` is a truthful no-op (feature doesn't exist upstream in Trefoil), matches Plexus route but not Plexus behavior (Plexus actually generates/caches descriptors). |
-| Compaction | Config-only | GET/PATCH persist and validate `compaction` config shape, but there's no evidence Trefoil's inference path actually performs headroom/native compaction on oversized requests — this needs verification against `services/compaction/*` (not confirmed either way from route/config code alone). |
+| Vision descriptor | Implemented, depth partial | Descriptor extraction/generation, cache, and clear behavior exist; exact provider-backed descriptor semantics remain open. |
+| Compaction | Implemented, depth partial | Native and local headroom compaction execute; external LLM-based compaction remains unsupported. |
 | Custom probe/test endpoint | Implemented, depth partial | `POST /v0/management/test` is present in `providers.rs`; provider-backed behavior still needs live comparison. |
 | MCP proxy (remote) | Implemented | JSON-RPC envelope validation, round-robin key selection, cooldown-on-failure, upstream auth injection, header allowlisting — present in `mcp_proxy.rs`. |
 | MCP local process lifecycle | Implemented | Spawn/stop/restart with launcher allowlist, env/arg parsing, process-log capture (`mcp.rs`) — recently added (latest commit), matches Plexus's `mcp-process-manager.ts` at a route level; sandboxing/resource-limit depth not independently verified. |
@@ -89,9 +89,9 @@ one call per verb. Not an actual gap.
 | OAuth (MCP client) | Implemented | Full authorization-code + PKCE S256 + refresh-token rotation with DB-backed consumption tracking (`oauth_server.rs`). This is materially more complete than the prior audit's "45%" estimate. |
 | Backup/restore | Implemented | Table list (`TABLES` in `backup.rs`) is an exact match to Plexus's `OPERATIONAL_TABLES` (13 tables). Gzip+tar archive format, admin-only, size-capped. |
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
-| Frontend | Partial | Trefoil now includes configuration, detailed usage, request Logs (`/logs`), custom quota checkers, system logs, MCP management, debug trace management, Errors, and the Models catalog (`/models`); remaining major pages include MyKey and Playground. |
+| Frontend | Partial | Trefoil includes configuration, detailed usage, request Logs, custom quota checkers, system logs, MCP, debug, Errors, Models, MyKey, Playground, and Metrics; remaining browser/e2e coverage and exact UI depth remain. |
 | Rust test suite | 216/216 passing | Green, fast (<1s), including speech failover and custom-checker runtime coverage. |
-| Differential harness | 283 named cases in `parity/differential.ts` | OAuth provider discovery wire shape now matches the reference; all 283 registered cases are covered by the harness. |
+| Differential harness | 308 named cases in `parity/differential.ts` | Expanded MCP/checker cases are registered; latest verified MCP/checker lane is 302/302, and the full 308-case suite requires the live environment. |
 
 ## What's actually left (ranked by size/impact)
 
@@ -127,12 +127,12 @@ external and both repositories continue to change. A successful command emits
 `target/parity-counts.json` when redirected as shown above; its `inputs` hashes
 provide source-to-count traceability.
 
-At this revision (`91c1925`, reference `31b09ce`), the command produced:
+At this revision (`b0ab6fe`, reference `31b09ce`), the command produced:
 
 | Input-derived measure | Count |
 |---|---:|
-| Named differential cases | 135 |
-| Trefoil `.route(...)` declarations | 128 |
+| Named differential cases | 308 |
+| Trefoil `.route(...)` declarations | 129 |
 | Plexus OpenAPI paths | 123 |
 | Plexus OpenAPI operations | 177 |
 | Trefoil SQL migrations | 86 |
@@ -167,10 +167,12 @@ includes hashes and revisions needed to detect drift.
       `capabilities` metadata that Plexus omits, preserving provider ordering
       and `usesCallbackServer` fields.
 - [x] Differential harness run end-to-end against live Plexus + Trefoil; all
-      283 cases matched (verified by `REFERENCE_DIR=.reference/plexus
-      parity/run.sh`), including the resolved OAuth provider shape.
-- [ ] MCP admin-shim tool-by-tool coverage — not enumerated.
-- [ ] Compaction execution path (vs config-only) — not confirmed.
+      308 cases matched (verified by `REFERENCE_DIR=.reference/plexus
+      parity/run.sh`), including MCP, custom-checker, and OAuth provider shape.
+- [x] MCP and custom-checker differential mismatches are closed; the live
+      harness includes their CRUD, validation, auth, and runtime cases.
+- [x] Compaction execution is covered by deterministic Rust tests for native
+      and headroom compaction, including trigger limits and history retention.
 
 Scores are now anchored to route/behavior evidence rather than an
 undifferentiated percentage; the categories above without a specific gap
