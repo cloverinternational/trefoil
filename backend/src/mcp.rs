@@ -192,7 +192,9 @@ async fn put_server(
         )
             .into_response();
     };
-    let now = chrono::Utc::now().naive_utc();
+    // The migration stores these timestamps as epoch milliseconds (the
+    // management tables predate the timestamp columns used by mcp_keys).
+    let now = chrono::Utc::now().timestamp_millis();
     match sqlx::query("INSERT INTO mcp_servers (name,upstream_url,enabled,mode,auth_scheme,launcher,package_name,args,env,startup_timeout_ms,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11) ON CONFLICT(name) DO UPDATE SET upstream_url=EXCLUDED.upstream_url,enabled=EXCLUDED.enabled,mode=EXCLUDED.mode,auth_scheme=EXCLUDED.auth_scheme,launcher=EXCLUDED.launcher,package_name=EXCLUDED.package_name,args=EXCLUDED.args,env=EXCLUDED.env,startup_timeout_ms=EXCLUDED.startup_timeout_ms,updated_at=EXCLUDED.updated_at").bind(&name).bind(url).bind(body.enabled.unwrap_or(true)).bind(mode).bind(body.auth_scheme).bind(body.launcher).bind(body.package_name).bind(body.args).bind(body.env).bind(body.startup_timeout_ms).bind(now).execute(pool).await {Ok(_)=>Json(serde_json::json!({"success":true,"name":name})).into_response(),Err(_)=>internal_error()}
 }
 async fn patch_server(

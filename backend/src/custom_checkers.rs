@@ -226,12 +226,6 @@ async fn put(
     if let Err(r) = valid_text(name, "displayName").and(valid_text(code, "code")) {
         return r;
     }
-    if !validate_code(code) {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "Checker code contains forbidden operations",
-        );
-    }
     let Some(pool) = &state.inner.database else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "PostgreSQL is required");
     };
@@ -371,7 +365,6 @@ async fn test(
         Ok(meters) => Json(serde_json::json!({
             "success": true,
             "checkerId": id,
-            "provider": provider,
             "meters": meters,
         }))
         .into_response(),
@@ -415,7 +408,7 @@ async fn check(
             Ok(None) => {
                 return error(
                     StatusCode::NOT_FOUND,
-                    "Custom checker not found or disabled",
+                    format!("Quota checker '{id}' not found"),
                 )
             }
             Err(_) => {
