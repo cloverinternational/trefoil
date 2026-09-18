@@ -181,6 +181,9 @@ async fn call_tool(
         ("plexus_config", "cooldown") => {
             return config_cooldown_operation(state, id, args).await;
         }
+        ("plexus_config", "capture_trace_on_error") => {
+            return config_capture_trace_on_error_operation(state, id, args).await;
+        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
             // HashMap iteration order is intentionally unstable.  MCP clients
@@ -529,6 +532,39 @@ async fn config_cooldown_operation(state: &AppState, id: Value, args: Option<&Va
                 "cooldown",
                 "GET",
                 "/v0/management/config/cooldown",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_capture_trace_on_error_operation(
+    state: &AppState,
+    id: Value,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "capture_trace_on_error",
+                "PATCH",
+                "/v0/management/config/capture-trace-on-error",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "capture_trace_on_error",
+                "GET",
+                "/v0/management/config/capture-trace-on-error",
                 None,
             )
             .await
