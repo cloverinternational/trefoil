@@ -190,4 +190,60 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn rotation_is_atomic_from_the_parser_callers_point_of_view() {
+        let old = "old-refresh";
+        let malformed = [
+            serde_json::json!({"access_token":"new","expires_in":3600}),
+            serde_json::json!({"access_token":"new","expires_in":0}),
+            serde_json::json!({"access_token":"new","expires_in":-1}),
+            serde_json::json!({"access_token":"new","expires_in":"3600"}),
+            serde_json::json!({"access_token":"   ","expires_in":3600}),
+            serde_json::json!({"access_token":null,"expires_in":3600}),
+        ];
+
+        // A rejected response must not manufacture replacement state. The
+        // scheduler consequently leaves the persisted credential untouched.
+        for payload in malformed {
+            let result = parse_refresh_response(&payload, old, 1_000);
+            if payload.get("access_token").and_then(Value::as_str) == Some("new")
+                && payload.get("expires_in").and_then(Value::as_i64) == Some(3600)
+            {
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap().refresh_token, old);
+            } else {
+                assert!(result.is_err(), "accepted malformed payload: {payload}");
+            }
+        }
+    }
+
+    #[test]
+    fn provider_rotation_replaces_only_a_nonempty_refresh_token() {
+        let rotated = parse_refresh_response(
+            &serde_json::json!({
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600
+            }),
+            "old-refresh",
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(rotated.refresh_token, "new-refresh");
+
+        for refresh_token in ["", "   "] {
+            let retained = parse_refresh_response(
+                &serde_json::json!({
+                    "access_token": "new-access",
+                    "refresh_token": refresh_token,
+                    "expires_in": 3600
+                }),
+                "old-refresh",
+                1_000,
+            )
+            .unwrap();
+            assert_eq!(retained.refresh_token, "old-refresh");
+        }
+    }
 }
