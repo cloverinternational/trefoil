@@ -444,6 +444,6 @@ mod tests {
 
 #[cfg(test)]
 mod audit_tests {
- use super::*;
- #[tokio::test] async fn delete_audit_records_provider_and_all_scopes(){let state=admin_state();let response=router().with_state(state.clone()).oneshot(Request::delete("/v0/management/cooldowns/fixture?model=model").header("x-admin-key","correct-admin-key").body(Body::empty()).unwrap()).await.unwrap();assert!(response.status().is_success());let logs=state.inner.recent_system_logs.lock().unwrap();assert!(logs.iter().any(|log|log.message.contains("provider='fixture' model='model'")&&log.context["module"]=="cooldowns"));}
+ use super::*;use axum::{body::Body,http::Request};use tower::ServiceExt;
+ #[tokio::test] async fn delete_audit_records_provider_and_all_scopes(){let state=AppState::new(Some("correct-admin-key".into()),Default::default());let response=router().with_state(state.clone()).oneshot(Request::delete("/v0/management/cooldowns/fixture?model=model").header("x-admin-key","correct-admin-key").body(Body::empty()).unwrap()).await.unwrap();assert!(response.status().is_success());let logs=state.inner.recent_system_logs.lock().unwrap();assert!(logs.iter().any(|log|log.message.contains("provider='fixture' model='model'")&&log.context["module"]=="cooldowns"));}
 }

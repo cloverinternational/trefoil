@@ -1,6 +1,6 @@
 //! OpenAI Codex device authorization, exchanging its ephemeral code through OAuth PKCE.
 use serde_json::Value;use std::time::Duration;
-use axum::Json;
+#[cfg(test)] use axum::Json;
 const CLIENT_ID:&str="app_EMoamEEZ73f0CkXaXp7hrann";
 pub struct Device{pub id:String,pub code:String,pub interval:Duration}
 pub enum Poll{Pending,SlowDown,Complete{code:String,verifier:String}}
