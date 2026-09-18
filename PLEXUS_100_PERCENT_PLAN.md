@@ -37,7 +37,7 @@ To port:
       session.
 - [x] `GET /v0/management/oauth/models` — list models available under a
       provider's OAuth credential (subscription-tier-gated catalogs).
-- [x] Token storage + refresh scheduling per provider (persist
+- [~] Token storage + refresh scheduling per provider (persist
       access/refresh tokens encrypted, auto-refresh before expiry, surface
       expiry/invalid state via `credentials/status`).
 - [ ] Per-provider auth implementations: Anthropic (Claude Pro/Max),
@@ -272,7 +272,7 @@ textual descriptions of image inputs for providers/models that need
 image-to-text fallback (`vision_fallthrough` config, which Trefoil *does*
 already store/validate).
 
-- [x] Implement descriptor generation triggered by `vision_fallthrough`
+- [ ] Implement descriptor generation triggered by `vision_fallthrough`
       config on non-vision-capable target models.
 - [x] Wire the cache clear endpoint to actually clear it.
 
@@ -327,7 +327,7 @@ Missing pages (each needs its own API adapter + component + tests):
       core `format`, `modelOptions`, and `normalize` helpers now have Vitest
       coverage, and the management API adapter now covers OAuth session
       lifecycle and failure responses; currency, model-list, and detailed-usage
-      helpers remain.
+      helper tests have now been added (44 total tests).
 - [ ] Browser/e2e test parity — the old `PARITY_TESTING.md` roadmap called
       for this; confirm scope once pages above exist.
 
@@ -346,12 +346,12 @@ discovery now matches Plexus's response shape: Trefoil omits its internal
       as they land — the harness is the acceptance gate, not a checklist to
       backfill later.
 - [ ] Add differential cases for the admin MCP shim (`tools/call` for each
-      of the ~48 operations in item #5) — currently no case type for JSON-RPC
-      tool calls exists in the harness (worth checking).
+      of the ~48 operations in item #5) — 86 read/validation operation cases now exist and use initialized MCP transport;
+      successful mutation coverage and exact result parity remain open.
 
 ---
 
-## Current parity estimate (recalculated from HEAD 2026-09-18)
+## Historical parity estimate (superseded by live verification below)
 
 Using the 12 plan areas with equal weight, and scoring partial areas by
 checked capability items rather than route count, the current estimate is
@@ -361,52 +361,74 @@ exchanges, complete dispatch extraction/cancellation/attempt-history semantics,
 custom-checker runtime parity, MCP edge cases, frontend browser coverage,
 and repeatable differential CI.
 
-## Current verified status
+## Current verified status (completion pass, 2026-09-18)
 
-- **Backend tests:** `cargo test --all-targets` passes 260 tests, including
-  OAuth cancellation cleanup and late-callback rejection, image-generation,
-  image-edit, speech, and transcription failover ordering, terminal failure
-  behavior, and disabled-failover limits.
-- **Frontend:** typecheck, build, and 38 Vitest tests pass across 8 files, including OAuth
-  session API lifecycle, authentication/error, and malformed-response coverage
-  (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
-- **Latest media dispatch:** image generation, image edit, audio speech, and
-  audio transcription use the shared JSON failover policy; deterministic
-  fallback and terminal-failure evidence is covered in
-  `backend/src/inference.rs`.
-- **Generic failover:** non-chat inference preserves configured candidate order
-  and returns the last upstream error after all candidates fail, with no extra
-  attempt; provider-not-found and chat transport-failure fallback tests remain
-  green. Generic JSON and chat status-failover paths share
-  `RetryableFailoverPolicy`; request construction, cancellation, and usage
-  recording remain route-specific.
-- **Differential harness:** 313 named cases are registered in
-  `parity/differential.ts`; the latest recorded MCP/custom-checker lane at
-  Trefoil `a5bc1a6` against Plexus `31b09ce` completed with all 302 cases
-  matching. That historical result does not cover the current 313-case
-  inventory. OAuth provider discovery
-  omits the internal `capabilities` metadata and matches the Plexus wire
-  shape.
-- **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
-- **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
-- **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation,
-  and provider login-session persistence/PKCE URL generation are implemented.
-  New deterministic tests cover persistence redaction, one-time callback
-  verifier consumption, rejection of callbacks after cancellation, and
-  refresh rotation/error handling (including malformed expiry and fail-closed
-  retention of the persisted credential);
-  provider-specific exchanges and masking remain partial.
-- **Observability:** Prometheus metrics, usage SSE, and system-log SSE routes are implemented.
+**Not complete.** A full local seven-lane gate ran using disposable PostgreSQL,
+Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
-The checklist is capability-based: a checked route means the route exists and
-has real behavior, not that every Plexus edge case or frontend test has been
-ported. The unified gate now emits lane-level JSON reports and preserves the
-first failing lane exit code; a live run remains environment-dependent. The
-current 313-case inventory is not a current end-to-end pass claim.
+| Gate | Result |
+|---|---|
+| `cargo test --all-targets` | 278 unit + 4 integration tests pass |
+| Frontend Vitest | 44 tests across 8 files pass |
+| Frontend typecheck | pass |
+| Frontend production build | pass |
+| Playwright Chromium | 3 browser scenarios pass |
+| Differential harness unit tests | 8 pass |
+| Live differential | **319 pass, 88 fail, 407 observed, no missing/duplicate cases** |
 
-## Latest progress
+Reports: `target/parity-report.json` and `target/differential-report.json`.
+These are regenerable local artifacts, not committed acceptance evidence.
+Run `./verify-parity.sh`; install frontend dependencies and Playwright Chromium
+first. An existing browser can be selected with
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`. CI now includes these lanes with a pinned
+reference checkout, and the runner owns only its disposable database container.
 
-The completed work is recorded above; unchecked items remain intentionally open until directly verified by tests or source comparison. The current strongest remaining work items are provider-specific OAuth exchanges/masking, shared dispatch extraction/cancellation semantics, built-in checker upstream calls, external LLM compaction, MCP edge cases, frontend browser tests, and differential CI. Unsupported modes are now explicit: external compaction and manual OAuth probes fail with actionable errors rather than entering provider dispatch.
+### Verified improvements
+
+- Recent system logs retain the newest 1,000 entries; live SSE has event IDs,
+  subscription cleanup, and runtime severity filtering.
+- Limited-key usage streams reject both foreign-key and unscoped activity.
+- Metrics include live cooldown gauges, provider performance and daily cost;
+  timezone handling uses actual local midnight.
+- Built-in checker upstream calls are wired into manual checks and polling;
+  mock HTTP tests cover auth headers, allowance windows and upstream failures.
+- MCP missing-key errors and stored process-log responses are corrected;
+  recursive redaction preserves object shape instead of inventing fields.
+- OAuth transport has injectable tests, provider client IDs, validated expiry,
+  UTF-8-safe diagnostic masking and query-preserving URL redaction. This does
+  **not** complete provider-specific login or first-party request masking.
+- Frontend browser tests exercise authentication/navigation, usage/error states,
+  provider creation and ordered system-log events. Remaining helper areas now
+  have tests. This is three fixture-backed scenarios, not exhaustive page parity.
+- MCP differential calls initialize the protocol, negotiate JSON/SSE, and parse
+  responses structurally. The 86 operation cases largely exercise reads and
+  missing-input validation, **not** successful mutation coverage for every tool.
+
+### Corrections to earlier completion claims
+
+- Vision has a descriptor helper/cache with mock tests, but inference does not
+  call it. The generation checkbox is reopened; cache clearing alone is not
+  end-to-end fallthrough.
+- OAuth credentials are currently persisted as raw token columns; encryption
+  at rest claimed above is **not implemented**. Device-flow and provider-specific
+  authorization/exchange semantics remain incomplete.
+- The shared dispatch entry point, complete attempt chain and uniform
+  cancellation verification are still open. An attempted external compaction
+  implementation introduced regressions and was removed; local compaction
+  remains working, external/headroom-service parity remains open.
+- Metrics still lack reference dimensions and exact exposition parity.
+- Built-in checkers still need full scoped-window/reset/account/refresh semantics;
+  scheduler per-checker interval handling is not equivalent to the reference.
+- The live MCP suite exposes numerous result/error-envelope differences,
+  lifecycle differences and absent management-tool audit logging. Fixture state
+  changes also require isolation; failures are not normalized away.
+
+### Latest progress
+
+The full gate is intentionally red until the 88 live differences and remaining
+capability gaps are resolved. The old 82% estimate was not an acceptance result
+and should not be used to claim drop-in compatibility. Newly found gaps above
+supersede stale checked-item descriptions elsewhere in this document.
 
 ## Suggested order of attack
 

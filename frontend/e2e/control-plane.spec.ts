@@ -82,4 +82,9 @@ test('provider CRUD state and ordered SSE stream', async ({ page }) => {
   await page.goto('/system-logs');
   await expect(page.getByText('first')).toBeVisible();
   await expect(page.getByText('second')).toBeVisible();
+  const ordered = await page.getByText('first', { exact: false }).evaluate(first => {
+    const second = [...document.querySelectorAll('div')].find(node => node.textContent?.includes('second') && node.querySelector('b')?.textContent === 'INFO:' && node.children.length === 2);
+    return !!second && !!(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  expect(ordered).toBe(true);
 });

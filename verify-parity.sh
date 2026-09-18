@@ -54,6 +54,10 @@ run_lane "frontend (npm run typecheck)" \
   npm --prefix "$ROOT/frontend" run typecheck
 run_lane "frontend (npm run build)" \
   npm --prefix "$ROOT/frontend" run build
+run_lane "frontend browser (npm run test:e2e)" \
+  npm --prefix "$ROOT/frontend" run test:e2e
+run_lane "differential harness unit tests" \
+  bun test "$ROOT/parity/differential.test.ts"
 
 # parity/run.sh owns the disposable database, server lifecycle, and harness.
 # Pass through its documented environment overrides unchanged.

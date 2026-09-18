@@ -217,3 +217,12 @@ Media failover has deterministic backend evidence in
 transcription preserve configured fallback order, while
 `media_failover_disabled_does_not_try_fallback_target` proves that disabling
 failover limits each media request to its primary target.
+
+## Completion-pass verification (2026-09-18)
+
+The current inventory is 407 cases, including 86 generated MCP operation
+read/validation cases. The latest full local run observed every case exactly
+once: **319 passed, 88 differed**. Older 313-case/302-pass statements above are
+historical, not current acceptance. MCP calls negotiate JSON/SSE and initialize
+the protocol; JSON error payloads and JSON-encoded tool text compare structurally.
+The unified gate additionally runs Playwright and harness unit tests.
