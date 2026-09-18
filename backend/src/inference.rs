@@ -1087,7 +1087,7 @@ async fn forward_json_api(
 async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> Response {
     let principal = match authenticate(&state, &headers) {
         Ok(value) => value,
@@ -1100,6 +1100,46 @@ async fn responses(
             "invalid_request_error",
         );
     };
+    let conversation_id = body.get("conversation").and_then(|value| {
+        value
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| value.get("id").and_then(Value::as_str).map(str::to_owned))
+    });
+    let new_input = body.get("input").cloned();
+    if let Some(previous_id) = body.get("previous_response_id").and_then(Value::as_str) {
+        let Some(pool) = &state.inner.database else {
+            return error_response(
+                axum::http::StatusCode::NOT_FOUND,
+                "Previous response not found",
+                "invalid_request_error",
+            );
+        };
+        let previous = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT output_items FROM responses WHERE id=$1",
+        )
+        .bind(previous_id)
+        .fetch_optional(pool)
+        .await;
+        let Some(Some(items)) = previous.ok().flatten() else {
+            return error_response(
+                axum::http::StatusCode::NOT_FOUND,
+                &format!("Previous response not found: {previous_id}"),
+                "invalid_request_error",
+            );
+        };
+        let mut merged = serde_json::from_str::<Value>(&items)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        let current = new_input.clone().unwrap_or_else(|| serde_json::json!([]));
+        if let Some(values) = current.as_array() {
+            merged.extend(values.iter().cloned());
+        } else {
+            merged.push(current);
+        }
+        body["input"] = Value::Array(merged);
+    }
     let key_config = match &principal {
         Principal::Limited { config, .. } => Some(config),
         Principal::Admin => None,
@@ -1291,7 +1331,21 @@ async fn responses(
                             .get("output")
                             .cloned()
                             .unwrap_or_else(|| serde_json::json!([]));
-                        let _ = sqlx::query("INSERT INTO responses (id, object, created_at, completed_at, status, model, output_items, previous_response_id, store, background) VALUES ($1,'response',$2,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO UPDATE SET output_items=EXCLUDED.output_items, status=EXCLUDED.status, completed_at=EXCLUDED.completed_at").bind(response_id).bind(now_ms() / 1000).bind(payload.get("status").and_then(Value::as_str).unwrap_or("completed")).bind(payload.get("model").and_then(Value::as_str).unwrap_or(&model)).bind(output.to_string()).bind(body.get("previous_response_id").and_then(Value::as_str)).bind(if body.get("store").and_then(Value::as_bool).unwrap_or(true) { 1i32 } else { 0i32 }).bind(if body.get("background").and_then(Value::as_bool).unwrap_or(false) { 1i32 } else { 0i32 }).execute(pool).await;
+                        let _ = sqlx::query("INSERT INTO responses (id, object, created_at, completed_at, status, model, output_items, previous_response_id, conversation_id, store, background) VALUES ($1,'response',$2,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO UPDATE SET output_items=EXCLUDED.output_items, status=EXCLUDED.status, completed_at=EXCLUDED.completed_at").bind(response_id).bind(now_ms() / 1000).bind(payload.get("status").and_then(Value::as_str).unwrap_or("completed")).bind(payload.get("model").and_then(Value::as_str).unwrap_or(&model)).bind(output.to_string()).bind(body.get("previous_response_id").and_then(Value::as_str)).bind(&conversation_id).bind(if body.get("store").and_then(Value::as_bool).unwrap_or(true) { 1i32 } else { 0i32 }).bind(if body.get("background").and_then(Value::as_bool).unwrap_or(false) { 1i32 } else { 0i32 }).execute(pool).await;
+                        if let Some(conversation_id) = &conversation_id {
+                            let input = new_input.clone().unwrap_or_else(|| serde_json::json!([]));
+                            let mut appended =
+                                input.as_array().cloned().unwrap_or_else(|| vec![input]);
+                            appended.extend(output.as_array().cloned().unwrap_or_default());
+                            let _ = sqlx::query(
+                                "UPDATE conversations SET items=$1, updated_at=$2 WHERE id=$3",
+                            )
+                            .bind(Value::Array(appended).to_string())
+                            .bind(now_ms() / 1000)
+                            .bind(conversation_id)
+                            .execute(pool)
+                            .await;
+                        }
                     }
                 }
                 return (status, Json(payload)).into_response();
