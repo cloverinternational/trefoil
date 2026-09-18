@@ -1159,7 +1159,7 @@ async fn forward_json_api(
                 return (status, Json(payload)).into_response();
             }
             Err(error) => {
-                if !is_retryable_upstream_error(state, &error.to_string()) {
+                if !retryable_transport_error(state, &error) {
                     record_attempt(
                         state,
                         &request_id,
@@ -1175,7 +1175,7 @@ async fn forward_json_api(
                     )
                     .await;
                     attempted = Some(error.to_string());
-                    continue;
+                    break;
                 }
                 record_attempt(
                     state,
@@ -1480,7 +1480,7 @@ async fn responses(
             }
             Err(error) => {
                 let reason = error.to_string();
-                let retryable = is_retryable_upstream_error(&state, &reason);
+                let retryable = retryable_transport_error(&state, &error);
                 record_attempt(
                     &state,
                     &request_id,
@@ -2241,6 +2241,7 @@ async fn chat_status_failover(
                 return response_with_request_id(status, payload, request_id);
             }
             Err(error) => {
+                let retryable = retryable_transport_error(state, &error);
                 last_error = error.to_string();
                 record_attempt(
                     state,
@@ -2252,10 +2253,11 @@ async fn chat_status_failover(
                     "failed",
                     Some(&last_error),
                     None,
-                    true,
+                    retryable,
                     start_time,
                 )
                 .await;
+                if !retryable { break; }
                 register_provider_failure(
                     state,
                     &provider_slug,
