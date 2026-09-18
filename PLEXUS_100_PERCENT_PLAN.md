@@ -321,7 +321,9 @@ Missing pages (each needs its own API adapter + component + tests):
 - [~] Port the 8 Plexus frontend test areas (`format`, `currency`, `api`,
       `modelOptions`, `modelList`, `normalize`, `detailed-usage/helpers`):
       core `format`, `modelOptions`, and `normalize` helpers now have Vitest
-      coverage (6 tests); currency, API, model-list, and detailed-usage helpers remain.
+      coverage, and the management API adapter now covers OAuth session
+      lifecycle and failure responses; currency, model-list, and detailed-usage
+      helpers remain.
 - [ ] Browser/e2e test parity — the old `PARITY_TESTING.md` roadmap called
       for this; confirm scope once pages above exist.
 
@@ -357,7 +359,9 @@ frontend browser tests, and differential CI) still carry substantial risk.
 ## Current verified status
 
 - **Backend tests:** 174 passing.
-- **Frontend:** typecheck, build, and 6 Vitest utility tests pass.
+- **Frontend:** typecheck, build, and 18 Vitest tests pass, including OAuth
+  session API lifecycle, authentication/error, and malformed-response coverage
+  (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.

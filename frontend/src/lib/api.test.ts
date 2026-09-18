@@ -5,6 +5,7 @@ import {
   getAliases,
   getConfigStatus,
   getMetrics,
+  getOAuthSession,
   getProviders,
   getRecentUsage,
   getUsageSummary,
@@ -12,6 +13,10 @@ import {
   patchSystemSettings,
   saveKey,
   saveProvider,
+  startOAuthSession,
+  submitOAuthManualCode,
+  submitOAuthPrompt,
+  cancelOAuthSession,
   verifyAdminKey,
 } from './api';
 
@@ -120,5 +125,39 @@ describe('frontend management API wire contracts', () => {
     await expect(deleteUsage('request/id')).resolves.toBeUndefined();
     await expect(getUsageSummary()).rejects.toThrow('Unable to load usage summary');
     expect(fetchMock.mock.calls[0]).toEqual(['/v0/management/usage/request%2Fid', { method: 'DELETE', headers: { 'x-admin-key': 'usage-key' } }]);
+  });
+
+  it('covers OAuth session lifecycle requests with auth, encoded IDs, and JSON bodies', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'oauth-admin-key') });
+    const session = { id: 'session/1', providerId: 'anthropic', accountId: 'default', status: 'awaiting_code', progress: [] };
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response({ data: session })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(startOAuthSession('anthropic', 'account/1')).resolves.toEqual(session);
+    await expect(getOAuthSession('session/1')).resolves.toEqual(session);
+    await expect(submitOAuthPrompt('session/1', ' 1234 ')).resolves.toEqual(session);
+    await expect(submitOAuthManualCode('session/1', 'https://callback.example/code')).resolves.toEqual(session);
+    await expect(cancelOAuthSession('session/1')).resolves.toEqual(session);
+
+    expect(fetchMock.mock.calls).toEqual([
+      ['/v0/management/oauth/sessions', { method: 'POST', headers: { 'x-admin-key': 'oauth-admin-key', 'content-type': 'application/json' }, body: '{"providerId":"anthropic","accountId":"account/1"}' }],
+      ['/v0/management/oauth/sessions/session%2F1', { headers: { 'x-admin-key': 'oauth-admin-key' } }],
+      ['/v0/management/oauth/sessions/session%2F1/prompt', { method: 'POST', headers: { 'x-admin-key': 'oauth-admin-key', 'content-type': 'application/json' }, body: '{"value":" 1234 "}' }],
+      ['/v0/management/oauth/sessions/session%2F1/manual-code', { method: 'POST', headers: { 'x-admin-key': 'oauth-admin-key', 'content-type': 'application/json' }, body: '{"value":"https://callback.example/code"}' }],
+      ['/v0/management/oauth/sessions/session%2F1/cancel', { method: 'POST', headers: { 'x-admin-key': 'oauth-admin-key' } }],
+    ]);
+  });
+
+  it('reports unauthenticated, server, and malformed OAuth session responses', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'oauth-key') });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ error: 'Administrator access required' }, 401))
+      .mockResolvedValueOnce(response({ error: 'session backend unavailable' }, 503))
+      .mockResolvedValueOnce(response({}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getOAuthSession('missing')).rejects.toThrow('Administrator access required');
+    await expect(cancelOAuthSession('expired')).rejects.toThrow('session backend unavailable');
+    await expect(getOAuthSession('malformed')).rejects.toThrow('Invalid OAuth login session response');
   });
 });
