@@ -109,3 +109,10 @@ Unsupported modes are intentionally covered by local contract tests rather than
 the provider-backed differential lane: external LLM compaction is rejected by
 config validation, and manual probes reject `apiType: "oauth"`; OAuth must use
 the session flow.
+
+Since that live run, the MCP admin shim has added configuration operations for
+MCP enablement, timeout, compaction, exploration/failover/cooldown, tracing,
+stall, vision fallthrough, background exploration, and trusted proxies, plus
+system-log level and module operations. These milestones are verified by the
+Rust unit suite at revision `f2319d9` (`cargo test --all-targets`: 238 passed),
+but are not yet represented by a newer live differential-run claim.
