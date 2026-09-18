@@ -3429,4 +3429,69 @@ data: [DONE]
             assert_eq!(body["object"], expected);
         }
     }
+
+    #[tokio::test]
+    async fn remaining_json_inference_families_forward_to_mock_provider() {
+        let cases = [
+            (
+                "/v1/responses",
+                r#"{"model":"mock/mock-model","input":"hi"}"#,
+                r#"{"id":"resp-1","object":"response","status":"completed","output":[]}"#,
+                "response",
+            ),
+            (
+                "/v1/messages",
+                r#"{"model":"mock/mock-model","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#,
+                r#"{"id":"msg-1","model":"mock-model","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+                "message",
+            ),
+            (
+                "/v1/images/generations",
+                r#"{"model":"mock/mock-model","prompt":"a tree"}"#,
+                r#"{"created":1,"data":[{"url":"https://example.test/tree.png"}]}"#,
+                "image",
+            ),
+            (
+                "/v1/images/edits",
+                r#"{"model":"mock/mock-model","prompt":"edit"}"#,
+                r#"{"created":1,"data":[{"url":"https://example.test/edited.png"}]}"#,
+                "image",
+            ),
+            (
+                "/v1/audio/speech",
+                r#"{"model":"mock/mock-model","input":"hello"}"#,
+                r#"{"audio":"base64-audio"}"#,
+                "audio",
+            ),
+        ];
+
+        for (path, request_body, upstream_body, expected_kind) in cases {
+            let state = provider_state(inference_mock("200 OK", "application/json", upstream_body));
+            let response = router()
+                .with_state(state)
+                .oneshot(
+                    Request::post(path)
+                        .header("x-api-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(request_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::OK,
+                "{expected_kind}"
+            );
+            let body: Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            if path == "/v1/messages" {
+                assert_eq!(body["content"][0]["text"], "hello");
+                assert_eq!(body["usage"]["output_tokens"], 1);
+            } else {
+                assert_eq!(body, serde_json::from_str::<Value>(upstream_body).unwrap());
+            }
+        }
+    }
 }
