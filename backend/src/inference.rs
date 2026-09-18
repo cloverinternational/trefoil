@@ -301,8 +301,7 @@ async fn audio_transcriptions(
     let start_time = now_ms();
     let mut attempted = None;
     let targets: Vec<_> = inference_targets(&state, &model, key_config).collect();
-    let failover = failover_enabled(&state);
-    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover);
+    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover_enabled(&state));
     while let Some((attempt, (provider_slug, upstream_model))) = failover_policy.next() {
         let attempt_index = (attempt + 1) as i32;
         if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
@@ -459,15 +458,7 @@ async fn audio_speech(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    forward_json_api(
-        &state,
-        &headers,
-        body,
-        "/audio/speech",
-        "authorization",
-        true,
-    )
-    .await
+    forward_json_api(&state, &headers, body, "/audio/speech", "authorization").await
 }
 
 async fn messages(
@@ -475,7 +466,7 @@ async fn messages(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    forward_json_api(&state, &headers, body, "/messages", "x-api-key", true).await
+    forward_json_api(&state, &headers, body, "/messages", "x-api-key").await
 }
 
 /// Gemini uses the same routing/retry dispatcher as the other JSON surfaces;
@@ -507,7 +498,6 @@ async fn gemini(
         body,
         &format!("/v1beta/models/{{model}}:{action}"),
         "x-goog-api-key",
-        true,
     )
     .await
 }
@@ -854,15 +844,7 @@ async fn image_edits(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    forward_json_api(
-        &state,
-        &headers,
-        body,
-        "/images/edits",
-        "authorization",
-        true,
-    )
-    .await
+    forward_json_api(&state, &headers, body, "/images/edits", "authorization").await
 }
 
 async fn images(
@@ -876,7 +858,6 @@ async fn images(
         body,
         "/images/generations",
         "authorization",
-        true,
     )
     .await
 }
@@ -887,7 +868,6 @@ async fn forward_json_api(
     mut body: Value,
     path: &str,
     auth_header: &str,
-    failover: bool,
 ) -> Response {
     let principal = match authenticate(state, headers) {
         Ok(value) => value,
@@ -939,7 +919,7 @@ async fn forward_json_api(
     // Snapshot candidates before dispatch: failed candidates enter cooldown,
     // so re-evaluating the selector while iterating would skip later targets.
     let targets: Vec<_> = inference_targets(state, &model, key_config).collect();
-    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover);
+    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover_enabled(&state));
     while let Some((attempt, (provider_slug, upstream_model))) = failover_policy.next() {
         if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
             return error_response(
@@ -1106,7 +1086,7 @@ async fn forward_json_api(
                     payload = normalize_anthropic_error(payload, status);
                 }
                 // Retry provider failures, but preserve deterministic client errors.
-                if failover && is_retryable_upstream_status(state, status, None) {
+                if is_retryable_upstream_status(state, status, None) {
                     record_attempt(
                         state,
                         &request_id,
@@ -1314,8 +1294,7 @@ async fn responses(
     let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let mut last_error = None;
 
-    let failover = failover_enabled(&state);
-    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover);
+    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover_enabled(&state));
     while let Some((index, (provider_slug, upstream_model))) = failover_policy.next() {
         let attempt = (index + 1) as i32;
         let Some(provider) = state
@@ -1768,15 +1747,7 @@ async fn completions(
             "invalid_request_error",
         );
     }
-    forward_json_api(
-        &state,
-        &headers,
-        body,
-        "/completions",
-        "authorization",
-        true,
-    )
-    .await
+    forward_json_api(&state, &headers, body, "/completions", "authorization").await
 }
 
 async fn embeddings(
@@ -1794,7 +1765,7 @@ async fn embeddings(
             "invalid_request_error",
         );
     }
-    forward_json_api(&state, &headers, body, "/embeddings", "authorization", true).await
+    forward_json_api(&state, &headers, body, "/embeddings", "authorization").await
 }
 
 fn auth_error(status: axum::http::StatusCode, message: &'static str) -> Response {
