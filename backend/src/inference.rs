@@ -806,6 +806,7 @@ async fn forward_json_api(
         return response;
     }
     apply_native_compaction(&mut body, state);
+    apply_headroom_compaction(&mut body, state);
     if let Some(config) = key_config {
         if !model_allowed(config, &model) {
             return error_response(
@@ -1579,6 +1580,7 @@ async fn chat_completions(
         return response;
     }
     apply_native_compaction(&mut body, &state);
+    apply_headroom_compaction(&mut body, &state);
     let key_config = if let Principal::Limited { config, .. } = &principal {
         if !model_allowed(config, &model) {
             return error_response(
@@ -2105,6 +2107,90 @@ fn apply_native_compaction(body: &mut Value, state: &AppState) {
     compact_json_value(body, arrays, strings, protect_recent);
 }
 
+fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
+    let settings = state.inner.settings.read().unwrap();
+    let Some(config) = settings.get("compaction").and_then(Value::as_object) else {
+        return;
+    };
+    if config.get("enabled").and_then(Value::as_bool) != Some(true)
+        || config.get("strategy").and_then(Value::as_str) != Some("headroom")
+    {
+        return;
+    }
+    let Some(limit) = config.get("absoluteTriggerTokens").and_then(Value::as_u64) else {
+        return;
+    };
+    let trigger = config
+        .get("triggerRatio")
+        .and_then(Value::as_f64)
+        .filter(|ratio| ratio.is_finite() && (0.0..=1.0).contains(ratio))
+        .unwrap_or(1.0);
+    if estimate_tokens(body) <= (limit as f64 * trigger).ceil() as usize {
+        return;
+    }
+    let target_ratio = config
+        .get("headroom")
+        .and_then(Value::as_object)
+        .and_then(|headroom| headroom.get("targetRatio"))
+        .and_then(Value::as_f64)
+        .filter(|ratio| ratio.is_finite() && (0.0..=1.0).contains(ratio))
+        .unwrap_or(0.8);
+    let target = (limit as f64 * target_ratio).floor() as usize;
+    let protect_recent = config
+        .get("protectRecent")
+        .and_then(Value::as_u64)
+        .unwrap_or(1) as usize;
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return;
+    };
+    let protected_start = messages.len().saturating_sub(protect_recent);
+    let removable: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(index, message)| {
+            *index < protected_start
+                && !matches!(
+                    message.get("role").and_then(Value::as_str),
+                    Some("system" | "developer")
+                )
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if removable.is_empty() {
+        return;
+    }
+    let mut removed = vec![false; messages.len()];
+    for index in removable {
+        let mut candidate = body.clone();
+        candidate["messages"] = Value::Array(
+            messages
+                .iter()
+                .enumerate()
+                .filter(|(position, _)| !removed[*position] && *position != index)
+                .map(|(_, message)| message.clone())
+                .collect(),
+        );
+        removed[index] = true;
+        if estimate_tokens(&candidate) <= target {
+            break;
+        }
+    }
+    body["messages"] = Value::Array(
+        messages
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !removed[*index])
+            .map(|(_, message)| message.clone())
+            .collect(),
+    );
+}
+
+fn estimate_tokens(value: &Value) -> usize {
+    serde_json::to_string(value)
+        .map(|json| json.len().div_ceil(4))
+        .unwrap_or(usize::MAX)
+}
+
 fn compact_json_value(
     value: &mut Value,
     arrays: Option<usize>,
@@ -2445,6 +2531,51 @@ mod tests {
             body["messages"],
             serde_json::json!(["first", "middle", "last"])
         );
+    }
+
+    #[test]
+    fn headroom_compaction_preserves_instructions_and_recent_history() {
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        state.inner.settings.write().unwrap().insert(
+            "compaction".into(),
+            serde_json::json!({
+                "enabled": true,
+                "strategy": "headroom",
+                "absoluteTriggerTokens": 20,
+                "headroom": {"targetRatio": 0.5},
+                "protectRecent": 1
+            }),
+        );
+        let original = serde_json::json!({"messages":[
+            {"role":"system","content":"instruction"},
+            {"role":"user","content":"old"},
+            {"role":"assistant","content":"old answer"},
+            {"role":"user","content":"latest"}
+        ],"padding":"x".repeat(200)});
+        let mut body = original.clone();
+        apply_headroom_compaction(&mut body, &state);
+        assert_eq!(body["messages"][0], original["messages"][0]);
+        assert_eq!(
+            body["messages"].as_array().unwrap().last().unwrap(),
+            &original["messages"][3]
+        );
+        assert!(body["messages"].as_array().unwrap().len() < 4);
+        assert_eq!(original["messages"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn headroom_compaction_is_noop_without_messages_or_removable_history() {
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        state.inner.settings.write().unwrap().insert(
+            "compaction".into(),
+            serde_json::json!({"enabled":true,"strategy":"headroom","absoluteTriggerTokens":1}),
+        );
+        let mut malformed = serde_json::json!({"messages":"not-an-array"});
+        apply_headroom_compaction(&mut malformed, &state);
+        assert_eq!(malformed["messages"], "not-an-array");
+        let mut instructions = serde_json::json!({"messages":[{"role":"system","content":"x"}]});
+        apply_headroom_compaction(&mut instructions, &state);
+        assert_eq!(instructions["messages"].as_array().unwrap().len(), 1);
     }
 
     #[test]
