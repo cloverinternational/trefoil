@@ -220,7 +220,10 @@ export async function deleteOAuthCredentials(providerId: string, accountId: stri
 async function oauthSessionRequest(path: string, init?: RequestInit): Promise<OAuthSession> {
   const response = await fetch(path, { ...init, headers: { ...authHeaders(), ...(init?.headers ?? {}) } });
   const body = await response.json().catch(() => null) as { data?: OAuthSession; error?: string } | null;
-  if (!response.ok) throw new Error(body?.error || 'Unable to update OAuth login session');
+  if (!response.ok) {
+    const detail = typeof body?.error === 'string' ? body.error : 'Unable to update OAuth login session';
+    throw new Error(detail);
+  }
   if (!body?.data) throw new Error('Invalid OAuth login session response');
   return body.data;
 }

@@ -249,7 +249,13 @@ async fn callback(
             .into_response();
     }
     if let Some(error) = query.error {
-        return update_session(&state, &id, "prompt", Some(error)).await;
+        return oauth_failed(
+            &state,
+            &id,
+            &format!("Authorization was denied: {error}"),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
     }
     let Some(code) = query.code.filter(|code| !code.trim().is_empty()) else {
         return (
@@ -313,7 +319,15 @@ async fn callback(
         .await;
     let response = match result {
         Ok(response) => response,
-        Err(_) => return oauth_failed(&state, &id, "OAuth token request failed").await,
+        Err(_) => {
+            return oauth_failed(
+                &state,
+                &id,
+                "OAuth token request failed",
+                StatusCode::BAD_GATEWAY,
+            )
+            .await
+        }
     };
     let status = response.status();
     let payload = response
@@ -321,10 +335,22 @@ async fn callback(
         .await
         .unwrap_or_default();
     if !status.is_success() {
-        return oauth_failed(&state, &id, "OAuth token exchange rejected").await;
+        return oauth_failed(
+            &state,
+            &id,
+            "OAuth token exchange rejected",
+            StatusCode::BAD_GATEWAY,
+        )
+        .await;
     }
     let Some(access) = payload.get("access_token").and_then(|v| v.as_str()) else {
-        return oauth_failed(&state, &id, "OAuth response omitted access token").await;
+        return oauth_failed(
+            &state,
+            &id,
+            "OAuth response omitted access token",
+            StatusCode::BAD_GATEWAY,
+        )
+        .await;
     };
     let refresh = payload
         .get("refresh_token")
@@ -348,19 +374,21 @@ async fn callback(
         .await
         .is_err()
         {
-            return oauth_failed(&state, &id, "Unable to persist OAuth credentials").await;
+            return oauth_failed(
+                &state,
+                &id,
+                "Unable to persist OAuth credentials",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+            .await;
         }
     }
     update_session(&state, &id, "manual-code", Some("complete".into())).await
 }
 
-async fn oauth_failed(state: &AppState, id: &str, message: &str) -> Response {
-    let _ = update_session(state, id, "cancel", None).await;
-    (
-        StatusCode::BAD_GATEWAY,
-        Json(serde_json::json!({"error":message})),
-    )
-        .into_response()
+async fn oauth_failed(state: &AppState, id: &str, message: &str, status: StatusCode) -> Response {
+    let _ = update_session(state, id, "fail", Some(message.to_string())).await;
+    (status, Json(serde_json::json!({"error":message}))).into_response()
 }
 
 async fn get_session(
@@ -432,6 +460,15 @@ async fn update_session(
                 session
                     .progress
                     .push(serde_json::json!({"status":"complete"}));
+            }
+            "fail" => {
+                session.status = "failed".into();
+                session.prompt = None;
+                session.error = value;
+                session.progress.push(serde_json::json!({
+                    "status": "failed",
+                    "error": session.error.clone()
+                }));
             }
             _ => unreachable!(),
         }
