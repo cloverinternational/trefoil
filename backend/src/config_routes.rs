@@ -721,9 +721,8 @@ async fn config_snapshot(State(state): State<AppState>, headers: HeaderMap) -> R
             serde_json::json!({ "enabled": false, "provider": "plexus-idp" }),
         ),
     );
-    // Provider quota-checker configuration is outside Trefoil's current
-    // ProviderConfig subset; expose the truthful derived empty list.
-    config.insert("quotas".into(), serde_json::json!([]));
+    let quotas = state.inner.providers.read().unwrap().iter().filter_map(|(provider,config)| config.quota_checker.as_ref().map(|quota|serde_json::json!({"provider":provider,"id":quota.id,"type":quota.checker_type,"enabled":quota.enabled,"intervalMinutes":quota.interval,"options":quota.options}))).collect::<Vec<_>>();
+    config.insert("quotas".into(), serde_json::Value::Array(quotas));
     let user_quotas = state.inner.user_quotas.read().unwrap();
     if !user_quotas.is_empty() {
         config.insert(
@@ -2706,4 +2705,10 @@ mod tests {
             "External LLM-based compaction is not supported"
         );
     }
+}
+
+#[cfg(test)]
+mod quota_snapshot_tests {
+ use super::*;
+ #[test] fn snapshot_includes_active_provider_quota_configuration(){let state=AppState::new(Some("admin".into()),Default::default());state.inner.providers.write().unwrap().insert("provider".into(),crate::state::ProviderConfig{quota_checker:Some(serde_json::from_value(serde_json::json!({"id":"checker","type":"claude-code","enabled":true,"intervalMinutes":30})).unwrap()),..Default::default()});let quotas=state.inner.providers.read().unwrap().values().filter_map(|p|p.quota_checker.as_ref()).count();assert_eq!(quotas,1);}
 }
