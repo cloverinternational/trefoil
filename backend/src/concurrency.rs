@@ -108,8 +108,9 @@ async fn concurrency(
     }
     let mode = params.mode.as_deref().unwrap_or("live");
     if mode == "live" {
+        let timestamp = chrono::Utc::now().timestamp_millis();
         let data: Vec<_> = snapshot(&state).into_iter().map(|((provider, model), count)|
-            serde_json::json!({"provider": provider, "model": model, "count": count})
+            serde_json::json!({"provider": provider, "model": model, "count": count, "timestamp":timestamp})
         ).collect();
         return Json(serde_json::json!({"data":data})).into_response();
     }
@@ -301,6 +302,17 @@ mod tracker_tests {
     use super::*;
     use crate::state::KeyConfig;
     use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn active_snapshot_preserves_model_slashes_and_timestamp() {
+        let state=fixture();
+        let _permit=acquire(&state,"provider","family/model");
+        let response=router().with_state(state).oneshot(Request::get("/v0/management/concurrency").header("x-admin-key","admin").body(Body::empty()).unwrap()).await.unwrap();
+        let body:serde_json::Value=serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["data"][0]["model"],"family/model");
+        assert_eq!(body["data"][0]["count"],1);
+        assert!(body["data"][0]["timestamp"].as_i64().unwrap()>0);
+    }
 
     #[test]
     fn permits_track_and_drop_counts() {
