@@ -297,8 +297,13 @@ async fn audio_transcriptions(
         );
     }
     let client = reqwest::Client::new();
+    let request_id = new_request_id();
+    let start_time = now_ms();
     let mut attempted = None;
-    for (provider_slug, upstream_model) in inference_targets(&state, &model, key_config) {
+    for (attempt, (provider_slug, upstream_model)) in
+        inference_targets(&state, &model, key_config).enumerate()
+    {
+        let attempt_index = (attempt + 1) as i32;
         if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
             return error_response(
                 axum::http::StatusCode::FORBIDDEN,
@@ -321,6 +326,20 @@ async fn audio_transcriptions(
             );
         };
         let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+            record_attempt(
+                &state,
+                &request_id,
+                attempt_index,
+                &provider_slug,
+                &upstream_model,
+                "audio_transcriptions",
+                "failed",
+                Some("Provider API base URL is invalid"),
+                None,
+                true,
+                start_time,
+            )
+            .await;
             return error_response(
                 axum::http::StatusCode::BAD_GATEWAY,
                 "Provider API base URL is invalid",
@@ -357,6 +376,20 @@ async fn audio_transcriptions(
                 let status = response.status();
                 let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
                 if is_retryable_upstream_status(&state, status, None) {
+                    record_attempt(
+                        &state,
+                        &request_id,
+                        attempt_index,
+                        &provider_slug,
+                        &upstream_model,
+                        "audio_transcriptions",
+                        "failed",
+                        payload["error"]["message"].as_str(),
+                        Some(status.as_u16() as i32),
+                        true,
+                        start_time,
+                    )
+                    .await;
                     attempted = Some(
                         payload["error"]["message"]
                             .as_str()
@@ -372,9 +405,41 @@ async fn audio_transcriptions(
                     .await;
                     continue;
                 }
+                record_attempt(
+                    &state,
+                    &request_id,
+                    attempt_index,
+                    &provider_slug,
+                    &upstream_model,
+                    "audio_transcriptions",
+                    if status.is_success() {
+                        "success"
+                    } else {
+                        "failed"
+                    },
+                    payload["error"]["message"].as_str(),
+                    Some(status.as_u16() as i32),
+                    false,
+                    start_time,
+                )
+                .await;
                 return (status, Json(payload)).into_response();
             }
             Err(error) => {
+                record_attempt(
+                    &state,
+                    &request_id,
+                    attempt_index,
+                    &provider_slug,
+                    &upstream_model,
+                    "audio_transcriptions",
+                    "failed",
+                    Some(&error.to_string()),
+                    None,
+                    true,
+                    start_time,
+                )
+                .await;
                 register_provider_failure(
                     &state,
                     &provider_slug,
