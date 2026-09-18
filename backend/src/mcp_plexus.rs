@@ -151,8 +151,20 @@ async fn call_tool(
         .and_then(Value::as_str)
         .unwrap_or("");
     let result = match (name, operation) {
-        ("plexus_config", "status") | ("plexus_config", "get") => {
-            json!({"ok":true,"operation":operation,"data":{"mcpEnabled":enabled(state)}})
+        ("plexus_config", "status") => {
+            return forwarded_operation(
+                state,
+                id,
+                operation,
+                "GET",
+                "/v0/management/config/status",
+                None,
+            )
+            .await;
+        }
+        ("plexus_config", "get") => {
+            return forwarded_operation(state, id, operation, "GET", "/v0/management/config", None)
+                .await;
         }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
@@ -1447,6 +1459,30 @@ mod tests {
             response["result"]["structuredContent"]["data"],
             json!(["alpha", "zeta"])
         );
+    }
+
+    #[tokio::test]
+    async fn config_operations_forward_to_management_routes() {
+        for (operation, expected_field) in [("status", "providerCount"), ("get", "providers")] {
+            let response = body(
+                dispatch(
+                    &state(),
+                    json!({
+                        "jsonrpc":"2.0", "id": 20, "method":"tools/call",
+                        "params":{"name":"plexus_config","arguments":{"operation":operation}}
+                    }),
+                )
+                .await,
+            )
+            .await;
+            let structured = &response["result"]["structuredContent"];
+            assert_eq!(structured["ok"], true);
+            assert!(
+                structured["data"][expected_field].is_number()
+                    || structured["data"][expected_field].is_object()
+            );
+            assert_ne!(structured["data"]["mcpEnabled"], true);
+        }
     }
 
     #[tokio::test]
