@@ -193,6 +193,9 @@ async fn call_tool(
         ("plexus_config", "background_exploration") => {
             return config_background_exploration_operation(state, id, args).await;
         }
+        ("plexus_config", "trusted_proxies") => {
+            return config_trusted_proxies_operation(state, id, args).await;
+        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
             // HashMap iteration order is intentionally unstable.  MCP clients
@@ -669,6 +672,39 @@ async fn config_background_exploration_operation(
                 "background_exploration",
                 "GET",
                 "/v0/management/config/background-exploration",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_trusted_proxies_operation(
+    state: &AppState,
+    id: Value,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "trusted_proxies",
+                "PATCH",
+                "/v0/management/config/trusted-proxies",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "trusted_proxies",
+                "GET",
+                "/v0/management/config/trusted-proxies",
                 None,
             )
             .await
@@ -2000,6 +2036,26 @@ mod tests {
         let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"background_exploration","body":[]}}})).await).await;
         assert_eq!(invalid["error"]["code"], -32602);
         assert_eq!(invalid["error"]["message"], "body must be an object");
+    }
+
+    #[tokio::test]
+    async fn config_trusted_proxies_supports_read_patch_and_validation() {
+        let state = state();
+        let read = body(dispatch(&state, json!({"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"trusted_proxies"}}})).await).await;
+        assert_eq!(
+            read["result"]["structuredContent"]["data"],
+            json!({"trustedProxies":["0.0.0.0/0","::/0"]})
+        );
+        let patched = body(dispatch(&state, json!({"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"trusted_proxies","body":{"trustedProxies":[" 127.0.0.1 ","","2001:db8::/32"]}}}})).await).await;
+        assert_eq!(
+            patched["result"]["structuredContent"]["data"],
+            json!({"trustedProxies":["127.0.0.1","2001:db8::/32"]})
+        );
+        let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"trusted_proxies","body":{"trustedProxies":["bad"]}}}})).await).await;
+        assert_eq!(invalid["result"]["structuredContent"]["ok"], false);
+        let malformed = body(dispatch(&state, json!({"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"trusted_proxies","body":[]}}})).await).await;
+        assert_eq!(malformed["error"]["code"], -32602);
+        assert_eq!(malformed["error"]["message"], "body must be an object");
     }
 
     #[tokio::test]
