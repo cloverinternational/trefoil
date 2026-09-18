@@ -587,7 +587,11 @@ async fn delete(
 
 #[cfg(test)]
 mod tests {
-    use super::{inject_upstream_auth, safe_configured_header, select_round_robin, UpstreamKey};
+    use super::{
+        inject_upstream_auth, safe_configured_header, select_round_robin, validate_jsonrpc,
+        UpstreamKey,
+    };
+    use serde_json::json;
     use std::collections::HashMap;
 
     #[test]
@@ -640,6 +644,47 @@ mod tests {
         assert_eq!(
             result.get("content-type"),
             Some(&String::from("application/json"))
+        );
+    }
+
+    #[test]
+    fn rejects_empty_batches_and_non_object_entries_before_dispatch() {
+        for body in [json!([]), json!(["not-json-rpc"])] {
+            let error = validate_jsonrpc(&serde_json::to_vec(&body).unwrap()).unwrap_err();
+            assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_version_missing_method_and_scalar_params() {
+        for body in [
+            json!({"jsonrpc":"1.0","id":1,"method":"tools/list"}),
+            json!({"jsonrpc":"2.0","id":1}),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":true}),
+        ] {
+            let error = validate_jsonrpc(&serde_json::to_vec(&body).unwrap()).unwrap_err();
+            assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[test]
+    fn extracts_method_and_tool_without_accepting_invalid_tool_params() {
+        let body = json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":"lookup"}
+        });
+        assert_eq!(
+            validate_jsonrpc(&serde_json::to_vec(&body).unwrap()).unwrap(),
+            (Some("tools/call".into()), Some("lookup".into()))
+        );
+
+        let invalid = json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":42}
+        });
+        assert_eq!(
+            validate_jsonrpc(&serde_json::to_vec(&invalid).unwrap()).unwrap(),
+            (Some("tools/call".into()), None)
         );
     }
 }
