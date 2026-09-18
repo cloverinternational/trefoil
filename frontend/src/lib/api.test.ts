@@ -21,6 +21,12 @@ import {
   submitOAuthPrompt,
   cancelOAuthSession,
   verifyAdminKey,
+  getMcpServers,
+  saveMcpServer,
+  deleteMcpServer,
+  getMcpKeys,
+  addMcpKey,
+  deleteMcpKey,
 } from './api';
 
 const response = (body: unknown, status = 200, headers?: HeadersInit) =>
@@ -198,5 +204,38 @@ describe('frontend management API wire contracts', () => {
     await expect(getOAuthProviders()).resolves.toEqual([]);
     await expect(getOAuthCredentialStatus('anthropic', 'default')).resolves.toEqual({ ready: false });
     await expect(deleteOAuthCredentials('anthropic', 'default')).rejects.toThrow('OAuth credentials not found');
+  });
+
+  it('covers MCP server and key management wire contracts, including encoded names and failures', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'mcp-admin-key') });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ 'server/one': { upstreamUrl: 'https://mcp.example', enabled: true } }))
+      .mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(response({ keys: [{ id: 7, key: 'redacted', isActive: true }] }))
+      .mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(response(null));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getMcpServers()).resolves.toEqual({ 'server/one': { upstreamUrl: 'https://mcp.example', enabled: true } });
+    await expect(saveMcpServer('server/one', { enabled: false }, true)).resolves.toBeUndefined();
+    await expect(deleteMcpServer('server/one')).resolves.toBeUndefined();
+    await expect(getMcpKeys('server/one')).resolves.toEqual([{ id: 7, key: 'redacted', isActive: true }]);
+    await expect(addMcpKey('server/one', 'key-value')).resolves.toBeUndefined();
+    await expect(deleteMcpKey('server/one', 7)).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls).toEqual([
+      ['/v0/management/mcp-servers', { headers: { 'x-admin-key': 'mcp-admin-key' } }],
+      ['/v0/management/mcp-servers/server%2Fone', { method: 'PATCH', headers: { 'x-admin-key': 'mcp-admin-key', 'content-type': 'application/json' }, body: '{"enabled":false}' }],
+      ['/v0/management/mcp-servers/server%2Fone', { method: 'DELETE', headers: { 'x-admin-key': 'mcp-admin-key' } }],
+      ['/v0/management/mcp-servers/server%2Fone/keys', { headers: { 'x-admin-key': 'mcp-admin-key' } }],
+      ['/v0/management/mcp-servers/server%2Fone/keys', { method: 'POST', headers: { 'x-admin-key': 'mcp-admin-key', 'content-type': 'application/json' }, body: '{"key":"key-value","is_active":true}' }],
+      ['/v0/management/mcp-servers/server%2Fone/keys/7', { method: 'DELETE', headers: { 'x-admin-key': 'mcp-admin-key' } }],
+    ]);
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ error: 'server unavailable' }, 503)));
+    await expect(getMcpServers()).rejects.toThrow('Unable to load MCP servers');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ error: 'invalid launcher' }, 400)));
+    await expect(saveMcpServer('server/one', {}, false)).rejects.toThrow('invalid launcher');
   });
 });
