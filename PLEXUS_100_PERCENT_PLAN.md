@@ -10,7 +10,7 @@ Legend: 🔴 not started · 🟡 partial · 🟢 done
 
 ## 1. Provider OAuth login flow — 🟡 partial
 
-**Missing entirely.** Config schema already has `oauth_provider`/
+**Session plumbing is implemented; provider exchanges remain partial.** Config schema already has `oauth_provider`/
 `oauth_account` fields on `ProviderConfig` (`state.rs`), and
 `oauth.rs` exposes static provider *discovery* (`GET /oauth/providers`,
 `credentials/status`, `DELETE credentials`), but there is no way to actually
@@ -27,9 +27,8 @@ OpenRouter), `codex-version-service.ts` (72 lines).
 To port:
 - [x] `POST /v0/management/oauth/sessions` — start a login session for a
       provider id, return authorize URL (+ PKCE verifier stored server-side).
-- [x] `GET /v0/management/oauth/sessions/:id` — poll session status
-      (currently a hardcoded 404 stub in `oauth.rs`; needs a real session
-      store + state machine).
+- [x] `GET /v0/management/oauth/sessions/:id` — poll persisted session status
+      from the real session store/state machine.
 - [x] `POST /v0/management/oauth/sessions/:id/prompt` — supply user input
       mid-flow (e.g. selecting an org/workspace).
 - [x] `POST /v0/management/oauth/sessions/:id/manual-code` — accept a
@@ -45,6 +44,8 @@ To port:
       OpenAI Codex (ChatGPT Plus/Pro), GitHub Copilot, xAI, Kimi Code,
       OpenRouter — each has distinct flow quirks (device code vs PKCE vs
       callback server) in `oauth-native-request.ts`.
+- [x] Provider discovery exposes and tests the supported login-flow matrix
+      (`callback` versus `manualCode`) for all six advertised providers.
 - [ ] Request masking/identity spoofing for subscription providers
       (`transformers/oauth/masking/*` — cc-billing, cc-identity, cc-tools,
       cc-headers — 11 files) so requests sent through a Claude-Code/Codex

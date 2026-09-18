@@ -29,13 +29,8 @@ the flat `/v0/management/quotas` and `/v0/management/quota/status/:key`):
 - `GET /v0/management/quotas/:checkerId/history`
 - `POST /v0/management/quotas/:checkerId/check`
 
-OAuth login-session flow (interactive provider OAuth, 5 routes — Trefoil's
-`oauth.rs` only stubs `GET /sessions/:id` → 404):
-- `POST /v0/management/oauth/sessions`
-- `POST /v0/management/oauth/sessions/:id/cancel`
-- `POST /v0/management/oauth/sessions/:id/manual-code`
-- `POST /v0/management/oauth/sessions/:id/prompt`
-- `GET /v0/management/oauth/models`
+Provider-specific OAuth login routes (5 routes — session lifecycle and model
+discovery are now present in Trefoil; provider exchanges remain partial):
 
 Observability/metrics (3 routes):
 - `GET /v0/management/metrics` (Prometheus text-format scrape endpoint)
@@ -67,7 +62,7 @@ one call per verb. Not an actual gap.
 | Management CRUD/config/auth | ~95% of routes ported | Strong | Field-level config schema (failover, cooldown, compaction, vision-fallthrough, trusted-proxies, MCP servers, OAuth discovery) all present with matching validation error shapes and ~275 differential-harness cases plus 173 passing Rust unit tests. |
 | Custom quota checkers | 0% | **Not implemented** | No `custom_checkers` table/module in Trefoil at all. `checker_types()` returns a hardcoded mirror of Plexus's built-in registry; `configured` is always `[]`. Running/testing user-supplied checker code (`custom-checker-runtime.ts` in Plexus) has no Trefoil equivalent. |
 | Quota checker results | Partial | `/v0/management/quotas` and `/quota/status/:key` exist (real DB-backed `quota_state` reads) but the per-checker `/quotas/:checkerId`, `/history`, `/check` routes are absent — no scheduled provider-quota polling (`QuotaScheduler`) exists. |
-| Provider OAuth login flow | 0% (interactive flow) | **Not implemented** | Registration/PKCE-token-exchange plumbing for *MCP client* OAuth is solid (`oauth_server.rs`), but the separate *provider* OAuth login flow (browser-based Anthropic/OpenAI/xAI login, callback server, manual-code entry) used to populate `oauth_provider`/`oauth_account` credentials has no session/prompt/cancel/manual-code routes or backing service. |
+| Provider OAuth login flow | Routes and session state implemented; provider exchanges partial | **Partial** | `oauth.rs` implements session lifecycle, PKCE callback/manual-code capability reporting, credential persistence, and model discovery. Provider-specific exchanges and request masking remain incomplete; `backend/src/oauth.rs` tests assert every advertised provider exposes exactly one supported login flow. |
 | Inference dispatch/failover | Route-complete | Partial | `resolve_target` picks the *first* eligible alias target per group rather than iterating the full ordered target list with retry-on-failure across all candidates (Plexus's `dispatcher.ts`/`router.ts`). Each inference handler (`chat_completions`, `completions`, `embeddings`, `messages`) hand-rolls its own single-hop "fallback" branch instead of sharing one dispatch service — duplicated retry/failover/usage-recording logic across ~4 call sites in `inference.rs` (3190 lines, monolithic) vs Plexus's dedicated `services/dispatch/` package (dispatcher, media-dispatcher, standard-attempt-request, request-manager, image-model-bridge — ~4000 lines across focused modules). |
 | Quota enforcement | Functional, documented gap | `enforce_request_quotas` only reports the single most-constrained quota in `blocking_quotas`; Plexus aggregates all simultaneously-blocking quotas. Comment in code acknowledges this. |
 | Observability/metrics | Missing | No Prometheus `/metrics` endpoint, no SSE `/events` or `/logs/stream` endpoints. `GET /v0/system/logs/recent` (polling) is present; live streaming is not. |
@@ -118,6 +113,8 @@ one call per verb. Not an actual gap.
 - [x] Migration count is 84 (Trefoil) vs 83 (Plexus), consistent history.
 - [x] OAuth (MCP-client) authorization-code + PKCE + refresh rotation is
       real, DB-backed, and more complete than previously scored.
+- [x] Provider OAuth discovery reports callback/manual-code capabilities for
+      all six advertised providers, with a backend test guarding the matrix.
 - [x] MCP local-process lifecycle (spawn/stop/restart/logs) is implemented
       with a launcher allowlist.
 - [x] `plexus_quota` MCP operations (`status`, `clear`, `recompute`) are wired

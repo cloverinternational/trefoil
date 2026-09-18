@@ -819,6 +819,13 @@ mod tests {
 
     #[test]
     fn capabilities_explicitly_describe_supported_flows() {
+        for provider in SUPPORTED_PROVIDERS {
+            let caps = capabilities(provider).expect("every advertised provider has capabilities");
+            assert_ne!(
+                caps.callback, caps.manual_code,
+                "{provider} must advertise one login flow"
+            );
+        }
         assert_eq!(capabilities("anthropic").unwrap().callback, true);
         assert_eq!(capabilities("anthropic").unwrap().manual_code, false);
         assert_eq!(capabilities("github-copilot").unwrap().callback, false);
