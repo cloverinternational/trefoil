@@ -6,6 +6,7 @@ import tailwindcss from '@tailwindcss/vite';
 // /v0 and /v1 paths identically to the Plexus reference.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  test: { exclude: ['e2e/**', 'tests/e2e/**', 'node_modules/**'] },
   server: {
     proxy: {
       '/v0': 'http://127.0.0.1:8080',
