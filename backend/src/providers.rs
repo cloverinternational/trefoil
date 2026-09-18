@@ -254,8 +254,7 @@ async fn fetch_models(
         return error.into_response();
     }
     let Some(url) = body.get("url").and_then(Value::as_str) else {
-        return ApiError::validation(vec![ValidationIssue::root("url is required")])
-            .into_response();
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":{"message":"Invalid request body","type":"validation_error","code":400}}))).into_response();
     };
     let Ok(parsed) = url::Url::parse(url) else {
         return ApiError::Simple(StatusCode::BAD_REQUEST, "Invalid URL".into()).into_response();

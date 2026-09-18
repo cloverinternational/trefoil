@@ -235,7 +235,7 @@ fn valid_archive_entry(
         && path.components().count() == 1
         && (name == "manifest.json"
             || name == "config.json"
-            || TABLES.iter().any(|table| name == format!("{table}.csv.gz")))
+            || TABLES.iter().any(|table| name == format!("{table}.csv.gz") || (name == format!("{table}.csv") && size == 0)))
         && size <= MAX_ENTRY_BYTES
         && total_size.saturating_add(size) <= MAX_UNCOMPRESSED_BACKUP_BYTES
         && !duplicate
@@ -441,6 +441,10 @@ async fn build_archive(
                     );
                     csv.push('\n');
                 }
+            }
+            if csv.is_empty() {
+                append_bytes(&mut archive, &format!("{table}.csv"), &[])?;
+                continue;
             }
             let mut csv_compressed = GzEncoder::new(Vec::new(), Compression::default());
             csv_compressed.write_all(csv.as_bytes())?;

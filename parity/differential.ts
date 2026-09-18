@@ -13,6 +13,8 @@
 // credentials or production requests — only the fixed test values below,
 // matching packages/backend/src/routes/management/__tests__/admin-auth.test.ts.
 
+import { gunzipSync } from 'node:zlib';
+
 const PLEXUS_BASE_URL = process.env.PLEXUS_BASE_URL ?? 'http://127.0.0.1:4100';
 const TREFOIL_BASE_URL = process.env.TREFOIL_BASE_URL ?? 'http://127.0.0.1:8080';
 
@@ -217,6 +219,12 @@ function normalizeForCase(path: string, body: unknown): unknown {
     delete object.dialect;
     return object;
   }
+  if (path.includes('/mcp-servers/') && path.endsWith('/stop') && normalized && typeof normalized === 'object') {
+    const result = { ...(normalized as Record<string, unknown>) };
+    if (typeof result.exitedAt !== 'string' || !Number.isFinite(Date.parse(result.exitedAt))) throw new Error('Invalid stop exitedAt timestamp');
+    result.exitedAt = '<timestamp>';
+    return result;
+  }
   if ((path.includes('/custom-checkers/') || path === '/v0/management/custom-checkers') && normalized && typeof normalized === 'object') {
     const scrub = (value: unknown): unknown => {
       if (Array.isArray(value)) return value.map(scrub);
@@ -285,6 +293,32 @@ function normalizeForCase(path: string, body: unknown): unknown {
 // Structural comparison, independent of key insertion order (Fastify/JS
 // object literals and Rust serde_json output insertion-order their keys
 // differently even when semantically identical).
+// Compare decompressed archive entries, never lossy UTF-8 decoded gzip bytes.
+// Only metadata already excluded for JSON backups is omitted here.
+export function parseBackupArchive(bytes: Uint8Array): unknown {
+  const tar = gunzipSync(bytes);
+  const result: Record<string, unknown> = {};
+  for (let offset = 0; offset + 512 <= tar.length;) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every(value => value === 0)) break;
+    const name = header.subarray(0, 100).toString().split('\0')[0];
+    const size = parseInt(header.subarray(124, 136).toString().replace(/\0/g, '').trim(), 8);
+    if (!Number.isFinite(size) || size < 0 || offset + 512 + size > tar.length || Object.hasOwn(result, name)) throw new Error('Invalid backup tar entry');
+    let data = tar.subarray(offset + 512, offset + 512 + size);
+    if (name.endsWith('.gz')) data = gunzipSync(data);
+    let value: unknown = data.toString('utf8');
+    if (name.endsWith('.json')) {
+      const parsed = JSON.parse(value as string);
+      if (parsed && typeof parsed === 'object') { delete parsed.created_at; delete parsed.dialect; }
+      value = parsed;
+    }
+    result[name] = value;
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  if (!result['manifest.json'] || !result['config.json']) throw new Error('Backup archive missing manifest/config');
+  return result;
+}
+
 export function parseResponseBody(text: string, contentType: string | null): unknown {
   const trimmed = text.trim();
   const isJson = contentType?.includes('application/json') || contentType?.includes('+json');
@@ -352,8 +386,9 @@ async function fetchJson(
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const contentType = res.headers.get('content-type');
-  const raw = await res.text();
-  const responseBody = parseResponseBody(raw, contentType);
+  const responseBody = contentType?.includes('application/gzip')
+    ? parseBackupArchive(new Uint8Array(await res.arrayBuffer()))
+    : parseResponseBody(await res.text(), contentType);
   return { status: res.status, body: responseBody, contentType };
 }
 

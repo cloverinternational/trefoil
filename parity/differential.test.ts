@@ -61,3 +61,12 @@ describe('differential reconciliation', () => {
     );
   });
 });
+
+describe('backup binary comparison', () => {
+  test('rejects malformed and incomplete archives', async () => {
+    const { parseBackupArchive } = await import('./differential');
+    const { gzipSync } = await import('node:zlib');
+    expect(() => parseBackupArchive(new Uint8Array([1, 2, 3]))).toThrow();
+    expect(() => parseBackupArchive(gzipSync(Buffer.alloc(1024)))).toThrow('missing manifest/config');
+  });
+});
