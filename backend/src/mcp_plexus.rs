@@ -190,6 +190,9 @@ async fn call_tool(
         ("plexus_config", "vision_fallthrough") => {
             return config_vision_fallthrough_operation(state, id, args).await;
         }
+        ("plexus_config", "background_exploration") => {
+            return config_background_exploration_operation(state, id, args).await;
+        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
             // HashMap iteration order is intentionally unstable.  MCP clients
@@ -633,6 +636,39 @@ async fn config_vision_fallthrough_operation(
                 "vision_fallthrough",
                 "GET",
                 "/v0/management/config/vision-fallthrough",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_background_exploration_operation(
+    state: &AppState,
+    id: Value,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "background_exploration",
+                "PATCH",
+                "/v0/management/config/background-exploration",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "background_exploration",
+                "GET",
+                "/v0/management/config/background-exploration",
                 None,
             )
             .await
@@ -1946,6 +1982,24 @@ mod tests {
             unchanged["result"]["structuredContent"]["data"],
             json!({"enabled":true,"model":"vision"})
         );
+    }
+
+    #[tokio::test]
+    async fn config_background_exploration_supports_read_patch_and_validation() {
+        let state = state();
+        let read = body(dispatch(&state, json!({"jsonrpc":"2.0","id":38,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"background_exploration"}}})).await).await;
+        assert_eq!(
+            read["result"]["structuredContent"]["data"],
+            json!({"enabled":false,"stalenessThresholdSeconds":600,"workerConcurrency":2})
+        );
+        let patched = body(dispatch(&state, json!({"jsonrpc":"2.0","id":39,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"background_exploration","body":{"enabled":true,"stalenessThresholdSeconds":"120","workerConcurrency":4}}}})).await).await;
+        assert_eq!(
+            patched["result"]["structuredContent"]["data"],
+            json!({"enabled":true,"stalenessThresholdSeconds":120,"workerConcurrency":4})
+        );
+        let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"background_exploration","body":[]}}})).await).await;
+        assert_eq!(invalid["error"]["code"], -32602);
+        assert_eq!(invalid["error"]["message"], "body must be an object");
     }
 
     #[tokio::test]
