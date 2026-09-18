@@ -163,3 +163,21 @@ async fn empty_checker_success_replaces_stale_quota_result() {
     assert_eq!(body["success"],true);
     assert_eq!(body["meters"],serde_json::json!([]));
 }
+
+#[tokio::test]
+#[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL"]
+async fn latest_quota_uses_public_meter_contract_not_storage_rows() {
+    use axum::{body::Body,http::Request};
+    use tower::ServiceExt;
+    use http_body_util::BodyExt;
+    let pool=database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
+    database::migrate(&pool).await.unwrap();
+    sqlx::query("INSERT INTO meter_snapshots(checker_id,checker_type,provider,meter_key,kind,unit,label,used,remaining,utilization_state,utilization_percent,status,resets_at,checked_at,created_at) VALUES('contract-checker','claude-code','provider','five_hour','allowance','percentage','5-hour quota',25,75,'reported',25,'ok',1789732800000,1789730000000,1789730000000)").execute(&pool).await.unwrap();
+    let state=trefoil_backend::AppState::new(Some("admin".into()),Default::default()).with_database(pool);
+    let response=trefoil_backend::app(state).oneshot(Request::get("/v0/management/quotas/contract-checker").header("x-admin-key","admin").body(Body::empty()).unwrap()).await.unwrap();
+    let body:serde_json::Value=serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(body["checkedAt"].is_string());
+    let meter=&body["meters"][0];assert_eq!(meter["key"],"five_hour");assert_eq!(meter["utilizationPercent"],25.0);
+    assert_eq!(meter["resetsAt"],"2026-09-18T12:00:00.000Z");
+    assert!(meter.get("id").is_none() && meter.get("meterKey").is_none() && meter.get("limit").is_none());
+}

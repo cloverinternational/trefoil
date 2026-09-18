@@ -568,6 +568,24 @@ fn snapshot_json(row: &sqlx::postgres::PgRow) -> serde_json::Value {
     })
 }
 
+fn meter_json(row: &sqlx::postgres::PgRow) -> serde_json::Value {
+    let stored=snapshot_json(row);
+    let mut meter=serde_json::Map::new();
+    meter.insert("key".into(),stored["meterKey"].clone());
+    for key in ["label","kind","unit","group","scope","limit","used","remaining","status","periodValue","periodUnit","periodCycle"] {
+        if !stored[key].is_null() {meter.insert(key.into(),stored[key].clone());}
+    }
+    meter.insert("utilizationPercent".into(),match stored["utilizationState"].as_str() {
+        Some("unknown")=>serde_json::json!("unknown"),
+        Some("not_applicable")=>serde_json::json!("not_applicable"),
+        _=>if stored["utilizationPercent"].is_null() {serde_json::json!(0)} else {stored["utilizationPercent"].clone()}
+    });
+    if let Some(ms)=stored["resetsAt"].as_i64() {
+        if let Some(date)=chrono::DateTime::from_timestamp_millis(ms) {meter.insert("resetsAt".into(),serde_json::json!(date.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)));}
+    }
+    meter.into()
+}
+
 async fn quota_result(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -606,9 +624,9 @@ async fn quota_result(
         .iter()
         .find(|r| !r.try_get::<bool, _>("success").unwrap_or(false))
     {
-        return Json(serde_json::json!({"checkerId":checker_id,"provider":row.try_get::<String,_>("provider").unwrap_or_default(),"checkedAt":checked,"success":false,"error":row.try_get::<Option<String>,_>("error_message").unwrap_or(None),"meters":[]})).into_response();
+        return Json(serde_json::json!({"checkerId":checker_id,"checkerType":row.try_get::<String,_>("checker_type").unwrap_or_default(),"provider":row.try_get::<String,_>("provider").unwrap_or_default(),"checkedAt":chrono::DateTime::from_timestamp_millis(checked).map(|date|date.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)),"success":false,"error":row.try_get::<Option<String>,_>("error_message").unwrap_or(None),"meters":[]})).into_response();
     }
-    Json(serde_json::json!({"checkerId":checker_id,"checkerType":latest[0].try_get::<String,_>("checker_type").unwrap_or_default(),"provider":latest[0].try_get::<String,_>("provider").unwrap_or_default(),"checkedAt":checked,"success":true,"meters":latest.iter().filter(|r| !matches!(r.try_get::<String,_>("meter_key").unwrap_or_default().as_str(), "_empty" | "_error")).map(|r| snapshot_json(r)).collect::<Vec<_>>() })).into_response()
+    Json(serde_json::json!({"checkerId":checker_id,"checkerType":latest[0].try_get::<String,_>("checker_type").unwrap_or_default(),"provider":latest[0].try_get::<String,_>("provider").unwrap_or_default(),"checkedAt":chrono::DateTime::from_timestamp_millis(checked).map(|date|date.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)),"success":true,"meters":latest.iter().filter(|r| !matches!(r.try_get::<String,_>("meter_key").unwrap_or_default().as_str(), "_empty" | "_error")).map(|r| meter_json(r)).collect::<Vec<_>>() })).into_response()
 }
 
 async fn quota_history(
