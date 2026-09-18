@@ -101,6 +101,7 @@ pub struct OAuthRequest {
     pub provider: String,
     pub url: String,
     pub fields: Vec<(String, String)>,
+    pub json: bool,
     pub timeout: Duration,
 }
 
@@ -134,6 +135,7 @@ pub async fn refresh<T: OAuthTransport + ?Sized>(
                 ("refresh_token".into(), refresh_token.into()),
                 ("client_id".into(), spec.client_id.into()),
             ],
+            json: false,
             timeout: Duration::from_secs(15),
         })
         .await?;
@@ -153,17 +155,17 @@ pub async fn exchange<T: OAuthTransport + ?Sized>(
     redirect_uri: &str,
 ) -> Result<TokenResponse, OAuthTransportError> {
     let spec = provider_spec(provider).ok_or(OAuthTransportError::UnsupportedProvider)?;
+    let (fields, json) = if provider == "openrouter" {
+        (vec![("code".into(), code.into()), ("code_verifier".into(), verifier.into()), ("code_challenge_method".into(), "S256".into())], true)
+    } else {
+        (vec![("grant_type".into(), "authorization_code".into()), ("code".into(), code.into()), ("client_id".into(), spec.client_id.into()), ("redirect_uri".into(), redirect_uri.into()), ("code_verifier".into(), verifier.into())], false)
+    };
     let response = transport
         .send(OAuthRequest {
             provider: provider.to_owned(),
             url: spec.token_endpoint.to_owned(),
-            fields: vec![
-                ("grant_type".into(), "authorization_code".into()),
-                ("code".into(), code.into()),
-                ("client_id".into(), spec.client_id.into()),
-                ("redirect_uri".into(), redirect_uri.into()),
-                ("code_verifier".into(), verifier.into()),
-            ],
+            fields,
+            json,
             timeout: Duration::from_secs(15),
         })
         .await?;
@@ -172,7 +174,12 @@ pub async fn exchange<T: OAuthTransport + ?Sized>(
             status: response.status,
         });
     }
-    parse_token_response(&response.body, spec.token_field, "")
+    if provider == "openrouter" { parse_openrouter_response(&response.body) } else { parse_token_response(&response.body, spec.token_field, "") }
+}
+
+fn parse_openrouter_response(body: &Value) -> Result<TokenResponse, OAuthTransportError> {
+    let access_token = body.get("key").and_then(Value::as_str).filter(|v| !v.trim().is_empty()).ok_or(OAuthTransportError::MissingFields)?;
+    Ok(TokenResponse { access_token: access_token.to_owned(), refresh_token: String::new(), expires_in: 0 })
 }
 
 pub fn parse_token_response(
@@ -210,11 +217,18 @@ impl OAuthTransport for ReqwestTransport {
     fn send(&self, request: OAuthRequest) -> TransportFuture {
         Box::pin(async move {
             let client = reqwest::Client::new();
-            let response = client
-                .post(&request.url)
-                .form(&request.fields)
-                .timeout(request.timeout)
-                .send()
+            let mut builder = client.post(&request.url).timeout(request.timeout);
+            if request.json {
+                let body: serde_json::Map<String, Value> = request
+                    .fields
+                    .into_iter()
+                    .map(|(key, value)| (key, Value::String(value)))
+                    .collect();
+                builder = builder.json(&body);
+            } else {
+                builder = builder.form(&request.fields);
+            }
+            let response = builder.send()
                 .await
                 .map_err(|e| {
                     if e.is_timeout() {

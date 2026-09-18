@@ -162,10 +162,9 @@ fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option
     };
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let mut url = url::Url::parse(endpoint).ok()?;
-    let redirect = format!("/v0/management/oauth/sessions/{session_id}/callback");
+    let redirect = format!("https://localhost/v0/management/oauth/sessions/{session_id}/callback");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
-        .append_pair("client_id", "trefoil")
         .append_pair("redirect_uri", &redirect)
         .append_pair("state", session_id)
         .append_pair("code_challenge", &challenge)
@@ -554,7 +553,29 @@ async fn manual_code(
         )
             .into_response();
     }
-    update_session(&state, &id, "manual-code", Some(body.value)).await
+    let session = match state.inner.oauth_sessions.read().unwrap().get(&id).cloned() {
+        Some(session) if session.expires_at > now_ms() && session.status == "waiting" => session,
+        Some(_) => return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response(),
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"OAuth session not found"}))).into_response(),
+    };
+    let verifier = state.inner.oauth_pkce_verifiers.write().unwrap().remove(&id)
+        .or_else(|| session.pkce_verifier.clone());
+    let Some(verifier) = verifier else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"OAuth verifier unavailable"}))).into_response();
+    };
+    let transport = crate::oauth_transport::ReqwestTransport;
+    let token = match crate::oauth_transport::exchange(&transport, &session.provider_id, &body.value, &verifier, "https://localhost/v0/management/oauth/sessions/callback").await {
+        Ok(token) => token,
+        Err(crate::oauth_transport::OAuthTransportError::Http { .. }) => return oauth_failed(&state, &id, "OAuth token exchange rejected", StatusCode::BAD_GATEWAY).await,
+        Err(_) => return oauth_failed(&state, &id, "OAuth token request failed", StatusCode::BAD_GATEWAY).await,
+    };
+    let expires = if token.expires_in > 0 { now_ms().saturating_add(token.expires_in.saturating_mul(1000)) } else { i64::MAX };
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_oauth_credential(pool, &session.provider_id, &session.account_id, &token.access_token, &token.refresh_token, expires).await.is_err() {
+            return oauth_failed(&state, &id, "Unable to persist OAuth credentials", StatusCode::INTERNAL_SERVER_ERROR).await;
+        }
+    }
+    update_session(&state, &id, "manual-code", Some("complete".into())).await
 }
 
 async fn models(
