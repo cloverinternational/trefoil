@@ -143,7 +143,7 @@ async fn dispatch(state: &AppState, request: Value) -> Response {
 }
 
 fn is_destructive(operation: &str) -> bool {
-    matches!(operation, "delete" | "delete_all" | "clear" | "clear_for_key" | "quota_clear" | "delete_log" | "delete_all_logs" | "disable" | "restore" | "restart" | "rotate" | "truncate" | "import" | "overwrite" | "reset_logs" | "clear_cooldowns")
+    matches!(operation, "delete" | "delete_all" | "clear" | "clear_for_key" | "quota_clear" | "delete_log" | "delete_all_logs" | "disable" | "restore" | "restart" | "rotate" | "truncate" | "import" | "overwrite")
 }
 
 async fn call_tool(
@@ -422,6 +422,10 @@ async fn forwarded_request(
         redact_key_secrets(payload)
     } else { payload };
     let payload = if status.is_success() && path == "/v0/management/user-quotas" && operation == "list" { record_list(payload) } else { payload };
+    let payload = if status.is_success() && operation == "backup" {
+        if content_type.contains("json") { json!({"full":false,"backup":payload}) }
+        else { json!({"full":true,"bytes":bytes.len(),"contentType":content_type,"encoding":"base64","archive":base64::engine::general_purpose::STANDARD.encode(&bytes)}) }
+    } else { payload };
     let result = if status.is_success() {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -496,14 +500,14 @@ async fn operations_operation(
     let args = args.cloned().unwrap_or_else(|| json!({}));
     if matches!(
         operation,
-        "restore" | "restart" | "clear_cooldowns" | "reset_logs"
+        "restore" | "restart"
     ) && args.get("destructive").and_then(Value::as_str) != Some("acknowledged")
     {
         return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
     }
     match operation {
         "backup" => {
-            let path = if args.get("full").and_then(Value::as_bool).unwrap_or(false) {
+            let path = if args.get("query").and_then(|q|q.get("full")).is_some_and(|v|v == true || v == "true") {
                 "/v0/management/backup?full=true"
             } else {
                 "/v0/management/backup"
@@ -1487,7 +1491,19 @@ async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) ->
     if request.is_array() {
         return rpc_error(Value::Null, -32600, "Invalid Request");
     }
-    dispatch(&state, request).await
+    let started = chrono::Utc::now().timestamp_millis();
+    let method = request.get("method").and_then(Value::as_str).map(str::to_owned);
+    let tool = request.pointer("/params/name").and_then(Value::as_str).map(str::to_owned);
+    let response = dispatch(&state, request).await;
+    if let Some(pool) = &state.inner.database {
+        let id = format!("mcp-{:032x}", rand::random::<u128>());
+        let duration = chrono::Utc::now().timestamp_millis().saturating_sub(started);
+        if let Err(error) = sqlx::query("INSERT INTO mcp_request_usage (request_id,start_time,duration_ms,server_name,upstream_url,method,jsonrpc_method,tool_name,api_key,response_status) VALUES ($1,$2,$3,'plexus','/mcp/plexus','POST',$4,$5,'admin',$6)")
+            .bind(id).bind(started).bind(duration).bind(method).bind(tool).bind(response.status().as_u16() as i32).execute(pool).await {
+            crate::system_logs::event(&state, "error", "Unable to persist management MCP audit", [("error".into(), json!(error.to_string()))]);
+        }
+    }
+    response
 }
 
 async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
