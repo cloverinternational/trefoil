@@ -175,5 +175,5 @@ Since that live run, the MCP admin shim has added configuration operations for
 MCP enablement, timeout, compaction, exploration/failover/cooldown, tracing,
 stall, vision fallthrough, background exploration, and trusted proxies, plus
 system-log level and module operations. These milestones are verified by the
-Rust unit suite at revision `0c2cc70` (`cargo test --all-targets`: 253 passed),
+Rust unit suite at revision `6786bc9` (`cargo test --all-targets`: 255 passed),
 but are not yet represented by a newer live differential-run claim.

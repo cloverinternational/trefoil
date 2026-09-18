@@ -363,15 +363,16 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** `cargo test --all-targets` passes 253 tests, including
-  shared media failover ordering, terminal failure behavior, and disabled-
-  failover limits.
+- **Backend tests:** `cargo test --all-targets` passes 255 tests, including
+  image-generation, image-edit, speech, and transcription failover ordering,
+  terminal failure behavior, and disabled-failover limits.
 - **Frontend:** typecheck, build, and 34 Vitest tests pass across 8 files, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image generation, image edit, audio speech, and
   audio transcription use the shared JSON failover policy; deterministic
-  speech fallback evidence is in `backend/src/inference.rs`.
+  fallback and terminal-failure evidence is covered in
+  `backend/src/inference.rs`.
 - **Generic failover:** non-chat inference preserves configured candidate order
   and returns the last upstream error after all candidates fail, with no extra
   attempt; provider-not-found and chat transport-failure fallback tests remain
