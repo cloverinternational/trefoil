@@ -172,6 +172,9 @@ async fn call_tool(
         ("plexus_config", "mcp_enabled") => {
             return config_mcp_enabled_operation(state, id, args).await;
         }
+        ("plexus_config", "compaction") => {
+            return config_compaction_operation(state, id, args).await;
+        }
         ("plexus_config", "exploration_rate") => {
             return config_exploration_rate_operation(state, id, args).await;
         }
@@ -453,6 +456,39 @@ async fn config_mcp_enabled_operation(
                 "mcp_enabled",
                 "GET",
                 "/v0/management/config/mcp-enabled",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_compaction_operation(
+    state: &AppState,
+    id: Value,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "compaction",
+                "PATCH",
+                "/v0/management/config/compaction",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "compaction",
+                "GET",
+                "/v0/management/config/compaction",
                 None,
             )
             .await
@@ -1872,6 +1908,26 @@ mod tests {
         assert_eq!(response["result"]["structuredContent"]["ok"], false);
         let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled","body":[]}}})).await).await;
         assert_eq!(response["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn config_compaction_supports_read_patch_and_validation() {
+        let state = state();
+        let read = body(dispatch(&state, json!({"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"compaction"}}})).await).await;
+        assert_eq!(read["result"]["structuredContent"]["ok"], true);
+
+        let patched = body(dispatch(&state, json!({"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"compaction","body":{"strategy":"native","triggerRatio":0.5}}}})).await).await;
+        assert_eq!(patched["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            patched["result"]["structuredContent"]["data"]["strategy"],
+            "native"
+        );
+
+        let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"compaction","body":{"triggerRatio":2}}}})).await).await;
+        assert_eq!(invalid["result"]["structuredContent"]["ok"], false);
+
+        let malformed = body(dispatch(&state, json!({"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"compaction","body":[]}}})).await).await;
+        assert_eq!(malformed["error"]["code"], -32602);
     }
 
     #[tokio::test]
