@@ -314,10 +314,9 @@ async fn callback(
     let verifier = state
         .inner
         .oauth_pkce_verifiers
-        .read()
+        .write()
         .unwrap()
-        .get(&id)
-        .cloned()
+        .remove(&id)
         .or_else(|| session.pkce_verifier.clone());
     let Some(verifier) = verifier else {
         return (
@@ -785,6 +784,58 @@ mod tests {
     use http_body_util::BodyExt;
     use std::collections::HashMap;
     use tower::ServiceExt;
+
+    #[test]
+    fn pkce_verifier_is_persisted_but_not_serialized() {
+        let session = OAuthSession {
+            id: "session".into(),
+            provider_id: "anthropic".into(),
+            account_id: "default".into(),
+            status: "waiting".into(),
+            auth_info: None,
+            prompt: None,
+            progress: vec![],
+            error: None,
+            created_at: 1,
+            updated_at: 1,
+            expires_at: 2,
+            pkce_verifier: Some("deterministic-verifier".into()),
+        };
+        let json = serde_json::to_value(&session).unwrap();
+        assert_eq!(
+            session.pkce_verifier.as_deref(),
+            Some("deterministic-verifier")
+        );
+        assert!(json.get("pkceVerifier").is_none());
+    }
+
+    #[test]
+    fn callback_claim_removes_in_memory_verifier() {
+        let state = fixture();
+        state
+            .inner
+            .oauth_pkce_verifiers
+            .write()
+            .unwrap()
+            .insert("session".into(), "deterministic-verifier".into());
+        assert_eq!(
+            state
+                .inner
+                .oauth_pkce_verifiers
+                .write()
+                .unwrap()
+                .remove("session")
+                .as_deref(),
+            Some("deterministic-verifier")
+        );
+        assert!(state
+            .inner
+            .oauth_pkce_verifiers
+            .read()
+            .unwrap()
+            .get("session")
+            .is_none());
+    }
 
     fn fixture() -> AppState {
         let mut keys = HashMap::new();
