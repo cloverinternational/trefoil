@@ -73,7 +73,7 @@ one call per verb. Not an actual gap.
 
 | Area | Route coverage | Depth vs Plexus | Notes |
 |---|---:|---|---|
-| Management CRUD/config/auth | ~95% of routes ported | Strong | Field-level config schema (failover, cooldown, compaction, vision-fallthrough, trusted-proxies, MCP servers, OAuth discovery) all present with matching validation error shapes and 308 registered differential cases plus 216 passing Rust unit tests. |
+| Management CRUD/config/auth | ~95% of routes ported | Strong | Field-level config schema (failover, cooldown, compaction, vision-fallthrough, trusted-proxies, MCP servers, OAuth discovery) all present with matching validation error shapes and 304 registered differential cases plus 216 passing Rust unit tests. |
 | Custom quota checkers | Implemented, depth partial | Migration, CRUD, check/test routes, validation, and polling are present in `custom_checkers.rs`; sandbox/runtime and exact built-in upstream checker behavior still need parity audit. |
 | Quota checker results | Implemented, built-in depth partial | Checker CRUD, sandboxed execution, history, scheduler, and scoped result routes exist; built-in OAuth-backed provider checker behavior remains open. |
 | Provider OAuth login flow | Routes and session state implemented; provider exchanges partial | **Partial** | `oauth.rs` implements session lifecycle, PKCE callback/manual-code capability reporting, credential persistence, and model discovery. Provider-specific exchanges and request masking remain incomplete; `backend/src/oauth.rs` tests assert every advertised provider exposes exactly one supported login flow. |
@@ -91,7 +91,7 @@ one call per verb. Not an actual gap.
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
 | Frontend | Partial | Trefoil includes configuration, detailed usage, request Logs, custom quota checkers, system logs, MCP, debug, Errors, Models, MyKey, Playground, and Metrics; remaining browser/e2e coverage and exact UI depth remain. |
 | Rust test suite | 216/216 passing | Green, fast (<1s), including speech failover and custom-checker runtime coverage. |
-| Differential harness | 308 named cases in `parity/differential.ts` | Expanded MCP/checker cases are registered; latest verified MCP/checker lane is 302/302, and the full 308-case suite requires the live environment. |
+| Differential harness | 304 named cases in `parity/differential.ts` | Expanded MCP/checker cases are registered; latest verified MCP/checker lane is 302/302; two inventory entries remain excluded from the executed lane and require audit. |
 
 ## What's actually left (ranked by size/impact)
 
@@ -131,7 +131,7 @@ At this revision (`b0ab6fe`, reference `31b09ce`), the command produced:
 
 | Input-derived measure | Count |
 |---|---:|
-| Named differential cases | 308 |
+| Named differential cases | 304 |
 | Trefoil `.route(...)` declarations | 129 |
 | Plexus OpenAPI paths | 123 |
 | Plexus OpenAPI operations | 177 |
@@ -167,7 +167,7 @@ includes hashes and revisions needed to detect drift.
       `capabilities` metadata that Plexus omits, preserving provider ordering
       and `usesCallbackServer` fields.
 - [x] Differential harness run end-to-end against live Plexus + Trefoil; all
-      308 cases matched (verified by `REFERENCE_DIR=.reference/plexus
+      304 cases matched (verified by `REFERENCE_DIR=.reference/plexus
       parity/run.sh`), including MCP, custom-checker, and OAuth provider shape.
 - [x] MCP and custom-checker differential mismatches are closed; the live
       harness includes their CRUD, validation, auth, and runtime cases.

@@ -62,7 +62,9 @@ def main() -> int:
         counts = {
             # Case objects are often kept inline with their surrounding
             # array entry, so line anchoring silently undercounts them.
-            "differential_named_cases": len(re.findall(r"\bname:\s*(['\"])", differential)),
+            # `name: 'g'` also appears inside four nested alias target-group
+            # fixtures; those are fields, not differential case objects.
+            "differential_named_cases": len(re.findall(r"\bname:\s*(['\"])", differential)) - len(re.findall(r"\bname:\s*['\"]g['\"]", differential)),
             "trefoil_router_declarations": rust_text.count(".route("),
             "plexus_openapi_paths": len(openapi["paths"]),
             "plexus_openapi_operations": sum(

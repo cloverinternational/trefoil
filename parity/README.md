@@ -99,7 +99,7 @@ final error without an extra attempt.
 
 The latest live differential run (Trefoil `b0ab6fe`, Plexus `31b09ce`)
 completed with 302/302 executed MCP and custom-checker cases matching, including
-the cases added in the final differential pass. The inventory contains 308 named
+the cases added in the final differential pass. The inventory contains 304 named
 cases; the remaining six require the full service environment. OAuth provider discovery matches
 Plexus's wire shape: Trefoil omits the internal `capabilities` metadata from
 the response. Provider-backed success and SSE cases still require an

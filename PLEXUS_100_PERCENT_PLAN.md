@@ -367,7 +367,7 @@ and repeatable differential CI.
   and returns the last upstream error after all candidates fail, with no extra
   attempt; provider-not-found and chat transport-failure fallback tests remain
   green.
-- **Differential harness:** 308 named cases are registered in
+- **Differential harness:** 304 named cases are registered in
   `parity/differential.ts`; the live run at Trefoil `91c1925` against Plexus
   `31b09ce` completed with all 283 cases matching. OAuth provider discovery
   omits the internal `capabilities` metadata and matches the Plexus wire
