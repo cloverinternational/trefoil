@@ -1,5 +1,6 @@
 //! OpenAI Codex device authorization, exchanging its ephemeral code through OAuth PKCE.
 use serde_json::Value;use std::time::Duration;
+use axum::Json;
 const CLIENT_ID:&str="app_EMoamEEZ73f0CkXaXp7hrann";
 pub struct Device{pub id:String,pub code:String,pub interval:Duration}
 pub enum Poll{Pending,SlowDown,Complete{code:String,verifier:String}}
@@ -11,6 +12,6 @@ async fn poll_at(url:&str,device:&Device)->Result<Poll,String>{let response=clie
 
 #[cfg(test)]
 mod tests {use super::*;use axum::{routing::post,Json,Router,http::StatusCode};
- #[tokio::test] async fn codex_device_contract_handles_pending_and_completion(){let app=Router::new().route("/user",post(|body:Value|async move{assert_eq!(body["client_id"],CLIENT_ID);Json(serde_json::json!({"device_auth_id":"id","user_code":"ABC","interval":"2"}))})).route("/token",post(|body:Value|async move{assert_eq!(body["device_auth_id"],"id");(StatusCode::OK,Json(serde_json::json!({"authorization_code":"code","code_verifier":"verifier"})))}));let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});let device=start_at(&format!("http://{addr}/user")).await.unwrap();assert_eq!(device.interval,Duration::from_secs(2));let Poll::Complete{code,verifier}=poll_at(&format!("http://{addr}/token"),&device).await.unwrap()else{panic!("complete")};assert_eq!((code,verifier),("code".into(),"verifier".into()));server.abort();}
+ #[tokio::test] async fn codex_device_contract_handles_pending_and_completion(){let app=Router::new().route("/user",post(|Json(body):Json<Value>|async move{assert_eq!(body["client_id"],CLIENT_ID);Json(serde_json::json!({"device_auth_id":"id","user_code":"ABC","interval":"2"}))})).route("/token",post(|Json(body):Json<Value>|async move{assert_eq!(body["device_auth_id"],"id");(StatusCode::OK,Json(serde_json::json!({"authorization_code":"code","code_verifier":"verifier"})))}));let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});let device=start_at(&format!("http://{addr}/user")).await.unwrap();assert_eq!(device.interval,Duration::from_secs(2));let Poll::Complete{code,verifier}=poll_at(&format!("http://{addr}/token"),&device).await.unwrap()else{panic!("complete")};assert_eq!((code,verifier),("code".into(),"verifier".into()));server.abort();}
  #[test]fn status_errors_are_pending_or_slow_down(){let device=Device{id:"x".into(),code:"y".into(),interval:Duration::ZERO};assert!(matches!(device.interval,Duration{..}));}
 }
