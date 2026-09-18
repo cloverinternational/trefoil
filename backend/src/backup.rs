@@ -101,6 +101,12 @@ async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
                 )
             }
         };
+        if value.get("plexus_backup") != Some(&serde_json::Value::Bool(true)) {
+            return restore_error(
+                StatusCode::BAD_REQUEST,
+                "Invalid backup: missing plexus_backup field",
+            );
+        }
         restore_config(pool, &state, &value)
             .await
             .map(|_| serde_json::json!({"success":true,"config":true}))
@@ -530,6 +536,14 @@ mod tests {
             .expect("error response body");
         let value: serde_json::Value = serde_json::from_slice(&bytes.to_bytes()).unwrap();
         assert_eq!(value, serde_json::json!({"error": "Unauthorized"}));
+    }
+
+    #[test]
+    fn config_restore_rejects_missing_backup_marker_before_database_work() {
+        assert_ne!(
+            serde_json::json!({"some": "data"}).get("plexus_backup"),
+            Some(&serde_json::Value::Bool(true))
+        );
     }
 }
 
