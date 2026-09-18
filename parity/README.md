@@ -97,13 +97,20 @@ traversal across two transport failures followed by success, while generic
 non-chat coverage proves configured target ordering and exhaustion returns the
 final error without an extra attempt.
 
-The latest live differential run (Trefoil `a5bc1a6`, Plexus `31b09ce`)
-completed with 302/302 executed MCP and custom-checker cases matching, including
-the cases added in the final differential pass. The inventory contains 302 named
-cases. OAuth provider discovery matches
-Plexus's wire shape: Trefoil omits the internal `capabilities` metadata from
-the response. Provider-backed success and SSE cases still require an
-explicitly configured disposable upstream as described above.
+The current inventory contains 302 named cases. The latest live differential
+attempt (Trefoil `701ddb4`, Plexus `31b09ce`) executed 283 cases: 282 matched
+and one diverged on the documented OAuth provider-discovery shape difference
+(Trefoil currently includes its internal `capabilities` metadata). This is a
+known wire-shape mismatch, not evidence that the remaining registered cases
+passed. Provider-backed success and SSE cases still require an explicitly
+configured disposable upstream as described above.
+
+OAuth PKCE persistence and replay safety have deterministic backend evidence:
+`oauth::tests::pkce_verifier_is_persisted_but_not_serialized` verifies the
+verifier survives session persistence without entering the API response, and
+`oauth::tests::callback_claim_removes_in_memory_verifier` verifies that a
+callback consumes the process-local verifier. Migration `0086` and the startup
+session loader cover recovery of the persisted verifier after a restart.
 
 Unsupported modes are intentionally covered by local contract tests rather than
 the provider-backed differential lane: external LLM compaction is rejected by

@@ -346,7 +346,7 @@ discovery now matches Plexus's response shape: Trefoil omits its internal
 
 ---
 
-## Current parity estimate (recalculated from HEAD 2026-09-17)
+## Current parity estimate (recalculated from HEAD 2026-09-18)
 
 Using the 12 plan areas with equal weight, and scoring partial areas by
 checked capability items rather than route count, the current estimate is
@@ -358,8 +358,10 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** 218 passing (`cargo test --all-targets`), including generic
-  non-chat and speech failover plus custom-checker runtime tests.
+- **Backend tests:** the OAuth PKCE persistence/replay tests pass, including
+  verifier redaction and one-time in-memory callback consumption. A full
+  `cargo test --all-targets` run currently has one unrelated MCP stdio
+  assertion failure (`malformed_child_output_is_reported_to_pending_request`).
 - **Frontend:** typecheck, build, and 34 Vitest tests pass across 8 files, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
@@ -376,7 +378,10 @@ and repeatable differential CI.
   shape.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
-- **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.
+- **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation,
+  and provider login-session persistence/PKCE URL generation are implemented.
+  New deterministic tests cover persistence redaction and one-time callback
+  verifier consumption; provider-specific exchanges and masking remain partial.
 - **Observability:** Prometheus metrics, usage SSE, and system-log SSE routes are implemented.
 
 The checklist is capability-based: a checked route means the route exists and
