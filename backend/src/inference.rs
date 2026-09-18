@@ -872,6 +872,8 @@ async fn forward_json_api(
     );
     let client = reqwest::Client::new();
     let original_body = body.clone();
+    let request_id = new_request_id();
+    let start_time = now_ms();
     let mut attempted = None;
     let targets = inference_targets(state, &model, key_config);
     for (attempt, (provider_slug, upstream_model)) in targets.enumerate() {
@@ -1035,6 +1037,20 @@ async fn forward_json_api(
                 }
                 // Retry provider failures, but preserve deterministic client errors.
                 if failover && is_retryable_upstream_status(state, status, None) {
+                    record_attempt(
+                        state,
+                        &request_id,
+                        (attempt + 1) as i32,
+                        &provider_slug,
+                        &upstream_model,
+                        path,
+                        "failed",
+                        payload["error"]["message"].as_str(),
+                        Some(status.as_u16() as i32),
+                        true,
+                        start_time,
+                    )
+                    .await;
                     register_provider_failure(
                         state,
                         &provider_slug,
@@ -1050,6 +1066,24 @@ async fn forward_json_api(
                     );
                     continue;
                 }
+                record_attempt(
+                    state,
+                    &request_id,
+                    (attempt + 1) as i32,
+                    &provider_slug,
+                    &upstream_model,
+                    path,
+                    if status.is_success() {
+                        "success"
+                    } else {
+                        "failed"
+                    },
+                    payload["error"]["message"].as_str(),
+                    Some(status.as_u16() as i32),
+                    false,
+                    start_time,
+                )
+                .await;
                 crate::system_logs::event(
                     state,
                     if status.is_success() { "info" } else { "error" },
@@ -1064,12 +1098,40 @@ async fn forward_json_api(
             }
             Err(error) => {
                 if !is_retryable_upstream_error(state, &error.to_string()) {
+                    record_attempt(
+                        state,
+                        &request_id,
+                        (attempt + 1) as i32,
+                        &provider_slug,
+                        &upstream_model,
+                        path,
+                        "failed",
+                        Some(&error.to_string()),
+                        None,
+                        false,
+                        start_time,
+                    )
+                    .await;
                     return error_response(
                         axum::http::StatusCode::BAD_GATEWAY,
                         &error.to_string(),
                         "upstream_error",
                     );
                 }
+                record_attempt(
+                    state,
+                    &request_id,
+                    (attempt + 1) as i32,
+                    &provider_slug,
+                    &upstream_model,
+                    path,
+                    "failed",
+                    Some(&error.to_string()),
+                    None,
+                    true,
+                    start_time,
+                )
+                .await;
                 register_provider_failure(
                     state,
                     &provider_slug,
