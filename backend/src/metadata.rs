@@ -272,9 +272,32 @@ async fn fetch_openrouter(source: &str) -> Result<BTreeMap<String, ModelMetadata
     Ok(catalog)
 }
 
+type RefreshFuture = futures_util::future::Shared<std::pin::Pin<Box<dyn std::future::Future<Output=RefreshReport> + Send>>>;
+static IN_FLIGHT: OnceLock<tokio::sync::Mutex<Option<(u64, RefreshFuture)>>> = OnceLock::new();
+static REFRESH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub async fn refresh(urls: SourceUrls, trigger: &str) -> RefreshReport {
-    static REFRESH_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    let _gate=REFRESH_GATE.get_or_init(||tokio::sync::Mutex::new(())).lock().await;
+    use futures_util::FutureExt;
+    let gate=IN_FLIGHT.get_or_init(||tokio::sync::Mutex::new(None));
+    let (id, future)={
+        let mut slot=gate.lock().await;
+        if let Some((id,future))=slot.as_ref() { (*id,future.clone()) }
+        else {
+            let id=REFRESH_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+            let trigger=trigger.to_owned();
+            let future=Box::pin(async move { refresh_catalogs(urls,&trigger).await }) as std::pin::Pin<Box<dyn std::future::Future<Output=RefreshReport> + Send>>;
+            let future=future.shared();
+            *slot=Some((id,future.clone()));
+            (id,future)
+        }
+    };
+    let result=future.await;
+    let mut slot=gate.lock().await;
+    if slot.as_ref().is_some_and(|(current,_)|*current==id) { *slot=None; }
+    result
+}
+
+async fn refresh_catalogs(urls: SourceUrls, trigger: &str) -> RefreshReport {
     let start = Instant::now();
     let refreshed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
     let (or, md, cw) = tokio::join!(
@@ -457,5 +480,26 @@ mod normalization_tests {
         assert_eq!(model.pricing.as_ref().unwrap()["prompt"],"0.000002");
         assert_eq!(model.architecture.as_ref().unwrap()["input_modalities"],serde_json::json!(["text","image"]));
         assert!(model.supported_parameters.as_ref().unwrap().contains(&"reasoning".into()));
+    }
+}
+
+#[cfg(test)]
+mod refresh_coalescing_tests {
+    use super::*;
+    use axum::{routing::get,Json,Router};
+    use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    #[tokio::test]
+    async fn simultaneous_refreshes_share_source_requests_and_original_trigger() {
+        let hits=Arc::new(AtomicUsize::new(0));let count=hits.clone();
+        let app=Router::new().route("/catalog",get(move || {let count=count.clone();async move {count.fetch_add(1,Ordering::SeqCst);tokio::time::sleep(std::time::Duration::from_millis(25)).await;Json(serde_json::json!({"data":[{"id":"coalesce-fixture"}]}))}}));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+        let urls=SourceUrls{openrouter:format!("http://{addr}/catalog"),models_dev:format!("http://{addr}/catalog"),catwalk:format!("http://{addr}/catalog")};
+        let (first,second)=tokio::join!(refresh(urls.clone(),"startup"),refresh(urls,"manual"));
+        assert_eq!(hits.load(Ordering::SeqCst),3);
+        assert_eq!(first.trigger,second.trigger);
+        assert_eq!(first.refreshed_at,second.refreshed_at);
+        assert_eq!(first.duration_ms,second.duration_ms);
+        server.abort();
     }
 }
