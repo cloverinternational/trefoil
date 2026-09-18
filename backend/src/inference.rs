@@ -277,15 +277,39 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn audio_transcriptions(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    mut multipart: Multipart,
-) -> Response {
+/// Shared inference entry point. Wire adapters only select a payload family;
+/// authentication is resolved once and the principal is carried into dispatch.
+enum InferenceRequest {
+    Chat(Value),
+    Responses(Value),
+    Json { body: Value, path: String, auth_header: &'static str },
+    Transcription(Multipart),
+}
+
+async fn dispatch(state: AppState, headers: HeaderMap, request: InferenceRequest) -> Response {
     let principal = match authenticate(&state, &headers) {
         Ok(principal) => principal,
         Err(response) => return response,
     };
+    match request {
+        InferenceRequest::Chat(body) => dispatch_chat(state, principal, body).await,
+        InferenceRequest::Responses(body) => dispatch_responses(state, principal, body).await,
+        InferenceRequest::Json {body,path,auth_header} => dispatch_json(&state, principal, body, &path, auth_header).await,
+        InferenceRequest::Transcription(body) => dispatch_transcription(state, principal, body).await,
+    }
+}
+
+async fn chat_completions(State(state): State<AppState>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    dispatch(state, headers, InferenceRequest::Chat(body)).await
+}
+async fn responses(State(state): State<AppState>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    dispatch(state, headers, InferenceRequest::Responses(body)).await
+}
+async fn audio_transcriptions(State(state): State<AppState>, headers: HeaderMap, multipart: Multipart) -> Response {
+    dispatch(state, headers, InferenceRequest::Transcription(multipart)).await
+}
+
+async fn dispatch_transcription(state: AppState, principal: Principal, mut multipart: Multipart) -> Response {
     let key_config = match &principal {
         Principal::Limited { config, .. } => Some(config),
         Principal::Admin => None,
@@ -900,17 +924,11 @@ async fn admit_inference(state: &AppState, principal: &Principal, model: &str, c
     enforce_request_quotas(state, principal).await
 }
 
-async fn forward_json_api(
-    state: &AppState,
-    headers: &HeaderMap,
-    mut body: Value,
-    path: &str,
-    auth_header: &str,
-) -> Response {
-    let principal = match authenticate(state, headers) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
+async fn forward_json_api(state: &AppState, headers: &HeaderMap, body: Value, path: &str, auth_header: &'static str) -> Response {
+    dispatch(state.clone(), headers.clone(), InferenceRequest::Json { body, path:path.into(), auth_header }).await
+}
+
+async fn dispatch_json(state: &AppState, principal: Principal, mut body: Value, path: &str, auth_header: &str) -> Response {
     let Some(model) = body.get("model").and_then(Value::as_str).map(str::to_owned) else {
         return error_response(
             axum::http::StatusCode::BAD_REQUEST,
@@ -1235,15 +1253,7 @@ async fn forward_json_api(
     )
 }
 
-async fn responses(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(mut body): Json<Value>,
-) -> Response {
-    let principal = match authenticate(&state, &headers) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
+async fn dispatch_responses(state: AppState, principal: Principal, mut body: Value) -> Response {
     let Some(model) = body.get("model").and_then(Value::as_str).map(str::to_owned) else {
         return error_response(
             axum::http::StatusCode::BAD_REQUEST,
@@ -1839,15 +1849,7 @@ async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Respo
     Json(serde_json::json!({ "object": "list", "data": data })).into_response()
 }
 
-async fn chat_completions(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(mut body): Json<Value>,
-) -> Response {
-    let principal = match authenticate(&state, &headers) {
-        Ok(principal) => principal,
-        Err(response) => return response,
-    };
+async fn dispatch_chat(state: AppState, principal: Principal, mut body: Value) -> Response {
     let usage_key_name = match &principal {
         Principal::Limited { key_name, .. } => Some(key_name.as_str()),
         Principal::Admin => None,
@@ -5389,5 +5391,23 @@ mod multipart_boundary_tests {
             .header("x-api-key","admin").header("content-type","multipart/form-data; boundary=test")
             .body(Body::from("--test\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nprovider/model\r\n--test\r\nmalformed" )).unwrap()).await.unwrap();
         assert_eq!(response.status(),StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_entry_tests {
+    use super::*;
+    #[tokio::test]
+    async fn all_json_families_share_authentication_before_provider_work() {
+        let state=AppState::new(Some("admin".into()),Default::default());
+        let mut requests=vec![InferenceRequest::Chat(json!({"model":"absent","messages":[]})),InferenceRequest::Responses(json!({"model":"absent","input":"x"}))];
+        for path in ["/completions","/embeddings","/messages","/images/generations","/images/edits","/audio/speech","/v1beta/models/{model}:generateContent"] {
+            requests.push(InferenceRequest::Json {body:json!({"model":"absent"}),path:path.into(),auth_header:"authorization"});
+        }
+        for request in requests {
+            let response=dispatch(state.clone(),HeaderMap::new(),request).await;
+            assert_eq!(response.status(),axum::http::StatusCode::UNAUTHORIZED);
+            assert!(crate::concurrency::snapshot(&state).is_empty());
+        }
     }
 }
