@@ -54,7 +54,7 @@ struct ProbeBody {
     api_type: Option<String>,
 }
 
-const PROBE_API_TYPES: [&str; 8] = [
+const PROBE_API_TYPES: [&str; 7] = [
     "chat",
     "messages",
     "gemini",
@@ -62,7 +62,6 @@ const PROBE_API_TYPES: [&str; 8] = [
     "embeddings",
     "images",
     "speech",
-    "oauth",
 ];
 
 /// Run a small, direct request against one configured provider/model.  This
@@ -97,6 +96,12 @@ async fn manual_probe(
             .into_response();
     }
     let api_type = body.api_type.unwrap_or_else(|| "chat".into());
+    if api_type == "oauth" {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "success": false,
+            "error": "OAuth probes are not supported by the test endpoint. Use the OAuth session flow instead."
+        }))).into_response();
+    }
     if api_type == "transcriptions" {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
             "success": false,
@@ -898,6 +903,27 @@ mod tests {
         assert_eq!(
             body["details"][0]["message"],
             "api_base_url must be a valid URL or oauth://"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_rejects_unsupported_oauth_mode_without_dispatching() {
+        let (status, body) = call(
+            admin_state(),
+            "POST",
+            "/v0/management/test",
+            Some("correct-admin-key"),
+            Some(serde_json::json!({
+                "provider": "missing",
+                "model": "model",
+                "apiType": "oauth"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"],
+            "OAuth probes are not supported by the test endpoint. Use the OAuth session flow instead."
         );
     }
 

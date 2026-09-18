@@ -182,6 +182,12 @@ fn compaction_issue(
         }
     }
     if let Some(value) = object.get("strategy") {
+        if value.as_str() == Some("external") {
+            return Some(serde_json::json!({
+                "code": "custom", "path": ["strategy"],
+                "message": "External LLM-based compaction is not supported"
+            }));
+        }
         if !matches!(value.as_str(), Some("native" | "headroom")) {
             return Some(serde_json::json!({
                 "code": "invalid_value", "values": ["native", "headroom"],
@@ -2614,5 +2620,28 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
+    }
+
+    #[tokio::test]
+    async fn compaction_rejects_explicitly_unsupported_external_strategy() {
+        let response = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::patch("/v0/management/config/compaction")
+                    .header("x-admin-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"strategy":"external"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            body["details"][0]["message"],
+            "External LLM-based compaction is not supported"
+        );
     }
 }
