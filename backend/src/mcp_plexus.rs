@@ -166,6 +166,9 @@ async fn call_tool(
             return forwarded_operation(state, id, operation, "GET", "/v0/management/config", None)
                 .await;
         }
+        ("plexus_config", "timeout") => {
+            return config_timeout_operation(state, id, args).await;
+        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
             // HashMap iteration order is intentionally unstable.  MCP clients
@@ -366,6 +369,35 @@ async fn forwarded_request(
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!status.is_success()}),
     )
+}
+
+async fn config_timeout_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "timeout",
+                "PATCH",
+                "/v0/management/config/timeout",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "timeout",
+                "GET",
+                "/v0/management/config/timeout",
+                None,
+            )
+            .await
+        }
+    }
 }
 
 async fn quota_checker_operation(
@@ -1483,6 +1515,32 @@ mod tests {
             );
             assert_ne!(structured["data"]["mcpEnabled"], true);
         }
+    }
+
+    #[tokio::test]
+    async fn config_timeout_supports_read_and_patch_validation() {
+        let response = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 21, "method":"tools/call",
+                    "params":{"name":"plexus_config","arguments":{"operation":"timeout"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(response["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["defaultSeconds"],
+            300
+        );
+
+        let response = body(dispatch(&state(), json!({
+            "jsonrpc":"2.0", "id": 22, "method":"tools/call",
+            "params":{"name":"plexus_config","arguments":{"operation":"timeout","body":{"defaultSeconds":0}}}
+        })).await).await;
+        assert_eq!(response["result"]["structuredContent"]["ok"], false);
     }
 
     #[tokio::test]
