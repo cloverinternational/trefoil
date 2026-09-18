@@ -31,6 +31,27 @@ const SUPPORTED_PROVIDERS: &[&str] = &[
     "xai",
 ];
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthCapabilities {
+    callback: bool,
+    manual_code: bool,
+}
+
+fn capabilities(provider: &str) -> Option<OAuthCapabilities> {
+    match provider {
+        "anthropic" | "openai-codex" => Some(OAuthCapabilities {
+            callback: true,
+            manual_code: false,
+        }),
+        "github-copilot" | "kimi-coding" | "openrouter" | "xai" => Some(OAuthCapabilities {
+            callback: false,
+            manual_code: true,
+        }),
+        _ => None,
+    }
+}
+
 pub(crate) fn is_supported_provider(provider: &str) -> bool {
     SUPPORTED_PROVIDERS.contains(&provider)
 }
@@ -281,6 +302,13 @@ async fn callback(
                 .into_response()
         }
     };
+    if !capabilities(&session.provider_id).is_some_and(|caps| caps.callback) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"OAuth callback flow is not supported by this provider"})),
+        )
+            .into_response();
+    }
     let verifier = match state
         .inner
         .oauth_pkce_verifiers
@@ -534,6 +562,21 @@ async fn manual_code(
         )
             .into_response();
     }
+    let supported = state
+        .inner
+        .oauth_sessions
+        .read()
+        .unwrap()
+        .get(&id)
+        .and_then(|session| capabilities(&session.provider_id))
+        .is_some_and(|caps| caps.manual_code);
+    if !supported {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"OAuth manual-code flow is not supported by this provider"})),
+        )
+            .into_response();
+    }
     update_session(&state, &id, "manual-code", Some(body.value)).await
 }
 
@@ -591,12 +634,12 @@ async fn providers(State(state): State<AppState>, headers: HeaderMap) -> Respons
         return response;
     }
     let data = serde_json::json!([
-        { "id": "anthropic", "name": "Anthropic (Claude Pro/Max)", "usesCallbackServer": true },
-        { "id": "github-copilot", "name": "GitHub Copilot", "usesCallbackServer": false },
-        { "id": "kimi-coding", "name": "Kimi Code (subscription)", "usesCallbackServer": false },
-        { "id": "openai-codex", "name": "OpenAI (ChatGPT Plus/Pro)", "usesCallbackServer": true },
-        { "id": "openrouter", "name": "OpenRouter OAuth", "usesCallbackServer": false },
-        { "id": "xai", "name": "xAI (Grok/X subscription)", "usesCallbackServer": false },
+        { "id": "anthropic", "name": "Anthropic (Claude Pro/Max)", "usesCallbackServer": true, "capabilities": { "callback": true, "manualCode": false } },
+        { "id": "github-copilot", "name": "GitHub Copilot", "usesCallbackServer": false, "capabilities": { "callback": false, "manualCode": true } },
+        { "id": "kimi-coding", "name": "Kimi Code (subscription)", "usesCallbackServer": false, "capabilities": { "callback": false, "manualCode": true } },
+        { "id": "openai-codex", "name": "OpenAI (ChatGPT Plus/Pro)", "usesCallbackServer": true, "capabilities": { "callback": true, "manualCode": false } },
+        { "id": "openrouter", "name": "OpenRouter OAuth", "usesCallbackServer": false, "capabilities": { "callback": false, "manualCode": true } },
+        { "id": "xai", "name": "xAI (Grok/X subscription)", "usesCallbackServer": false, "capabilities": { "callback": false, "manualCode": true } },
     ]);
     Json(serde_json::json!({ "data": data, "total": 6 })).into_response()
 }
@@ -763,11 +806,24 @@ mod tests {
         assert_eq!(body["total"], 6);
         assert_eq!(body["data"][0]["id"], "anthropic");
         assert_eq!(body["data"][3]["usesCallbackServer"], true);
+        assert_eq!(body["data"][3]["capabilities"]["callback"], true);
+        assert_eq!(body["data"][3]["capabilities"]["manualCode"], false);
+        assert_eq!(body["data"][1]["capabilities"]["callback"], false);
+        assert_eq!(body["data"][1]["capabilities"]["manualCode"], true);
         assert!(!body["data"]
             .as_array()
             .unwrap()
             .iter()
             .any(|p| p["id"] == "radius"));
+    }
+
+    #[test]
+    fn capabilities_explicitly_describe_supported_flows() {
+        assert_eq!(capabilities("anthropic").unwrap().callback, true);
+        assert_eq!(capabilities("anthropic").unwrap().manual_code, false);
+        assert_eq!(capabilities("github-copilot").unwrap().callback, false);
+        assert_eq!(capabilities("github-copilot").unwrap().manual_code, true);
+        assert!(capabilities("unknown").is_none());
     }
 
     #[tokio::test]

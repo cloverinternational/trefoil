@@ -197,7 +197,7 @@ export async function deleteProvider(name: string): Promise<void> {
   if (!response.ok) throw new Error('Unable to delete provider');
 }
 
-export interface OAuthProviderInfo { id: string; name: string; usesCallbackServer?: boolean; }
+export interface OAuthProviderInfo { id: string; name: string; usesCallbackServer?: boolean; capabilities?: { callback: boolean; manualCode: boolean }; }
 export interface OAuthCredentialStatus { ready: boolean; }
 export interface OAuthSession { id: string; providerId: string; accountId: string; status: string; authInfo?: { url?: string; instructions?: string }; prompt?: { message: string; placeholder?: string; allowEmpty?: boolean }; progress: Array<Record<string, unknown>>; error?: string; }
 export async function getOAuthProviders(): Promise<OAuthProviderInfo[]> {
