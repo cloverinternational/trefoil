@@ -194,16 +194,16 @@ fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option
     Some(url.to_string())
 }
 
-async fn start_copilot_session(state: AppState, account: String) -> Response {
+async fn start_device_session(state: AppState, account: String, provider: String) -> Response {
     let Some(pool)=state.inner.database.as_ref() else {
         return (StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"PostgreSQL is required for device login"}))).into_response();
     };
     if crate::credential_crypto::CredentialKey::from_env().is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"OAuth credential encryption is not configured"}))).into_response();
     }
-    let device=match crate::copilot_oauth::start().await {Ok(device)=>device,Err(message)=>return (StatusCode::BAD_GATEWAY,Json(serde_json::json!({"error":message}))).into_response()};
+    let device=match if provider == "kimi-coding" {crate::kimi_oauth::start().await} else {crate::copilot_oauth::start().await} {Ok(device)=>device,Err(message)=>return (StatusCode::BAD_GATEWAY,Json(serde_json::json!({"error":message}))).into_response()};
     let now=now_ms();let id=session_id();
-    let session=OAuthSession{id:id.clone(),provider_id:"github-copilot".into(),account_id:account,status:"waiting".into(),auth_info:Some(serde_json::json!({"url":device.verification_uri,"userCode":device.user_code,"instructions":format!("Enter code {} at the verification URL.",device.user_code)})),prompt:None,progress:vec![],error:None,created_at:now,updated_at:now,expires_at:now.saturating_add(device.expires_in.as_millis() as i64),pkce_verifier:None};
+    let session=OAuthSession{id:id.clone(),provider_id:provider.clone(),account_id:account,status:"waiting".into(),auth_info:Some(serde_json::json!({"url":device.verification_uri,"userCode":device.user_code,"instructions":format!("Enter code {} at the verification URL.",device.user_code)})),prompt:None,progress:vec![],error:None,created_at:now,updated_at:now,expires_at:now.saturating_add(device.expires_in.as_millis() as i64),pkce_verifier:None};
     if crate::database::upsert_oauth_session(pool,&session).await.is_err(){return (StatusCode::INTERNAL_SERVER_ERROR,Json(serde_json::json!({"error":"Unable to persist device session"}))).into_response();}
     state.inner.oauth_sessions.write().unwrap().insert(id.clone(),session.clone());
     let account_id=session.account_id.clone();
@@ -213,20 +213,31 @@ async fn start_copilot_session(state: AppState, account: String) -> Response {
             if !state.inner.oauth_sessions.read().unwrap().get(&id).is_some_and(|s|s.status=="waiting"&&s.expires_at>now_ms()){break;}
             tokio::time::sleep(interval).await;
             if !state.inner.oauth_sessions.read().unwrap().get(&id).is_some_and(|s|s.status=="waiting"&&s.expires_at>now_ms()){break;}
-            match crate::copilot_oauth::poll(&device.secret,interval).await {
-                Ok(crate::copilot_oauth::Poll::Pending)=>{},
-                Ok(crate::copilot_oauth::Poll::SlowDown(next))=>interval=next,
-                Ok(crate::copilot_oauth::Poll::Complete(github_token))=>{
+            let poll=if provider=="kimi-coding" {
+                match crate::kimi_oauth::poll(&device.secret,interval).await {
+                    Ok(crate::kimi_oauth::Poll::Pending)=>Ok(None),
+                    Ok(crate::kimi_oauth::Poll::SlowDown(next))=>{interval=next;Ok(None)},
+                    Ok(crate::kimi_oauth::Poll::Complete{access,refresh,expires})=>Ok(Some((access,refresh,expires))),
+                    Err(error)=>Err(error),
+                }
+            } else {
+                match crate::copilot_oauth::poll(&device.secret,interval).await {
+                    Ok(crate::copilot_oauth::Poll::Pending)=>Ok(None),
+                    Ok(crate::copilot_oauth::Poll::SlowDown(next))=>{interval=next;Ok(None)},
+                    Ok(crate::copilot_oauth::Poll::Complete(github_token))=>crate::copilot_oauth::exchange(&github_token).await.map(|(access,expires)|Some((access,github_token,expires))),
+                    Err(error)=>Err(error),
+                }
+            };
+            match poll {
+                Ok(None)=>{},
+                Ok(Some((access,refresh,expires)))=>{
                     let Some(pool)=state.inner.database.as_ref() else {break};
                     if !matches!(crate::database::claim_oauth_exchange(pool,&id).await,Ok(true)){break;}
                     if let Some(current)=state.inner.oauth_sessions.write().unwrap().get_mut(&id){if current.status!="waiting"{break;}current.status="exchanging".into();}
-                    match crate::copilot_oauth::exchange(&github_token).await {
-                        Ok((access,expires))=>{
-                            if matches!(crate::database::complete_oauth_exchange(pool,&id,"github-copilot",&account_id,&access,&github_token,expires).await,Ok(true)) {
-                                let _=update_session(&state,&id,"manual-code",Some("complete".into())).await;
-                            }
-                        }
-                        Err(message)=>{let _=oauth_failed(&state,&id,&message,StatusCode::BAD_GATEWAY).await;}
+                    match crate::database::complete_oauth_exchange(pool,&id,&provider,&account_id,&access,&refresh,expires).await {
+                        Ok(true)=>{let _=update_session(&state,&id,"manual-code",Some("complete".into())).await;},
+                        Ok(false)=>{},
+                        Err(_)=>{let _=oauth_failed(&state,&id,"Unable to persist device credentials",StatusCode::INTERNAL_SERVER_ERROR).await;},
                     }
                     break;
                 }
@@ -263,7 +274,7 @@ async fn create_session(
         )
             .into_response();
     }
-    if body.provider_id == "github-copilot" { return start_copilot_session(state,body.account_id).await; }
+    if matches!(body.provider_id.as_str(), "github-copilot" | "kimi-coding") { return start_device_session(state,body.account_id,body.provider_id).await; }
     let now = now_ms();
     let id = session_id();
     let verifier: String = rand::thread_rng()

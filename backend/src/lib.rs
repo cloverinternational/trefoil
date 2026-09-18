@@ -15,6 +15,7 @@ pub mod debug_logs;
 pub mod errors;
 pub mod inference;
 pub mod keys;
+pub mod kimi_oauth;
 pub mod logging;
 pub mod mcp;
 pub mod mcp_logs;

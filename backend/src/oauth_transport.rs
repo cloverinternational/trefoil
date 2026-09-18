@@ -47,7 +47,7 @@ pub fn provider_spec(provider: &str) -> Option<ProviderSpec> {
         },
         "kimi-coding" => ProviderSpec {
             id: "kimi-coding",
-            token_endpoint: "https://auth.kimi.com/oauth/token",
+            token_endpoint: "https://auth.kimi.com/api/oauth/token",
             token_field: TokenField::AccessToken,
             client_id: "17e5f671-d194-4dfb-9706-5516cb48c098",
         },
