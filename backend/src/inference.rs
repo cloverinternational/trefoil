@@ -3323,6 +3323,74 @@ mod tests {
         format!("http://{address}/v1")
     }
 
+    fn inference_mock_with_capture(
+        status: &str,
+        content_type: &str,
+        response_body: &str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Option<Value>>>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured_thread = captured.clone();
+        let status = status.to_owned();
+        let content_type = content_type.to_owned();
+        let response_body = response_body.to_owned();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let body_start;
+            loop {
+                let Ok(size) = stream.read(&mut chunk) else {
+                    return;
+                };
+                if size == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..size]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    body_start = index + 4;
+                    break;
+                }
+            }
+            let headers = String::from_utf8_lossy(&request[..body_start]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let lower = line.to_ascii_lowercase();
+                    lower
+                        .strip_prefix("content-length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            while request.len() < body_start + content_length {
+                let Ok(size) = stream.read(&mut chunk) else {
+                    return;
+                };
+                if size == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..size]);
+            }
+            if let Ok(value) =
+                serde_json::from_slice(&request[body_start..body_start + content_length])
+            {
+                *captured_thread.lock().unwrap() = Some(value);
+            }
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (format!("http://{address}/v1"), captured)
+    }
+
     fn provider_state(api_base_url: String) -> AppState {
         let state = AppState::new(Some("admin".into()), HashMap::new());
         state.inner.providers.write().unwrap().insert(
@@ -3356,6 +3424,62 @@ mod tests {
                 .unwrap();
         assert_eq!(body["choices"][0]["message"]["content"], "hello");
         assert_eq!(body["usage"]["completion_tokens"], 1);
+    }
+
+    #[tokio::test]
+    async fn chat_request_boundary_applies_native_compaction_before_forwarding() {
+        let (base_url, captured) = inference_mock_with_capture(
+            "200 OK",
+            "application/json",
+            r#"{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+        );
+        let state = provider_state(base_url);
+        state.inner.settings.write().unwrap().insert(
+            "compaction".into(),
+            serde_json::json!({"enabled":true,"strategy":"native","absoluteTriggerTokens":1,"native":{"maxStringChars":3}}),
+        );
+        let response = router().with_state(state).oneshot(
+            Request::post("/v1/chat/completions")
+                .header("x-api-key", "admin")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"mock/mock-model","messages":[{"role":"user","content":"abcdef"}]}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let forwarded = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider request captured");
+        assert_eq!(forwarded["messages"][0]["content"], "abc");
+    }
+
+    #[tokio::test]
+    async fn chat_request_boundary_preserves_multimodal_vision_parts() {
+        let (base_url, captured) = inference_mock_with_capture(
+            "200 OK",
+            "application/json",
+            r#"{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+        );
+        let state = provider_state(base_url);
+        let response = router().with_state(state).oneshot(
+            Request::post("/v1/chat/completions")
+                .header("x-api-key", "admin")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"mock/mock-model","messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"https://example.test/cat.png"}}]}]}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let forwarded = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("provider request captured");
+        assert_eq!(forwarded["messages"][0]["content"][1]["type"], "image_url");
+        assert_eq!(
+            forwarded["messages"][0]["content"][1]["image_url"]["url"],
+            "https://example.test/cat.png"
+        );
     }
 
     #[tokio::test]
