@@ -2551,7 +2551,7 @@ fn copilot_headers(request: reqwest::RequestBuilder, provider: &crate::state::Pr
 
 async fn resolve_provider_credentials(state: &AppState, mut provider: crate::state::ProviderConfig) -> Result<crate::state::ProviderConfig, &'static str> {
     let kind=provider.oauth_provider.as_deref().unwrap_or("");
-    if !matches!(kind,"openrouter"|"github-copilot"|"kimi-coding"|"xai"|"openai-codex") || !crate::state::ProviderConfig::is_oauth_placeholder_url(&provider.api_base_url) { return Ok(provider); }
+    if !matches!(kind,"openrouter"|"github-copilot"|"kimi-coding"|"xai"|"openai-codex") || provider.api_key.is_some() { return Ok(provider); }
     let pool = state.inner.database.as_ref().ok_or("OAuth credentials require PostgreSQL")?;
     let account = provider.oauth_account.as_deref().unwrap_or("default");
     let credentials = crate::database::load_oauth_credentials(pool).await.map_err(|_| "Unable to load OAuth credentials")?;
