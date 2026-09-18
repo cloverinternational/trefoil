@@ -39,6 +39,14 @@ async fn refresh_one(state: &AppState, provider: String, account: String, refres
             .clone()
     };
     let _guard = gate.lock().await;
+    // The scheduler snapshot may be stale after another waiter rotated tokens.
+    // Re-read under the account gate and never overwrite newer credentials.
+    let Some(pool) = &state.inner.database else { return };
+    let Ok(credentials) = crate::database::load_oauth_credentials(pool).await else { return };
+    let Some((_, _, _, current_refresh, expires)) = credentials.into_iter()
+        .find(|(p, a, _, _, _)| p == &provider && a == &account) else { return };
+    if !refresh_due(now_ms(), expires) || current_refresh.is_empty() { return; }
+    let refresh_token = current_refresh;
     let transport = crate::oauth_transport::ReqwestTransport;
     let Ok(response) = crate::oauth_transport::refresh(&transport, &provider, &refresh_token).await
     else {
