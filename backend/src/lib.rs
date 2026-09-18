@@ -1,4 +1,5 @@
 pub mod aliases;
+pub mod anthropic_masking;
 pub mod auth;
 pub mod backup;
 pub mod concurrency;
