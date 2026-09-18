@@ -923,8 +923,6 @@ async fn forward_json_api(
     // Validate image parts before dispatch. This keeps malformed multimodal
     // payloads on the normal text path and avoids unsafe assumptions in
     // provider transforms; descriptor generation is opt-in via configuration.
-    apply_native_compaction(&mut body, state);
-    apply_configured_headroom(&mut body, state).await;
     if let Some(config) = key_config {
         if !model_allowed(config, &model) {
             return error_response(
@@ -934,6 +932,8 @@ async fn forward_json_api(
             );
         }
     }
+    apply_native_compaction(&mut body, state);
+    apply_configured_headroom(&mut body, state).await;
     crate::system_logs::event(
         state,
         "info",
@@ -1905,8 +1905,6 @@ async fn chat_completions(
     if let Err(response) = enforce_request_quotas(&state, &principal).await {
         return response;
     }
-    apply_native_compaction(&mut body, &state);
-    apply_configured_headroom(&mut body, &state).await;
     let key_config = if let Principal::Limited { config, .. } = &principal {
         if !model_allowed(config, &model) {
             return error_response(
@@ -1919,6 +1917,8 @@ async fn chat_completions(
     } else {
         None
     };
+    apply_native_compaction(&mut body, &state);
+    apply_configured_headroom(&mut body, &state).await;
     // Snapshot the eligible ordering before attempting a target. A failed
     // target is put on cooldown, so resolving the iterator again would omit
     // it and make `nth(1)` skip the actual next candidate.
@@ -5389,5 +5389,28 @@ mod binary_speech_tests {
         assert_eq!(response.into_body().collect().await.unwrap().to_bytes().to_vec(),expected);
         assert!(crate::concurrency::snapshot(&state).is_empty());
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod compaction_admission_tests {
+    use super::*;
+    use axum::{routing::post,http::{Request,StatusCode}};
+    use tower::ServiceExt;
+    use std::sync::atomic::AtomicUsize;
+    #[tokio::test]
+    async fn denied_model_never_reaches_external_compactor() {
+        let hits=Arc::new(AtomicUsize::new(0));
+        let counter=hits.clone();
+        let app=Router::new().route("/v1/compress",post(move || {counter.fetch_add(1,Ordering::SeqCst); async {Json(json!({"messages":[]}))}}));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+        let state=AppState::new(Some("admin".into()),[("limited".into(),crate::state::KeyConfig{secret:"key".into(),allowed_models:vec!["allowed".into()],..Default::default()})].into_iter().collect());
+        state.inner.settings.write().unwrap().insert("compaction".into(),json!({"enabled":true,"strategy":"headroom","absoluteTriggerTokens":1,"minTokens":0,"protectRecent":0,"headroom":{"baseUrl":format!("http://{addr}")}}));
+        for path in ["/v1/chat/completions","/v1/messages"] {
+            let response=router().with_state(state.clone()).oneshot(Request::post(path).header("x-api-key","key").header("content-type","application/json").body(Body::from(json!({"model":"denied","messages":[{"role":"user","content":"private input"}]}).to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(),StatusCode::FORBIDDEN);
+        }
+        assert_eq!(hits.load(Ordering::SeqCst),0);server.abort();
     }
 }
