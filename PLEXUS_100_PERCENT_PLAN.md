@@ -272,7 +272,7 @@ textual descriptions of image inputs for providers/models that need
 image-to-text fallback (`vision_fallthrough` config, which Trefoil *does*
 already store/validate).
 
-- [ ] Implement descriptor generation triggered by `vision_fallthrough`
+- [~] Implement descriptor generation triggered by `vision_fallthrough`
       config on non-vision-capable target models.
 - [x] Wire the cache clear endpoint to actually clear it.
 
@@ -368,13 +368,13 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 278 unit + 4 integration tests pass |
+| `cargo test --all-targets` | 271 unit + 4 integration tests pass |
 | Frontend Vitest | 44 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
 | Playwright Chromium | 3 browser scenarios pass |
 | Differential harness unit tests | 8 pass |
-| Live differential | **319 pass, 88 fail, 407 observed, no missing/duplicate cases** |
+| Live differential | **383 pass, 24 fail, 407 observed, no missing/duplicate cases** |
 
 Reports: `target/parity-report.json` and `target/differential-report.json`.
 These are regenerable local artifacts, not committed acceptance evidence.
@@ -406,9 +406,11 @@ reference checkout, and the runner owns only its disposable database container.
 
 ### Corrections to earlier completion claims
 
-- Vision has a descriptor helper/cache with mock tests, but inference does not
-  call it. The generation checkbox is reopened; cache clearing alone is not
-  end-to-end fallthrough.
+- Vision now calls the configured descriptor model from opted-in chat and
+  messages dispatch, supports custom prompts/OpenAI and Anthropic image blocks,
+  and reuses successful cached descriptions. HTTP tests cover these paths,
+  failures and opt-out. Descriptor usage accounting, full OAuth/native-provider
+  support and all API-family transforms remain open, so section 9 stays partial.
 - OAuth credentials are currently persisted as raw token columns; encryption
   at rest claimed above is **not implemented**. Device-flow and provider-specific
   authorization/exchange semantics remain incomplete.
@@ -425,7 +427,7 @@ reference checkout, and the runner owns only its disposable database container.
 
 ### Latest progress
 
-The full gate is intentionally red until the 88 live differences and remaining
+The full gate is intentionally red until the 24 live differences and remaining
 capability gaps are resolved. The old 82% estimate was not an acceptance result
 and should not be used to claim drop-in compatibility. Newly found gaps above
 supersede stale checked-item descriptions elsewhere in this document.
@@ -438,3 +440,17 @@ supersede stale checked-item descriptions elsewhere in this document.
 4. **Frontend browser/e2e coverage and remaining depth (#11).**
 5. **Differential CI and broader live inference/MCP cases (#12).**
 
+
+## Follow-up completion pass
+
+Latest full gate: **383/407 live cases match; 24 differ**, with all six other
+lanes passing. Backend test count is now 271 unit + 4 integration: obsolete
+MCP tests for operations unsupported by the pinned reference were replaced with
+reference-contract validation tests, not treated as successful supported APIs.
+MCP tool errors, collection shapes, destructive confirmation and exact allowed
+operation lists are substantially improved. Shared logging test locking removes
+an observed race. The harness re-provisions authentication after destructive
+restore probes, exposing actual authorization differences rather than testing
+against a deleted reference key. Remaining live failures include full-backup
+comparison, metrics completeness, management authorization, MCP lifecycle,
+configuration/usage shapes, checker discovery, metadata refresh and audit logs.
