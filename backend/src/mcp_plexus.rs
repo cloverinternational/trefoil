@@ -892,7 +892,7 @@ async fn operations_operation(
                 id,
                 operation,
                 "DELETE",
-                "/v0/management/mcp-logs",
+                "/v0/management/logs/reset",
                 None,
             )
             .await
@@ -2474,6 +2474,29 @@ mod tests {
             assert_eq!(response["error"]["code"], -32602);
             assert_eq!(response["error"]["message"], "id is required");
         }
+    }
+
+    #[tokio::test]
+    async fn operations_reset_logs_uses_usage_reset_endpoint() {
+        let response = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 45, "method":"tools/call",
+                    "params":{"name":"plexus_operations","arguments":{
+                        "operation":"reset_logs", "destructive":"acknowledged"
+                    }}
+                }),
+            )
+            .await,
+        )
+        .await;
+        let structured = &response["result"]["structuredContent"];
+        assert_eq!(structured["operation"], "reset_logs");
+        assert_ne!(
+            structured["error"]["message"],
+            "Operation is not implemented yet"
+        );
     }
 
     #[tokio::test]
