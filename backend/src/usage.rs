@@ -125,6 +125,7 @@ async fn reset_logs(State(state): State<AppState>, headers: HeaderMap) -> Respon
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
+    crate::system_logs::event(&state,"info","[Backup] Starting logs reset (request logs, error logs, debug trace logs)",[("module".into(),serde_json::json!("backup"))]);
     if let Some(pool) = &state.inner.database {
         let mut transaction = match pool.begin().await {
             Ok(transaction) => transaction,
@@ -150,6 +151,7 @@ async fn reset_logs(State(state): State<AppState>, headers: HeaderMap) -> Respon
             return reset_error();
         }
     }
+    crate::system_logs::event(&state,"info","[Backup] All logs reset successfully",[("module".into(),serde_json::json!("backup"))]);
     Json(serde_json::json!({
         "success": true,
         "message": "All logs have been reset successfully"

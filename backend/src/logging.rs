@@ -141,14 +141,18 @@ async fn put_level(
         )
             .into_response();
     }
-    *level().write().unwrap() = normalized;
+    let previous=level().read().unwrap().clone();
+    *level().write().unwrap() = normalized.clone();
+    crate::system_logs::event(&state,"info",format!("Log level changed from '{previous}' to '{normalized}' via management API"),[("module".into(),serde_json::json!("logging"))]);
     Json(level_body()).into_response()
 }
 async fn delete_level(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
-    *level().write().unwrap() = startup_level().into();
+    let previous=level().read().unwrap().clone();let startup=startup_level().to_owned();
+    *level().write().unwrap() = startup.clone();
+    crate::system_logs::event(&state,"info",format!("Log level reset from '{previous}' to startup default '{startup}' via management API"),[("module".into(),serde_json::json!("logging"))]);
     Json(level_body()).into_response()
 }
 async fn get_modules(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -189,6 +193,7 @@ async fn put_modules(
         }
     }
     *modules().write().unwrap() = values_out.clone();
+    crate::system_logs::event(&state,"info",format!("Module filter set to [{}] via management API",values_out.join(", ")),[("module".into(),serde_json::json!("logging"))]);
     Json(serde_json::json!({"modules":values_out})).into_response()
 }
 async fn delete_modules(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -196,6 +201,7 @@ async fn delete_modules(State(state): State<AppState>, headers: HeaderMap) -> Re
         return r;
     }
     modules().write().unwrap().clear();
+    crate::system_logs::event(&state,"info","Module filter cleared via management API",[("module".into(),serde_json::json!("logging"))]);
     Json(serde_json::json!({"modules":[]})).into_response()
 }
 
@@ -321,5 +327,18 @@ mod severity_tests {
             }
         }
         assert!(!super::level_enabled("info", "unknown"));
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    #[test]
+    fn management_mutations_are_visible_in_recent_system_log_buffer() {
+        let state=AppState::new(Some("admin".into()),Default::default());
+        crate::system_logs::event(&state,"info","Module filter cleared via management API",[("module".into(),serde_json::json!("logging"))]);
+        let log=state.inner.recent_system_logs.lock().unwrap().back().unwrap().clone();
+        assert_eq!(log.context["module"],"logging");
+        assert_eq!(log.timestamp.len(),19);
     }
 }

@@ -355,6 +355,7 @@ async fn export(
         )
             .into_response();
     };
+    crate::system_logs::event(&state,"info",if query.full.unwrap_or(false) {"[Backup] Starting full backup export"} else {"[Backup] Starting config-only backup export"},[("module".into(),serde_json::json!("backup"))]);
     let config = serde_json::json!({
         "providers": state.inner.providers.read().unwrap().clone(),
         "models": state.inner.aliases.read().unwrap().clone(),
