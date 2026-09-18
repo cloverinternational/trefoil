@@ -372,13 +372,13 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 281 unit + 4 integration tests pass |
+| `cargo test --all-targets` | 288 unit + 4 integration tests pass; credential DB test separately passes |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
 | Playwright Chromium | 3 browser scenarios pass |
 | Differential harness unit tests | 12 pass |
-| Live differential | **405 pass, 2 fail, 407 observed, no missing/duplicate cases** |
+| Live differential | **406 pass, 1 fail, 407 observed, no missing/duplicate cases** |
 
 Reports: `target/parity-report.json` and `target/differential-report.json`.
 These are regenerable local artifacts, not committed acceptance evidence.
@@ -501,3 +501,27 @@ key response, but end-to-end login remains open: an unverified authorization/
 manual-code handler change was removed rather than marked complete. Encryption,
 other provider flows, shared dispatch extraction, comprehensive cancellation,
 metadata consumption/scheduling and exhaustive checker semantics remain open.
+
+## Latest security and OAuth implementation pass
+
+Verified gate: **406/407 live cases match** (recent system-log histories differ).
+288 backend unit tests + 4 stdio integration tests, 45 frontend tests, 3 browser
+tests, and 12 harness tests pass. The ignored-by-default credential integration
+test was **separately executed and passed** against disposable PostgreSQL 16.
+
+OAuth access/refresh storage now uses AES-256-GCM with random nonces and
+length-prefixed provider/account/field associated data. `TREFOIL_CREDENTIAL_KEY`
+(32-byte hex) is mandatory for writes/decryption; missing/wrong keys, tampered
+rows and legacy plaintext fail closed. The credential upsert's missing timestamp
+binding was fixed. Quota checkers use decrypted accessors. See
+`docs/credentials.md`; existing plaintext rows/key rotation need explicit
+migration, not silent acceptance.
+
+OpenRouter authorization uses its actual `callback_url`/PKCE contract, supports
+admin-submitted redirect URLs/codes, and persists nonexpiring keys via the JSON
+exchange. Local HTTP tests prove the exchange wire format, and state tests prove
+one-time verifier claiming. Live provider login was not performed. Other provider
+onboarding remains incomplete. Cancelled verifiers are removed from persisted
+sessions, prompts cannot reopen an exchange, and refresh re-reads credentials
+under its per-account gate. Cross-process exchange/cancellation races still need
+transactional treatment. No claim of all six providers working is made.
