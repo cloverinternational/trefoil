@@ -535,7 +535,18 @@ async fn cancel_session(
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    update_session(&state, &id, "cancel", None).await
+    let response = update_session(&state, &id, "cancel", None).await;
+    if response.status().is_success() {
+        // A cancelled flow can never reach its callback. Do not retain the
+        // one-shot verifier until the session's normal expiry cleanup.
+        state
+            .inner
+            .oauth_pkce_verifiers
+            .write()
+            .unwrap()
+            .remove(&id);
+    }
+    response
 }
 async fn prompt_session(
     State(state): State<AppState>,
@@ -969,5 +980,77 @@ mod tests {
             serde_json::from_slice(&invalid.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         assert_eq!(body["details"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cancelling_session_cleans_up_pkce_verifier_and_is_terminal() {
+        let state = fixture();
+        let session = OAuthSession {
+            id: "cancel-me".into(),
+            provider_id: "anthropic".into(),
+            account_id: "default".into(),
+            status: "waiting".into(),
+            auth_info: None,
+            prompt: None,
+            progress: vec![],
+            error: None,
+            created_at: now_ms(),
+            updated_at: now_ms(),
+            expires_at: now_ms() + 60_000,
+            pkce_verifier: Some("one-shot".into()),
+        };
+        state
+            .inner
+            .oauth_sessions
+            .write()
+            .unwrap()
+            .insert(session.id.clone(), session);
+        state
+            .inner
+            .oauth_pkce_verifiers
+            .write()
+            .unwrap()
+            .insert("cancel-me".into(), "one-shot".into());
+
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::post("/v0/management/oauth/sessions/cancel-me/cancel")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            state
+                .inner
+                .oauth_sessions
+                .read()
+                .unwrap()
+                .get("cancel-me")
+                .unwrap()
+                .status,
+            "cancelled"
+        );
+        assert!(!state
+            .inner
+            .oauth_pkce_verifiers
+            .read()
+            .unwrap()
+            .contains_key("cancel-me"));
+
+        let repeated = router()
+            .with_state(state)
+            .oneshot(
+                Request::post("/v0/management/oauth/sessions/cancel-me/cancel")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(repeated.status(), StatusCode::CONFLICT);
     }
 }
