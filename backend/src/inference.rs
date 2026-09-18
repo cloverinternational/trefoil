@@ -294,7 +294,12 @@ async fn audio_transcriptions(
         return response;
     }
     let mut fields = Vec::new();
-    while let Ok(Some(field)) = multipart.next_field().await {
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(_) => return error_response(axum::http::StatusCode::BAD_REQUEST, "Invalid multipart request", "invalid_request_error"),
+        };
         let Some(name) = field.name().map(str::to_owned) else {
             continue;
         };
@@ -5398,5 +5403,20 @@ mod compaction_admission_tests {
             assert_eq!(response.status(),StatusCode::FORBIDDEN);
         }
         assert_eq!(hits.load(Ordering::SeqCst),0);server.abort();
+    }
+}
+
+#[cfg(test)]
+mod multipart_boundary_tests {
+    use super::*;
+    use axum::http::{Request,StatusCode};
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn malformed_multipart_is_rejected_instead_of_dispatching_partial_fields() {
+        let state=AppState::new(Some("admin".into()),Default::default());
+        let response=router().with_state(state).oneshot(Request::post("/v1/audio/transcriptions")
+            .header("x-api-key","admin").header("content-type","multipart/form-data; boundary=test")
+            .body(Body::from("--test\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nprovider/model\r\n--test\r\nmalformed" )).unwrap()).await.unwrap();
+        assert_eq!(response.status(),StatusCode::BAD_REQUEST);
     }
 }
