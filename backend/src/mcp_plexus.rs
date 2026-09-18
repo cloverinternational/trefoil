@@ -213,6 +213,16 @@ async fn call_tool(
             return system_logs_operation(state, id, operation, args).await;
         }
         ("plexus_debug", "state") => return debug_operation(state, id).await,
+        ("plexus_debug", "logs") => return debug_logs_operation(state, id, operation, args).await,
+        ("plexus_debug", "get_log") => {
+            return debug_logs_operation(state, id, operation, args).await
+        }
+        ("plexus_debug", "delete_log") => {
+            return debug_logs_operation(state, id, operation, args).await
+        }
+        ("plexus_debug", "delete_all_logs") => {
+            return debug_logs_operation(state, id, operation, args).await
+        }
         ("plexus_quota", "status") | ("plexus_quota", "clear") | ("plexus_quota", "recompute") => {
             return quota_operation(state, id, operation, args).await;
         }
@@ -569,6 +579,57 @@ async fn debug_operation(state: &AppState, id: Value) -> Response {
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
     )
+}
+
+async fn debug_logs_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    let (method, path) = match operation {
+        "logs" => (
+            "GET",
+            format!(
+                "/v0/management/debug/logs?limit={}&offset={}",
+                args.get("query")
+                    .and_then(|q| q.get("limit"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(50),
+                args.get("query")
+                    .and_then(|q| q.get("offset"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            ),
+        ),
+        "get_log" | "delete_log" => {
+            let Some(log_id) = args.get("id").and_then(Value::as_str) else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            if operation == "delete_log"
+                && args.get("destructive").and_then(Value::as_str) != Some("acknowledged")
+            {
+                return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
+            }
+            (
+                if operation == "get_log" {
+                    "GET"
+                } else {
+                    "DELETE"
+                },
+                format!("/v0/management/debug/logs/{log_id}"),
+            )
+        }
+        "delete_all_logs" => {
+            if args.get("destructive").and_then(Value::as_str) != Some("acknowledged") {
+                return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
+            }
+            ("DELETE", "/v0/management/debug/logs".to_owned())
+        }
+        _ => unreachable!(),
+    };
+    forwarded_request(state, id, operation, method, &path, None).await
 }
 
 async fn quota_operation(
