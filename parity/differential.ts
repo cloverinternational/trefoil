@@ -24,6 +24,43 @@ const TREFOIL_BASE_URL = process.env.TREFOIL_BASE_URL ?? 'http://127.0.0.1:8080'
 const ADMIN_KEY = 'correct-admin-key';
 const LIMITED_KEY_SECRET = 'sk-test-secret';
 const REQUEST_TIMEOUT_MS = 15_000;
+const EXPECTED_CASE_COUNT = 313;
+const REPORT_PATH = process.env.PARITY_REPORT ?? 'target/differential-report.json';
+
+type CaseStatus = 'pass' | 'fail' | 'error';
+interface CaseResult {
+  name: string;
+  status: CaseStatus;
+  plexus_status?: number;
+  trefoil_status?: number;
+  error?: string;
+}
+const caseResults: CaseResult[] = [];
+
+function recordCase(result: CaseResult) {
+  if (caseResults.some((existing) => existing.name === result.name)) {
+    throw new Error(`duplicate differential case name: ${result.name}`);
+  }
+  caseResults.push(result);
+}
+
+async function writeReport(status: 'complete' | 'incomplete') {
+  const names = new Set(caseResults.map((result) => result.name));
+  const report = {
+    schema_version: 1,
+    status,
+    expected_cases: EXPECTED_CASE_COUNT,
+    observed_cases: caseResults.length,
+    missing_cases: Math.max(0, EXPECTED_CASE_COUNT - names.size),
+    duplicate_cases: caseResults.length - names.size,
+    counts: Object.fromEntries((['pass', 'fail', 'error'] as const).map((key) => [
+      key, caseResults.filter((result) => result.status === key).length,
+    ])),
+    cases: [...caseResults].sort((a, b) => a.name.localeCompare(b.name)),
+  };
+  const destination = Bun.file(REPORT_PATH);
+  await Bun.write(destination, JSON.stringify(report, null, 2) + '\n');
+}
 
 interface Case {
   name: string;
@@ -1409,10 +1446,18 @@ const SELF_CASES: KeysCase[] = [
 async function runCases(cases: KeysCase[]): Promise<number> {
   let failures = 0;
   for (const testCase of cases) {
-    const [plexus, trefoil] = await Promise.all([
-      fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers, testCase.rawBody),
-      fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers, testCase.rawBody),
-    ]);
+    let plexus, trefoil;
+    try {
+      [plexus, trefoil] = await Promise.all([
+        fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers, testCase.rawBody),
+        fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers, testCase.rawBody),
+      ]);
+    } catch (error) {
+      recordCase({ name: testCase.name, status: 'error', error: String(error) });
+      failures += 1;
+      console.log(`ERROR ${testCase.name}: ${String(error)}`);
+      continue;
+    }
 
     const statusMatch = plexus.status === trefoil.status;
     const contentTypeMatch =
@@ -1425,6 +1470,7 @@ async function runCases(cases: KeysCase[]): Promise<number> {
     );
     const pass = statusMatch && bodyMatch && contentTypeMatch;
     if (!pass) failures += 1;
+    recordCase({ name: testCase.name, status: pass ? 'pass' : 'fail', plexus_status: plexus.status, trefoil_status: trefoil.status });
 
     console.log(`${pass ? 'PASS' : 'FAIL'} ${testCase.name}`);
     if (!pass) {
@@ -1437,7 +1483,8 @@ async function runCases(cases: KeysCase[]): Promise<number> {
 
 async function main() {
   let failures = 0;
-  await Promise.all([ensureFixture(PLEXUS_BASE_URL), ensureFixture(TREFOIL_BASE_URL)]);
+  try {
+    await Promise.all([ensureFixture(PLEXUS_BASE_URL), ensureFixture(TREFOIL_BASE_URL)]);
 
   // Plexus rebuilds its in-memory key cache asynchronously after management
   // writes. Wait until the fixture is visible through the endpoint under test
@@ -1464,6 +1511,7 @@ async function main() {
     const bodyMatch = deepEqual(normalize(plexus.body), normalize(trefoil.body));
     const pass = statusMatch && bodyMatch;
     if (!pass) failures += 1;
+    recordCase({ name: testCase.name, status: pass ? 'pass' : 'fail', plexus_status: plexus.status, trefoil_status: trefoil.status });
 
     console.log(`${pass ? 'PASS' : 'FAIL'} ${testCase.name}`);
     if (!pass) {
@@ -1575,11 +1623,21 @@ async function main() {
     MCP_LOG_CASES.length +
     INFERENCE_CASES.length +
     SELF_CASES.length;
+  if (caseResults.length !== EXPECTED_CASE_COUNT) {
+    throw new Error(`inventory reconciliation failed: expected ${EXPECTED_CASE_COUNT}, observed ${caseResults.length}`);
+  }
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
+    await writeReport('complete');
     process.exit(1);
   }
+  await writeReport('complete');
   console.log(`\nAll ${total} cases match.`);
+  } catch (error) {
+    await writeReport('incomplete');
+    console.error(`\nDifferential run incomplete: ${String(error)}`);
+    process.exit(2);
+  }
 }
 
 main();
