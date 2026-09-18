@@ -4,6 +4,14 @@ use std::time::Duration;
 const CLIENT_ID:&str="Iv1.b507a08c87ecfe98";
 const USER_AGENT:&str="GitHubCopilotChat/0.35.0";
 
+pub fn api_base(token:&str)->String {
+    let host=token.split(';').find_map(|part|part.strip_prefix("proxy-ep="));
+    if let Some(host)=host.filter(|host|host.starts_with("proxy.") && host.ends_with(".githubcopilot.com") && host.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'.'||b==b'-')) {
+        return format!("https://api.{}",&host[6..]);
+    }
+    "https://api.individual.githubcopilot.com".into()
+}
+
 pub struct DeviceCode {
     pub secret:String,
     pub user_code:String,

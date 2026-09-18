@@ -415,6 +415,7 @@ async fn dispatch_transcription(state: AppState, principal: Principal, mut multi
                 base.as_str().trim_end_matches('/')
             ))
             .multipart(form);
+        request = copilot_headers(request, &provider);
         if let Some(key) = provider.api_key {
             request = request.bearer_auth(key);
         }
@@ -1044,6 +1045,7 @@ async fn dispatch_json(state: &AppState, principal: Principal, mut body: Value, 
                 .header("anthropic-dangerous-direct-browser-access", "true")
                 .json(&request_body);
         }
+        request = copilot_headers(request, &provider);
         if let Some(key) = provider.api_key {
             request = if codex_oauth {
                 let mut request = request
@@ -1387,6 +1389,7 @@ async fn dispatch_responses(state: AppState, principal: Principal, mut body: Val
         let mut request = client
             .post(format!("{}/responses", base.as_str().trim_end_matches('/')))
             .json(&request_body);
+        request = copilot_headers(request, &provider);
         if let Some(key) = provider.api_key.clone() {
             request = request.bearer_auth(key);
         }
@@ -1977,6 +1980,7 @@ async fn dispatch_chat(state: AppState, principal: Principal, mut body: Value) -
         }
     };
     let mut request = client.post(&endpoint).json(&body);
+    request = copilot_headers(request, &provider);
     if let Some(api_key) = provider.api_key {
         request = request.bearer_auth(api_key);
     }
@@ -2188,6 +2192,7 @@ async fn chat_status_failover(
                 base.as_str().trim_end_matches('/')
             ))
             .json(&body);
+        request = copilot_headers(request, &provider);
         if let Some(key) = provider.api_key {
             request = request.bearer_auth(key);
         }
@@ -2537,15 +2542,25 @@ async fn record_attempt(
 
 /// Resolve permanent OpenRouter OAuth keys without mutating shared provider
 /// configuration. Other subscription transports require their native adapters.
+fn copilot_headers(request: reqwest::RequestBuilder, provider: &crate::state::ProviderConfig) -> reqwest::RequestBuilder {
+    if provider.oauth_provider.as_deref()!=Some("github-copilot") {return request;}
+    request.header("user-agent","GitHubCopilotChat/0.35.0").header("editor-version","vscode/1.107.0")
+        .header("editor-plugin-version","copilot-chat/0.35.0").header("copilot-integration-id","vscode-chat")
+        .header("x-github-api-version","2026-06-01")
+}
+
 async fn resolve_provider_credentials(state: &AppState, mut provider: crate::state::ProviderConfig) -> Result<crate::state::ProviderConfig, &'static str> {
-    if provider.oauth_provider.as_deref() != Some("openrouter") { return Ok(provider); }
+    let kind=provider.oauth_provider.as_deref().unwrap_or("");
+    if !matches!(kind,"openrouter"|"github-copilot") { return Ok(provider); }
     let pool = state.inner.database.as_ref().ok_or("OAuth credentials require PostgreSQL")?;
     let account = provider.oauth_account.as_deref().unwrap_or("default");
     let credentials = crate::database::load_oauth_credentials(pool).await.map_err(|_| "Unable to load OAuth credentials")?;
-    let (_,_,access,_,expires) = credentials.into_iter().find(|(p,a,_,_,_)|p == "openrouter" && a == account).ok_or("OAuth credentials not found")?;
+    let (_,_,access,_,expires) = credentials.into_iter().find(|(p,a,_,_,_)|p == kind && a == account).ok_or("OAuth credentials not found")?;
     if expires <= now_ms() { return Err("OAuth credentials expired"); }
+    if crate::state::ProviderConfig::is_oauth_placeholder_url(&provider.api_base_url) {
+        provider.api_base_url=if kind=="github-copilot" { crate::copilot_oauth::api_base(&access) } else {"https://openrouter.ai/api/v1".into()};
+    }
     provider.api_key = Some(access);
-    if crate::state::ProviderConfig::is_oauth_placeholder_url(&provider.api_base_url) { provider.api_base_url = "https://openrouter.ai/api/v1".into(); }
     Ok(provider)
 }
 

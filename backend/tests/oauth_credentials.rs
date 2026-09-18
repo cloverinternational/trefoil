@@ -184,3 +184,25 @@ async fn latest_quota_uses_public_meter_contract_not_storage_rows() {
     assert_eq!(meter["resetsAt"],"2026-09-18T12:00:00.000Z");
     assert!(meter.get("id").is_none() && meter.get("meterKey").is_none() && meter.get("limit").is_none());
 }
+
+#[tokio::test]
+#[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL and TREFOIL_CREDENTIAL_KEY"]
+async fn encrypted_copilot_token_and_client_headers_reach_inference() {
+    use axum::{body::Body,http::{Request,HeaderMap,StatusCode},routing::post,Json,Router};
+    use tower::ServiceExt;
+    let pool=database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
+    database::migrate(&pool).await.unwrap();
+    // Each integration case owns its account; remove deliberately corrupt rows
+    // left by the account-binding test before exercising the reader.
+    sqlx::query("DELETE FROM oauth_credentials WHERE account_id='moved'").execute(&pool).await.unwrap();
+    database::upsert_oauth_credential(&pool,"github-copilot","copilot-dispatch","fixture-key","",i64::MAX).await.unwrap();
+    let app=Router::new().route("/chat/completions",post(|headers:HeaderMap| async move {
+        assert_eq!(headers["authorization"],"Bearer fixture-key");assert_eq!(headers["copilot-integration-id"],"vscode-chat");assert_eq!(headers["x-github-api-version"],"2026-06-01");Json(serde_json::json!({"choices":[]}))
+    }));
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();
+    let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+    let state=trefoil_backend::AppState::new(Some("admin".into()),Default::default()).with_database(pool);
+    state.inner.providers.write().unwrap().insert("oauth".into(),trefoil_backend::state::ProviderConfig{api_base_url:format!("http://{addr}"),oauth_provider:Some("github-copilot".into()),oauth_account:Some("copilot-dispatch".into()),enabled:true,..Default::default()});
+    let response=trefoil_backend::app(state).oneshot(Request::post("/v1/chat/completions").header("x-api-key","admin").header("content-type","application/json").body(Body::from(r#"{"model":"oauth/model","messages":[{"role":"user","content":"hello"}]}"#)).unwrap()).await.unwrap();
+    assert_eq!(response.status(),StatusCode::OK);server.abort();
+}
