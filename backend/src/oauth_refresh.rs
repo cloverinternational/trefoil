@@ -59,6 +59,12 @@ async fn refresh_one(state: &AppState, provider: String, account: String, refres
         }
         return;
     }
+    if provider == "xai" {
+        if let Ok((access, refresh, expires)) = crate::xai_oauth::refresh(&refresh_token).await {
+            let _ = crate::database::upsert_oauth_credential(pool, &provider, &account, &access, &refresh, expires).await;
+        }
+        return;
+    }
     let transport = crate::oauth_transport::ReqwestTransport;
     let Ok(response) = crate::oauth_transport::refresh(&transport, &provider, &refresh_token).await
     else {

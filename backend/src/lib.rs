@@ -43,6 +43,7 @@ pub mod system_settings;
 pub mod usage;
 pub mod user_quotas;
 pub mod vision;
+pub mod xai_oauth;
 
 pub use state::AppState;
 

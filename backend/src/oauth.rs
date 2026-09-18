@@ -201,7 +201,7 @@ async fn start_device_session(state: AppState, account: String, provider: String
     if crate::credential_crypto::CredentialKey::from_env().is_err() {
         return (StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"OAuth credential encryption is not configured"}))).into_response();
     }
-    let device=match if provider == "kimi-coding" {crate::kimi_oauth::start().await} else {crate::copilot_oauth::start().await} {Ok(device)=>device,Err(message)=>return (StatusCode::BAD_GATEWAY,Json(serde_json::json!({"error":message}))).into_response()};
+    let device=match if provider == "kimi-coding" {crate::kimi_oauth::start().await} else if provider == "xai" {crate::xai_oauth::start().await} else {crate::copilot_oauth::start().await} {Ok(device)=>device,Err(message)=>return (StatusCode::BAD_GATEWAY,Json(serde_json::json!({"error":message}))).into_response()};
     let now=now_ms();let id=session_id();
     let session=OAuthSession{id:id.clone(),provider_id:provider.clone(),account_id:account,status:"waiting".into(),auth_info:Some(serde_json::json!({"url":device.verification_uri,"userCode":device.user_code,"instructions":format!("Enter code {} at the verification URL.",device.user_code)})),prompt:None,progress:vec![],error:None,created_at:now,updated_at:now,expires_at:now.saturating_add(device.expires_in.as_millis() as i64),pkce_verifier:None};
     if crate::database::upsert_oauth_session(pool,&session).await.is_err(){return (StatusCode::INTERNAL_SERVER_ERROR,Json(serde_json::json!({"error":"Unable to persist device session"}))).into_response();}
@@ -218,6 +218,13 @@ async fn start_device_session(state: AppState, account: String, provider: String
                     Ok(crate::kimi_oauth::Poll::Pending)=>Ok(None),
                     Ok(crate::kimi_oauth::Poll::SlowDown(next))=>{interval=next;Ok(None)},
                     Ok(crate::kimi_oauth::Poll::Complete{access,refresh,expires})=>Ok(Some((access,refresh,expires))),
+                    Err(error)=>Err(error),
+                }
+            } else if provider=="xai" {
+                match crate::xai_oauth::poll(&device.secret,interval).await {
+                    Ok(crate::xai_oauth::Poll::Pending)=>Ok(None),
+                    Ok(crate::xai_oauth::Poll::SlowDown(next))=>{interval=next;Ok(None)},
+                    Ok(crate::xai_oauth::Poll::Complete{access,refresh,expires})=>Ok(Some((access,refresh,expires))),
                     Err(error)=>Err(error),
                 }
             } else {
@@ -274,7 +281,7 @@ async fn create_session(
         )
             .into_response();
     }
-    if matches!(body.provider_id.as_str(), "github-copilot" | "kimi-coding") { return start_device_session(state,body.account_id,body.provider_id).await; }
+    if matches!(body.provider_id.as_str(), "github-copilot" | "kimi-coding" | "xai") { return start_device_session(state,body.account_id,body.provider_id).await; }
     let now = now_ms();
     let id = session_id();
     let verifier: String = rand::thread_rng()
