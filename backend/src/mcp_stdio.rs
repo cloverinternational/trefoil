@@ -29,6 +29,7 @@ struct Inner {
     stdin: Mutex<ChildStdin>,
     pending: Mutex<HashMap<String, oneshot::Sender<Result<Value, TransportError>>>>,
     notifications: mpsc::Sender<Value>,
+    terminal_error: Mutex<Option<TransportError>>,
 }
 
 /// A local MCP server speaking newline-delimited JSON-RPC over stdin/stdout.
@@ -65,6 +66,7 @@ impl LocalMcpTransport {
             stdin: Mutex::new(stdin),
             pending: Mutex::new(HashMap::new()),
             notifications: notification_tx,
+            terminal_error: Mutex::new(None),
         });
 
         let reader_inner = Arc::clone(&inner);
@@ -106,6 +108,10 @@ impl LocalMcpTransport {
                     Err(error) => break Err(TransportError::Io(error)),
                 }
             };
+            *reader_inner.terminal_error.lock().await = Some(match &result {
+                Ok(()) => TransportError::Closed,
+                Err(error) => error.clone_error(),
+            });
             let mut pending = reader_inner.pending.lock().await;
             for (_, sender) in pending.drain() {
                 let _ = sender.send(Err(match &result {
@@ -134,6 +140,10 @@ impl LocalMcpTransport {
         let id = id.into();
         let (sender, receiver) = oneshot::channel();
         self.inner.pending.lock().await.insert(id.clone(), sender);
+        if let Some(error) = self.inner.terminal_error.lock().await.as_ref() {
+            self.inner.pending.lock().await.remove(&id);
+            return Err(error.clone_error());
+        }
         let mut message = json!({"jsonrpc":"2.0", "id":id, "method":method});
         if let Some(params) = params {
             message["params"] = params;
