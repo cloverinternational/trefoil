@@ -894,7 +894,7 @@ async fn forward_json_api(
     // Validate image parts before dispatch. This keeps malformed multimodal
     // payloads on the normal text path and avoids unsafe assumptions in
     // provider transforms; descriptor generation is opt-in via configuration.
-    let _image_urls = crate::vision::image_urls(&body);
+    apply_vision_fallthrough(&mut body, state).await;
     apply_native_compaction(&mut body, state);
     apply_headroom_compaction(&mut body, state).await;
     if let Some(config) = key_config {
@@ -1059,12 +1059,12 @@ async fn forward_json_api(
                             StreamAccounting {
                                 pool: state.inner.database.clone(),
                                 event_sender: state.inner.usage_events.clone(),
-                                request_id: new_request_id(),
-                                key_name: None,
+                                request_id: request_id.clone(),
+                                key_name: usage_key_name.map(str::to_owned),
                                 provider: provider_slug.clone(),
                                 model: model.clone(),
                                 api_type: if native_gemini { "gemini" } else { "messages" }.into(),
-                                start_time: now_ms(),
+                                start_time,
                                 input_tokens: None,
                                 output_tokens: None,
                                 cost: None,
@@ -2607,6 +2607,31 @@ fn dispatch_provider_url(value: &str) -> Result<url::Url, ()> {
     } else {
         Err(())
     }
+}
+
+async fn apply_vision_fallthrough(body: &mut Value, state: &AppState) {
+    let config = state.inner.settings.read().unwrap().get("vision_fallthrough").and_then(Value::as_object).cloned();
+    let Some(config) = config else { return };
+    if config.get("enabled").and_then(Value::as_bool) != Some(true) { return; }
+    let Some(model) = config.get("model").or_else(|| config.get("fallback_model")).and_then(Value::as_str).filter(|v| !v.trim().is_empty()) else { return; };
+    let provider_name = config.get("provider").and_then(Value::as_str).or_else(|| config.get("provider_filter").and_then(Value::as_array).and_then(|v| v.iter().find_map(Value::as_str)));
+    let provider = { let providers = state.inner.providers.read().unwrap(); provider_name.and_then(|n| providers.get(n)).or_else(|| providers.values().find(|p| p.enabled)).cloned() };
+    let Some(provider) = provider else { return };
+    let Ok(base) = dispatch_provider_url(&provider.api_base_url) else { return };
+    let images = crate::vision::image_urls(body);
+    if images.is_empty() { return; }
+    let endpoint = format!("{}{}", base.as_str().trim_end_matches('/'), "/chat/completions");
+    let client = reqwest::Client::new();
+    let mut descriptions = std::collections::HashMap::new();
+    for image in images {
+        let cached = state.inner.vision_descriptor_cache.lock().unwrap().get(&image, model);
+        let description = match cached { Some(value) => value, None => match crate::vision::generate_descriptor(&client, &endpoint, provider.api_key.as_deref(), model, &image).await { Ok(value) => { state.inner.vision_descriptor_cache.lock().unwrap().insert(&image, model, value.clone()); value }, Err(_) => continue } };
+        descriptions.insert(image, description);
+    }
+    fn replace(value: &mut Value, descriptions: &std::collections::HashMap<String, String>) {
+        match value { Value::Array(values) => values.iter_mut().for_each(|v| replace(v, descriptions)), Value::Object(object) => { if object.get("type").and_then(Value::as_str) == Some("image_url") { if let Some(url) = object.get("image_url").and_then(|v| v.get("url")).and_then(Value::as_str) { if let Some(description) = descriptions.get(url) { *value = json!({"type":"text","text":format!("[Image description: {description}]" )}); return; } } } object.values_mut().for_each(|v| replace(v, descriptions)); }, _ => {} }
+    }
+    replace(body, &descriptions);
 }
 
 fn apply_native_compaction(body: &mut Value, state: &AppState) {
