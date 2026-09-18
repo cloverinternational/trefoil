@@ -925,6 +925,12 @@ async fn settings_operation(state: &AppState, id: Value, args: Option<&Value>) -
         ("failover", "/v0/management/config/failover"),
         ("cooldown", "/v0/management/config/cooldown"),
         ("timeout", "/v0/management/config/timeout"),
+        ("mcp_enabled", "/v0/management/config/mcp-enabled"),
+        ("compaction", "/v0/management/config/compaction"),
+        (
+            "capture_trace_on_error",
+            "/v0/management/config/capture-trace-on-error",
+        ),
         ("stall", "/v0/management/config/stall"),
         ("trusted_proxies", "/v0/management/config/trusted-proxies"),
         (
@@ -2468,6 +2474,52 @@ mod tests {
             assert_eq!(response["error"]["code"], -32602);
             assert_eq!(response["error"]["message"], "id is required");
         }
+    }
+
+    #[tokio::test]
+    async fn settings_supports_all_config_categories_and_rejects_unknown() {
+        let state = state();
+        let all = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id": 14, "method":"tools/call",
+                    "params":{"name":"plexus_settings","arguments":{"operation":"get"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        let data = &all["result"]["structuredContent"]["data"];
+        for category in [
+            "mcp_enabled",
+            "compaction",
+            "capture_trace_on_error",
+            "failover",
+            "cooldown",
+            "timeout",
+            "stall",
+            "trusted_proxies",
+            "vision_fallthrough",
+            "background_exploration",
+            "exploration",
+        ] {
+            assert!(data.get(category).is_some(), "missing category {category}");
+        }
+
+        let unknown = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id": 15, "method":"tools/call",
+                    "params":{"name":"plexus_settings","arguments":{"operation":"get","category":"nope"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(unknown["result"]["structuredContent"]["error"]["code"], 404);
+        assert_eq!(unknown["result"]["isError"], true);
     }
 
     #[tokio::test]
