@@ -368,6 +368,7 @@ async fn audio_transcriptions(
         if let Some(key) = provider.api_key {
             request = request.bearer_auth(key);
         }
+        let mut _permit = Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone()));
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
@@ -1013,6 +1014,7 @@ async fn forward_json_api(
                 request.bearer_auth(key)
             };
         }
+        let mut _permit = Some(crate::concurrency::acquire(state, provider_slug.clone(), upstream_model.clone()));
         let mut retry_count = 0;
         let response_result = loop {
             let result = request
@@ -1059,7 +1061,7 @@ async fn forward_json_api(
                         .body(accounted_sse_body(
                             response.bytes_stream(),
                             StreamAccounting {
-                            permit: Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone())),
+                                permit: _permit.take(),
                                 pool: state.inner.database.clone(),
                                 event_sender: state.inner.usage_events.clone(),
                                 request_id: request_id.clone(),
@@ -1343,6 +1345,7 @@ async fn responses(
         if let Some(key) = provider.api_key.clone() {
             request = request.bearer_auth(key);
         }
+        let mut _permit = Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone()));
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
@@ -1423,7 +1426,7 @@ async fn responses(
                         .body(accounted_sse_body(
                             response.bytes_stream(),
                             StreamAccounting {
-                            permit: Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone())),
+                                permit: _permit.take(),
                                 pool: state.inner.database.clone(),
                                 event_sender: state.inner.usage_events.clone(),
                                 request_id: request_id.clone(),
@@ -1963,7 +1966,8 @@ async fn chat_completions(
     if let Some(api_key) = provider.api_key {
         request = request.bearer_auth(api_key);
     }
-    match request.send().await {
+    let mut _permit = Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone()));
+        match request.send().await {
         Ok(upstream) => {
             let status = upstream.status();
             if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
@@ -1980,7 +1984,7 @@ async fn chat_completions(
                     .body(accounted_sse_body(
                         upstream.bytes_stream(),
                         StreamAccounting {
-                            permit: Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone())),
+                            permit: _permit.take(),
                             pool: state.inner.database.clone(),
                             event_sender: state.inner.usage_events.clone(),
                             request_id: request_id.clone(),
@@ -2131,6 +2135,7 @@ async fn chat_completions(
                 if let Some(api_key) = fallback_provider.api_key {
                     fallback_request = fallback_request.bearer_auth(api_key);
                 }
+                let _permit = crate::concurrency::acquire(&state, fallback_provider_slug.clone(), fallback_model.clone());
                 match fallback_request.send().await {
                     Ok(fallback) => {
                         let fallback_status = fallback.status();
@@ -2274,6 +2279,7 @@ async fn chat_status_failover(
         if let Some(key) = provider.api_key {
             request = request.bearer_auth(key);
         }
+        let mut _permit = Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone()));
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
@@ -2613,56 +2619,124 @@ fn dispatch_provider_url(value: &str) -> Result<url::Url, ()> {
     }
 }
 
-
 /// Only aliases explicitly opting in may turn images into text. Descriptor
 /// routing uses the configured model and the caller's provider policy.
-async fn apply_vision_fallthrough(body: &mut Value, state: &AppState, model: &str,
-    key: Option<&crate::state::KeyConfig>) {
-    let enabled = state.inner.aliases.read().unwrap().iter().any(|(name, alias)|
-        (name == model || alias.additional_aliases.iter().any(|name| name == model)) && alias.use_image_fallthrough);
-    if !enabled { return; }
-    let config = state.inner.settings.read().unwrap().get("vision_fallthrough").cloned();
+async fn apply_vision_fallthrough(
+    body: &mut Value,
+    state: &AppState,
+    model: &str,
+    key: Option<&crate::state::KeyConfig>,
+) {
+    let enabled = state
+        .inner
+        .aliases
+        .read()
+        .unwrap()
+        .iter()
+        .any(|(name, alias)| {
+            (name == model || alias.additional_aliases.iter().any(|name| name == model))
+                && alias.use_image_fallthrough
+        });
+    if !enabled {
+        return;
+    }
+    let config = state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get("vision_fallthrough")
+        .cloned();
     let Some(config) = config else { return };
-    let Some(descriptor_model) = config.get("descriptor_model").and_then(Value::as_str) else { return };
-    if key.is_some_and(|key| !model_allowed(key, descriptor_model)) { return; }
+    let Some(descriptor_model) = config.get("descriptor_model").and_then(Value::as_str) else {
+        return;
+    };
+    if key.is_some_and(|key| !model_allowed(key, descriptor_model)) {
+        return;
+    }
     let images = crate::vision::image_urls(body);
-    if images.is_empty() { return; }
+    if images.is_empty() {
+        return;
+    }
     let targets: Vec<_> = inference_targets(state, descriptor_model, key).collect();
-    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(30)).build() else { return };
-    let prompt = config.get("default_prompt").and_then(Value::as_str)
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+    else {
+        return;
+    };
+    let prompt = config
+        .get("default_prompt")
+        .and_then(Value::as_str)
         .unwrap_or("Describe this image briefly and factually for another language model.");
     let mut descriptions = std::collections::HashMap::new();
     for image in images {
-        if descriptions.contains_key(&image) { continue; }
-        let cached = state.inner.vision_descriptor_cache.lock().unwrap().get(&image, descriptor_model);
+        if descriptions.contains_key(&image) {
+            continue;
+        }
+        let cached = state
+            .inner
+            .vision_descriptor_cache
+            .lock()
+            .unwrap()
+            .get(&image, descriptor_model);
         let mut description = cached;
         if description.is_none() {
             for (slug, upstream_model) in &targets {
-                if key.is_some_and(|key| !provider_allowed(key, slug)) { continue; }
+                if key.is_some_and(|key| !provider_allowed(key, slug)) {
+                    continue;
+                }
                 let provider = state.inner.providers.read().unwrap().get(slug).cloned();
                 let Some(provider) = provider else { continue };
-                let Ok(base) = dispatch_provider_url(&provider.api_base_url) else { continue };
+                let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+                    continue;
+                };
                 let endpoint = format!("{}/chat/completions", base.as_str().trim_end_matches('/'));
-                if let Ok(text) = crate::vision::generate_descriptor_with_prompt(&client, &endpoint,
-                    provider.api_key.as_deref(), upstream_model, &image, prompt).await {
-                    state.inner.vision_descriptor_cache.lock().unwrap().insert(&image, descriptor_model, text.clone());
+                if let Ok(text) = crate::vision::generate_descriptor_with_prompt(
+                    &client,
+                    &endpoint,
+                    provider.api_key.as_deref(),
+                    upstream_model,
+                    &image,
+                    prompt,
+                )
+                .await
+                {
+                    state.inner.vision_descriptor_cache.lock().unwrap().insert(
+                        &image,
+                        descriptor_model,
+                        text.clone(),
+                    );
                     description = Some(text);
                     break;
                 }
             }
         }
-        descriptions.insert(image, description.unwrap_or_else(|| "Error generating image description.".into()));
+        descriptions.insert(
+            image,
+            description.unwrap_or_else(|| "Error generating image description.".into()),
+        );
     }
     fn replace(value: &mut Value, descriptions: &std::collections::HashMap<String, String>) {
-        if matches!(value.get("type").and_then(Value::as_str), Some("image_url" | "image")) {
-            if let Some(text) = crate::vision::image_urls(value).first().and_then(|url| descriptions.get(url)) {
+        if matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("image_url" | "image")
+        ) {
+            if let Some(text) = crate::vision::image_urls(value)
+                .first()
+                .and_then(|url| descriptions.get(url))
+            {
                 *value = json!({"type":"text","text":format!("[Image Description: {text}]")});
                 return;
             }
         }
         match value {
-            Value::Array(values) => values.iter_mut().for_each(|value| replace(value, descriptions)),
-            Value::Object(values) => values.values_mut().for_each(|value| replace(value, descriptions)),
+            Value::Array(values) => values
+                .iter_mut()
+                .for_each(|value| replace(value, descriptions)),
+            Value::Object(values) => values
+                .values_mut()
+                .for_each(|value| replace(value, descriptions)),
             _ => {}
         }
     }
@@ -5073,71 +5147,148 @@ data: [DONE]
 #[cfg(test)]
 mod vision_dispatch_tests {
     use super::*;
-    use axum::{routing::post, http::Request};
+    use axum::{http::Request, routing::post};
     use http_body_util::BodyExt;
-    use tower::ServiceExt;
     use std::sync::atomic::AtomicUsize;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn opted_in_chat_generates_custom_descriptions_and_reuses_cache() {
         let calls = Arc::new(AtomicUsize::new(0));
         let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
-        let c = calls.clone(); let requests = seen.clone();
-        let upstream = Router::new().route("/chat/completions", post(move |Json(body): Json<Value>| {
-            let c = c.clone(); let requests = requests.clone();
-            async move {
-                if body["model"] == "vision" {
-                    c.fetch_add(1, Ordering::SeqCst);
-                    assert_eq!(body["messages"][0]["content"][0]["text"], "Describe precisely");
-                    Json(json!({"choices":[{"message":{"content":"a blue circle"}}]}))
-                } else {
-                    requests.lock().unwrap().push(body);
+        let c = calls.clone();
+        let requests = seen.clone();
+        let upstream = Router::new().route(
+            "/chat/completions",
+            post(move |Json(body): Json<Value>| {
+                let c = c.clone();
+                let requests = requests.clone();
+                async move {
+                    if body["model"] == "vision" {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(
+                            body["messages"][0]["content"][0]["text"],
+                            "Describe precisely"
+                        );
+                        Json(json!({"choices":[{"message":{"content":"a blue circle"}}]}))
+                    } else {
+                        requests.lock().unwrap().push(body);
+                        Json(json!({"choices":[{"message":{"content":"ok"}}]}))
+                    }
+                }
+            }),
+        );
+        let messages_seen = seen.clone();
+        let upstream = upstream.route(
+            "/messages",
+            post(move |Json(body): Json<Value>| {
+                let seen = messages_seen.clone();
+                async move {
+                    seen.lock().unwrap().push(body);
                     Json(json!({"choices":[{"message":{"content":"ok"}}]}))
                 }
-            }
-        }));
-        let messages_seen = seen.clone();
-        let upstream = upstream.route("/messages", post(move |Json(body): Json<Value>| {
-            let seen = messages_seen.clone();
-            async move { seen.lock().unwrap().push(body); Json(json!({"choices":[{"message":{"content":"ok"}}]})) }
-        }));
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
         let state = AppState::new(Some("admin".into()), Default::default());
-        state.inner.providers.write().unwrap().insert("mock".into(), crate::state::ProviderConfig {
-            api_base_url: format!("http://{address}"), enabled: true, ..Default::default()
-        });
-        state.inner.aliases.write().unwrap().insert("text".into(), crate::state::ModelConfig {
-            use_image_fallthrough: true,
-            target_groups: vec![crate::state::ModelTargetGroup { name:"main".into(), selector:"in_order".into(), targets:vec![crate::state::ModelTarget {
-                provider:Some("mock".into()),model:Some("text".into()),enabled:true,..Default::default()
-            }]}], ..Default::default()
-        });
-        state.inner.settings.write().unwrap().insert("vision_fallthrough".into(), json!({"descriptor_model":"mock/vision","default_prompt":"Describe precisely"}));
+        state.inner.providers.write().unwrap().insert(
+            "mock".into(),
+            crate::state::ProviderConfig {
+                api_base_url: format!("http://{address}"),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        state.inner.aliases.write().unwrap().insert(
+            "text".into(),
+            crate::state::ModelConfig {
+                use_image_fallthrough: true,
+                target_groups: vec![crate::state::ModelTargetGroup {
+                    name: "main".into(),
+                    selector: "in_order".into(),
+                    targets: vec![crate::state::ModelTarget {
+                        provider: Some("mock".into()),
+                        model: Some("text".into()),
+                        enabled: true,
+                        ..Default::default()
+                    }],
+                }],
+                ..Default::default()
+            },
+        );
+        state.inner.settings.write().unwrap().insert(
+            "vision_fallthrough".into(),
+            json!({"descriptor_model":"mock/vision","default_prompt":"Describe precisely"}),
+        );
         let body = json!({"model":"text","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,YQ=="}}]}]});
         for _ in 0..2 {
-            let response = router().with_state(state.clone()).oneshot(Request::post("/v1/chat/completions")
-                .header("x-api-key","admin").header("content-type","application/json").body(Body::from(body.to_string())).unwrap()).await.unwrap();
+            let response = router()
+                .with_state(state.clone())
+                .oneshot(
+                    Request::post("/v1/chat/completions")
+                        .header("x-api-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
             assert_eq!(response.status(), axum::http::StatusCode::OK);
             response.into_body().collect().await.unwrap();
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(seen.lock().unwrap()[0]["messages"][0]["content"][0],json!({"type":"text","text":"[Image Description: a blue circle]"}));
+        assert_eq!(
+            seen.lock().unwrap()[0]["messages"][0]["content"][0],
+            json!({"type":"text","text":"[Image Description: a blue circle]"})
+        );
         let anthropic = json!({"model":"text","max_tokens":128,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YQ=="}}]}]});
-        let response = router().with_state(state.clone()).oneshot(Request::post("/v1/messages")
-            .header("x-api-key","admin").header("content-type","application/json").body(Body::from(anthropic.to_string())).unwrap()).await.unwrap();
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::post("/v1/messages")
+                    .header("x-api-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(anthropic.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         response.into_body().collect().await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(seen.lock().unwrap().last().unwrap()["messages"][0]["content"].to_string().contains("[Image Description: a blue circle]"));
+        assert!(
+            seen.lock().unwrap().last().unwrap()["messages"][0]["content"]
+                .to_string()
+                .contains("[Image Description: a blue circle]")
+        );
         // Failed descriptor routing is represented as text, never cached as success.
-        state.inner.settings.write().unwrap().insert("vision_fallthrough".into(), json!({"descriptor_model":"absent/model"}));
+        state.inner.settings.write().unwrap().insert(
+            "vision_fallthrough".into(),
+            json!({"descriptor_model":"absent/model"}),
+        );
         let mut failed = body.clone();
         apply_vision_fallthrough(&mut failed, &state, "text", None).await;
-        assert_eq!(failed["messages"][0]["content"][0]["text"], "[Image Description: Error generating image description.]");
-        assert!(state.inner.vision_descriptor_cache.lock().unwrap().get("data:image/png;base64,YQ==", "absent/model").is_none());
-        state.inner.aliases.write().unwrap().get_mut("text").unwrap().use_image_fallthrough = false;
+        assert_eq!(
+            failed["messages"][0]["content"][0]["text"],
+            "[Image Description: Error generating image description.]"
+        );
+        assert!(state
+            .inner
+            .vision_descriptor_cache
+            .lock()
+            .unwrap()
+            .get("data:image/png;base64,YQ==", "absent/model")
+            .is_none());
+        state
+            .inner
+            .aliases
+            .write()
+            .unwrap()
+            .get_mut("text")
+            .unwrap()
+            .use_image_fallthrough = false;
         let mut untouched = body.clone();
         apply_vision_fallthrough(&mut untouched, &state, "text", None).await;
         assert_eq!(untouched, body);

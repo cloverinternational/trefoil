@@ -20,17 +20,28 @@ use crate::{
 pub type ConcurrencySnapshot = BTreeMap<(String, String), usize>;
 
 #[derive(Debug, Default)]
-pub struct ConcurrencyTracker { counts: Mutex<ConcurrencySnapshot> }
+pub struct ConcurrencyTracker {
+    counts: Mutex<ConcurrencySnapshot>,
+}
 
-pub struct Permit { tracker: Arc<ConcurrencyTracker>, key: Option<(String, String)> }
+pub struct Permit {
+    tracker: Arc<ConcurrencyTracker>,
+    key: Option<(String, String)>,
+}
 
 impl Drop for Permit {
     fn drop(&mut self) {
         let Some(key) = self.key.take() else { return };
-        let mut counts = self.tracker.counts.lock().expect("concurrency lock poisoned");
+        let mut counts = self
+            .tracker
+            .counts
+            .lock()
+            .expect("concurrency lock poisoned");
         if let Some(count) = counts.get_mut(&key) {
             *count -= 1;
-            if *count == 0 { counts.remove(&key); }
+            if *count == 0 {
+                counts.remove(&key);
+            }
         }
     }
 }
@@ -38,12 +49,26 @@ impl Drop for Permit {
 pub fn acquire(state: &AppState, provider: impl Into<String>, model: impl Into<String>) -> Permit {
     let tracker = state.inner.concurrency.clone();
     let key = (provider.into(), model.into());
-    *tracker.counts.lock().expect("concurrency lock poisoned").entry(key.clone()).or_default() += 1;
-    Permit { tracker, key: Some(key) }
+    *tracker
+        .counts
+        .lock()
+        .expect("concurrency lock poisoned")
+        .entry(key.clone())
+        .or_default() += 1;
+    Permit {
+        tracker,
+        key: Some(key),
+    }
 }
 
 pub fn snapshot(state: &AppState) -> ConcurrencySnapshot {
-    state.inner.concurrency.counts.lock().expect("concurrency lock poisoned").clone()
+    state
+        .inner
+        .concurrency
+        .counts
+        .lock()
+        .expect("concurrency lock poisoned")
+        .clone()
 }
 
 pub fn router() -> Router<AppState> {
@@ -282,9 +307,15 @@ mod tracker_tests {
         let state = AppState::new(None, HashMap::<String, KeyConfig>::new());
         let first = acquire(&state, "openai", "gpt-4o");
         let second = acquire(&state, "openai", "gpt-4o");
-        assert_eq!(snapshot(&state).get(&("openai".into(), "gpt-4o".into())), Some(&2));
+        assert_eq!(
+            snapshot(&state).get(&("openai".into(), "gpt-4o".into())),
+            Some(&2)
+        );
         drop(first);
-        assert_eq!(snapshot(&state).get(&("openai".into(), "gpt-4o".into())), Some(&1));
+        assert_eq!(
+            snapshot(&state).get(&("openai".into(), "gpt-4o".into())),
+            Some(&1)
+        );
         drop(second);
         assert!(snapshot(&state).is_empty());
     }

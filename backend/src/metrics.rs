@@ -69,7 +69,9 @@ fn forbidden() -> Response {
 }
 
 pub fn compute_active_time_ms(windows: &[(i64, i64)], gap_ms: i64) -> i64 {
-    let Some(&(start, duration)) = windows.first() else { return 0 };
+    let Some(&(start, duration)) = windows.first() else {
+        return 0;
+    };
     let mut session_start = start;
     let mut session_end = start.saturating_add(duration.max(0));
     let mut total = 0;
@@ -85,7 +87,10 @@ pub fn compute_active_time_ms(windows: &[(i64, i64)], gap_ms: i64) -> i64 {
 }
 
 fn json_charset(mut response: Response) -> Response {
-    response.headers_mut().insert("content-type", "application/json; charset=utf-8".parse().unwrap());
+    response.headers_mut().insert(
+        "content-type",
+        "application/json; charset=utf-8".parse().unwrap(),
+    );
     response
 }
 
@@ -203,7 +208,11 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
     body.push_str(&line("plexus_avg_duration_ms", &[], average));
     body.push_str(&block("plexus_active_time_ms", "gauge", "Total active time in milliseconds, computed using a session-based model (15-min gap threshold, same as Google Analytics). This represents the wall-clock time during which at least one request was in-flight."));
     body.push_str(&line("plexus_active_time_ms", &[], active_time));
-    body.push_str(&block("plexus_duration_ms_today", "gauge", "Total inference duration in milliseconds for requests since local midnight."));
+    body.push_str(&block(
+        "plexus_duration_ms_today",
+        "gauge",
+        "Total inference duration in milliseconds for requests since local midnight.",
+    ));
     body.push_str(&line("plexus_duration_ms_today", &[], today.7));
     body.push_str(&block(
         "plexus_cost_today_usd",
@@ -213,6 +222,23 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
     body.push_str(&line("plexus_cost_today_usd", &[], today_cost));
     if let Some(pool) = &state.inner.database {
         body.push_str(&dimension_metrics(pool).await);
+    }
+    let targets = crate::concurrency::snapshot(&state);
+    let mut providers = std::collections::BTreeMap::<String, usize>::new();
+    for ((provider, model), count) in targets {
+        *providers.entry(provider.clone()).or_default() += count;
+        body.push_str(&line(
+            "plexus_concurrency_active_by_target",
+            &[("provider", provider.as_str()), ("model", model.as_str())],
+            count,
+        ));
+    }
+    for (provider, count) in providers {
+        body.push_str(&line(
+            "plexus_concurrency_active",
+            &[("provider", provider.as_str())],
+            count,
+        ));
     }
     body.push_str("\n");
     (
@@ -345,7 +371,10 @@ async fn dimension_metrics(pool: &sqlx::PgPool) -> String {
         "Total requests routed to each provider.",
     ));
     body.push_str(&block(
-        "plexus_provider_errors_total", "counter", "Total non-success responses from each provider."));
+        "plexus_provider_errors_total",
+        "counter",
+        "Total non-success responses from each provider.",
+    ));
     body.push_str(&block(
         "plexus_provider_tokens_total",
         "counter",
@@ -356,7 +385,30 @@ async fn dimension_metrics(pool: &sqlx::PgPool) -> String {
         "counter",
         "Cumulative cost in USD for each provider.",
     ));
-    for (name, kind, help) in [("plexus_provider_avg_latency_ms", "gauge", "All-time average end-to-end latency in milliseconds per provider."), ("plexus_provider_avg_ttft_ms", "gauge", "All-time average time-to-first-token in milliseconds per provider."), ("plexus_provider_avg_tokens_per_sec", "gauge", "All-time average token throughput in tokens/second per provider."), ("plexus_provider_duration_ms_total", "counter", "Total inference duration in milliseconds per provider.")] { body.push_str(&block(name, kind, help)); }
+    for (name, kind, help) in [
+        (
+            "plexus_provider_avg_latency_ms",
+            "gauge",
+            "All-time average end-to-end latency in milliseconds per provider.",
+        ),
+        (
+            "plexus_provider_avg_ttft_ms",
+            "gauge",
+            "All-time average time-to-first-token in milliseconds per provider.",
+        ),
+        (
+            "plexus_provider_avg_tokens_per_sec",
+            "gauge",
+            "All-time average token throughput in tokens/second per provider.",
+        ),
+        (
+            "plexus_provider_duration_ms_total",
+            "counter",
+            "Total inference duration in milliseconds per provider.",
+        ),
+    ] {
+        body.push_str(&block(name, kind, help));
+    }
     for row in rows {
         let provider: String = row.try_get("provider").unwrap_or_else(|_| "unknown".into());
         let labels = [("provider", provider.as_str())];
@@ -366,7 +418,10 @@ async fn dimension_metrics(pool: &sqlx::PgPool) -> String {
             row.try_get::<i64, _>("requests").unwrap_or(0),
         ));
         body.push_str(&line(
-            "plexus_provider_errors_total", &labels, row.try_get::<i64, _>("errors").unwrap_or(0)));
+            "plexus_provider_errors_total",
+            &labels,
+            row.try_get::<i64, _>("errors").unwrap_or(0),
+        ));
         body.push_str(&line(
             "plexus_provider_tokens_total",
             &labels,
@@ -377,23 +432,127 @@ async fn dimension_metrics(pool: &sqlx::PgPool) -> String {
             &labels,
             row.try_get::<f64, _>("cost").unwrap_or(0.0),
         ));
-        for (name, col) in [("plexus_provider_avg_latency_ms", "avg_latency"), ("plexus_provider_avg_ttft_ms", "avg_ttft"), ("plexus_provider_avg_tokens_per_sec", "avg_tps")] { body.push_str(&line(name, &labels, row.try_get::<f64, _>(col).unwrap_or(0.0))); }
-        body.push_str(&line("plexus_provider_duration_ms_total", &labels, row.try_get::<i64, _>("duration").unwrap_or(0)));
+        for (name, col) in [
+            ("plexus_provider_avg_latency_ms", "avg_latency"),
+            ("plexus_provider_avg_ttft_ms", "avg_ttft"),
+            ("plexus_provider_avg_tokens_per_sec", "avg_tps"),
+        ] {
+            body.push_str(&line(
+                name,
+                &labels,
+                row.try_get::<f64, _>(col).unwrap_or(0.0),
+            ));
+        }
+        body.push_str(&line(
+            "plexus_provider_duration_ms_total",
+            &labels,
+            row.try_get::<i64, _>("duration").unwrap_or(0),
+        ));
     }
     let Ok(rows) = sqlx::query("SELECT coalesce(incoming_model_alias,'unknown') AS model_alias, count(*)::bigint AS requests, coalesce(sum(tokens_input),0)::bigint + coalesce(sum(tokens_output),0)::bigint + coalesce(sum(tokens_cached),0)::bigint + coalesce(sum(tokens_cache_write),0)::bigint AS tokens, coalesce(sum(duration_ms),0)::bigint AS duration FROM request_usage WHERE incoming_model_alias IS NOT NULL GROUP BY incoming_model_alias ORDER BY incoming_model_alias").fetch_all(pool).await else { return body };
     for (name, kind, help) in [
-        ("plexus_model_alias_requests_total", "counter", "Total requests received per incoming model alias (the model name the client sent)."),
-        ("plexus_model_alias_tokens_total", "counter", "Total tokens (input + output + cached + cache_write) per incoming model alias."),
-        ("plexus_model_alias_duration_ms_total", "counter", "Total inference duration in milliseconds per incoming model alias."),
-    ] { body.push_str(&block(name, kind, help)); }
-    for row in rows { let model: String = row.try_get("model_alias").unwrap_or_else(|_| "unknown".into()); let l=[("model_alias",model.as_str())]; body.push_str(&line("plexus_model_alias_requests_total",&l,row.try_get::<i64,_>("requests").unwrap_or(0))); body.push_str(&line("plexus_model_alias_tokens_total",&l,row.try_get::<i64,_>("tokens").unwrap_or(0))); body.push_str(&line("plexus_model_alias_duration_ms_total",&l,row.try_get::<i64,_>("duration").unwrap_or(0))); }
+        (
+            "plexus_model_alias_requests_total",
+            "counter",
+            "Total requests received per incoming model alias (the model name the client sent).",
+        ),
+        (
+            "plexus_model_alias_tokens_total",
+            "counter",
+            "Total tokens (input + output + cached + cache_write) per incoming model alias.",
+        ),
+        (
+            "plexus_model_alias_duration_ms_total",
+            "counter",
+            "Total inference duration in milliseconds per incoming model alias.",
+        ),
+    ] {
+        body.push_str(&block(name, kind, help));
+    }
+    for row in rows {
+        let model: String = row
+            .try_get("model_alias")
+            .unwrap_or_else(|_| "unknown".into());
+        let l = [("model_alias", model.as_str())];
+        body.push_str(&line(
+            "plexus_model_alias_requests_total",
+            &l,
+            row.try_get::<i64, _>("requests").unwrap_or(0),
+        ));
+        body.push_str(&line(
+            "plexus_model_alias_tokens_total",
+            &l,
+            row.try_get::<i64, _>("tokens").unwrap_or(0),
+        ));
+        body.push_str(&line(
+            "plexus_model_alias_duration_ms_total",
+            &l,
+            row.try_get::<i64, _>("duration").unwrap_or(0),
+        ));
+    }
     let Ok(rows) = sqlx::query("SELECT coalesce(api_key,'unknown') AS api_key, count(*)::bigint AS requests, coalesce(sum(tokens_input),0)::bigint + coalesce(sum(tokens_output),0)::bigint + coalesce(sum(tokens_cached),0)::bigint + coalesce(sum(tokens_cache_write),0)::bigint AS tokens FROM request_usage WHERE api_key IS NOT NULL GROUP BY api_key ORDER BY api_key").fetch_all(pool).await else { return body };
-    for (name, help) in [("plexus_api_key_requests_total", "Total requests per API key (hashed or named key identifier)."), ("plexus_api_key_tokens_total", "Total tokens per API key.")] { body.push_str(&block(name,"counter",help)); }
-    for row in rows { let key:String=row.try_get("api_key").unwrap_or_else(|_|"unknown".into()); let l=[("api_key",key.as_str())]; body.push_str(&line("plexus_api_key_requests_total",&l,row.try_get::<i64,_>("requests").unwrap_or(0))); body.push_str(&line("plexus_api_key_tokens_total",&l,row.try_get::<i64,_>("tokens").unwrap_or(0))); }
+    for (name, help) in [
+        (
+            "plexus_api_key_requests_total",
+            "Total requests per API key (hashed or named key identifier).",
+        ),
+        ("plexus_api_key_tokens_total", "Total tokens per API key."),
+    ] {
+        body.push_str(&block(name, "counter", help));
+    }
+    for row in rows {
+        let key: String = row.try_get("api_key").unwrap_or_else(|_| "unknown".into());
+        let l = [("api_key", key.as_str())];
+        body.push_str(&line(
+            "plexus_api_key_requests_total",
+            &l,
+            row.try_get::<i64, _>("requests").unwrap_or(0),
+        ));
+        body.push_str(&line(
+            "plexus_api_key_tokens_total",
+            &l,
+            row.try_get::<i64, _>("tokens").unwrap_or(0),
+        ));
+    }
     let Ok(rows) = sqlx::query("SELECT coalesce(api_key,'unknown') AS api_key, coalesce(attribution,'') AS attribution, count(*)::bigint AS requests, coalesce(sum(tokens_input),0)::bigint + coalesce(sum(tokens_output),0)::bigint + coalesce(sum(tokens_cached),0)::bigint + coalesce(sum(tokens_cache_write),0)::bigint AS tokens, coalesce(sum(cost_total),0)::double precision AS cost, count(*) FILTER (WHERE response_status != 'success')::bigint AS errors FROM request_usage WHERE api_key IS NOT NULL GROUP BY api_key, attribution ORDER BY api_key, attribution").fetch_all(pool).await else { return body };
     for (name, help) in [("plexus_api_key_attribution_requests_total", "Total requests per API key and attribution suffix (the part after the colon in the key, e.g. \"mysecret:copilot\" → attribution=\"copilot\")."), ("plexus_api_key_attribution_tokens_total", "Total tokens per API key and attribution suffix."), ("plexus_api_key_attribution_cost_usd_total", "Cumulative cost in USD per API key and attribution suffix."), ("plexus_api_key_attribution_errors_total", "Total non-success responses per API key and attribution suffix.")] { body.push_str(&block(name,"counter",help)); }
-    for row in rows { let key:String=row.try_get("api_key").unwrap_or_else(|_|"unknown".into()); let attr:String=row.try_get("attribution").unwrap_or_default(); let l=[("api_key",key.as_str()),("attribution",attr.as_str())]; body.push_str(&line("plexus_api_key_attribution_requests_total",&l,row.try_get::<i64,_>("requests").unwrap_or(0))); body.push_str(&line("plexus_api_key_attribution_tokens_total",&l,row.try_get::<i64,_>("tokens").unwrap_or(0))); body.push_str(&line("plexus_api_key_attribution_cost_usd_total",&l,row.try_get::<f64,_>("cost").unwrap_or(0.0))); body.push_str(&line("plexus_api_key_attribution_errors_total",&l,row.try_get::<i64,_>("errors").unwrap_or(0))); }
-    for (name, help) in [("plexus_in_flight_requests", "Number of requests currently in-flight (started but not yet completed), per provider."), ("plexus_in_flight_requests_by_model", "Number of requests currently in-flight, per canonical model name.")] { body.push_str(&block(name,"gauge",help)); }
+    for row in rows {
+        let key: String = row.try_get("api_key").unwrap_or_else(|_| "unknown".into());
+        let attr: String = row.try_get("attribution").unwrap_or_default();
+        let l = [("api_key", key.as_str()), ("attribution", attr.as_str())];
+        body.push_str(&line(
+            "plexus_api_key_attribution_requests_total",
+            &l,
+            row.try_get::<i64, _>("requests").unwrap_or(0),
+        ));
+        body.push_str(&line(
+            "plexus_api_key_attribution_tokens_total",
+            &l,
+            row.try_get::<i64, _>("tokens").unwrap_or(0),
+        ));
+        body.push_str(&line(
+            "plexus_api_key_attribution_cost_usd_total",
+            &l,
+            row.try_get::<f64, _>("cost").unwrap_or(0.0),
+        ));
+        body.push_str(&line(
+            "plexus_api_key_attribution_errors_total",
+            &l,
+            row.try_get::<i64, _>("errors").unwrap_or(0),
+        ));
+    }
+    for (name, help) in [
+        (
+            "plexus_in_flight_requests",
+            "Number of requests currently in-flight (started but not yet completed), per provider.",
+        ),
+        (
+            "plexus_in_flight_requests_by_model",
+            "Number of requests currently in-flight, per canonical model name.",
+        ),
+    ] {
+        body.push_str(&block(name, "gauge", help));
+    }
     if let Ok(rows)=sqlx::query("SELECT coalesce(provider,'unknown') AS provider, count(*)::bigint AS count FROM request_usage WHERE duration_ms IS NULL AND start_time >= $1 GROUP BY provider ORDER BY provider").bind(chrono::Utc::now().timestamp_millis()-3_600_000).fetch_all(pool).await { for row in rows { let p:String=row.try_get("provider").unwrap_or_else(|_|"unknown".into()); body.push_str(&line("plexus_in_flight_requests",&[("provider",p.as_str())],row.try_get::<i64,_>("count").unwrap_or(0))); } }
     if let Ok(rows)=sqlx::query("SELECT coalesce(canonical_model_name,'unknown') AS model, count(*)::bigint AS count FROM request_usage WHERE duration_ms IS NULL AND start_time >= $1 GROUP BY canonical_model_name ORDER BY model").bind(chrono::Utc::now().timestamp_millis()-3_600_000).fetch_all(pool).await { for row in rows { let m:String=row.try_get("model").unwrap_or_else(|_|"unknown".into()); body.push_str(&line("plexus_in_flight_requests_by_model",&[("model",m.as_str())],row.try_get::<i64,_>("count").unwrap_or(0))); } }
     body
@@ -410,7 +569,10 @@ mod tests {
 
     #[test]
     fn active_time_coalesces_overlaps_and_splits_sessions() {
-        assert_eq!(compute_active_time_ms(&[(0, 100), (50, 100), (1_000, 10)], 100), 160);
+        assert_eq!(
+            compute_active_time_ms(&[(0, 100), (50, 100), (1_000, 10)], 100),
+            160
+        );
         assert_eq!(compute_active_time_ms(&[], 100), 0);
     }
 }
@@ -533,10 +695,15 @@ const METRIC_DEFINITIONS: &[(&str, &str, &str)] = &[
 fn render_exposition(samples: &str) -> String {
     let mut output = String::new();
     for (index, (name, kind, help)) in METRIC_DEFINITIONS.iter().enumerate() {
-        if index > 0 { output.push('\n'); }
+        if index > 0 {
+            output.push('\n');
+        }
         output.push_str(&block(name, kind, help));
         for sample in samples.lines().filter(|line| !line.starts_with('#')) {
-            if sample.strip_prefix(name).is_some_and(|rest| rest.starts_with('{') || rest.starts_with(' ')) {
+            if sample
+                .strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with('{') || rest.starts_with(' '))
+            {
                 output.push_str(sample);
                 output.push('\n');
             }
@@ -554,6 +721,54 @@ mod exposition_contract_tests {
         assert!(rendered.starts_with("# HELP plexus_requests_total Total number of requests processed by Plexus since the database was created.\n"));
         assert_eq!(rendered.matches("plexus_requests_total 7\n").count(), 1);
         assert!(rendered.contains("plexus_provider_requests_total{provider=\"a\"} 3\nplexus_provider_requests_total{provider=\"b\"} 4\n"));
-        assert_eq!(rendered.lines().filter(|line| line.starts_with("# TYPE ")).count(), 44);
+        assert_eq!(
+            rendered
+                .lines()
+                .filter(|line| line.starts_with("# TYPE "))
+                .count(),
+            44
+        );
+    }
+}
+
+#[cfg(test)]
+mod concurrency_gauge_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn gauges_measure_active_permits_and_disappear_on_release() {
+        let state = AppState::new(Some("admin".into()), Default::default());
+        let first = crate::concurrency::acquire(&state, "provider", "model/a");
+        let second = crate::concurrency::acquire(&state, "provider", "model/b");
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get("/v0/management/metrics")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let text = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(text.contains("plexus_concurrency_active{provider=\"provider\"} 2\n"));
+        assert!(text.contains(
+            "plexus_concurrency_active_by_target{provider=\"provider\",model=\"model/a\"} 1\n"
+        ));
+        drop(first);
+        drop(second);
+        assert!(crate::concurrency::snapshot(&state).is_empty());
     }
 }
