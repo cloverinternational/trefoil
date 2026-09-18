@@ -4,6 +4,7 @@ pub mod auth;
 pub mod backup;
 pub mod codex_masking;
 pub mod concurrency;
+pub mod copilot_oauth;
 pub mod config_routes;
 pub mod cooldowns;
 pub mod credential_crypto;
