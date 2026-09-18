@@ -76,3 +76,17 @@ async fn chat_failover_audit_has_contiguous_candidate_numbers() {
     assert_eq!(attempts,vec![1,2,3]);
     server.abort();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL"]
+async fn responses_route_enforces_request_quota_before_upstream_selection() {
+    use axum::{body::Body,http::{Request,StatusCode}};
+    use tower::ServiceExt;
+    let pool=database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
+    database::migrate(&pool).await.unwrap();
+    let definition=serde_json::from_value(serde_json::json!({"type":"daily","limitType":"requests","limit":0})).unwrap();
+    database::upsert_user_quota(&pool,"response-zero",&definition).await.unwrap();
+    let state=trefoil_backend::AppState::new(Some("admin".into()),[("quota-key".into(),trefoil_backend::state::KeyConfig{secret:"quota-secret".into(),quota_names:vec!["response-zero".into()],..Default::default()})].into_iter().collect()).with_database(pool);
+    let response=trefoil_backend::app(state).oneshot(Request::post("/v1/responses").header("x-api-key","quota-secret").header("content-type","application/json").body(Body::from(r#"{"model":"absent/model","input":"hello"}"#)).unwrap()).await.unwrap();
+    assert_eq!(response.status(),StatusCode::TOO_MANY_REQUESTS);
+}

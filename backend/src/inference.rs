@@ -290,9 +290,6 @@ async fn audio_transcriptions(
         Principal::Limited { config, .. } => Some(config),
         Principal::Admin => None,
     };
-    if let Err(response) = enforce_request_quotas(&state, &principal).await {
-        return response;
-    }
     let mut fields = Vec::new();
     loop {
         let field = match multipart.next_field().await {
@@ -322,13 +319,7 @@ async fn audio_transcriptions(
         );
     };
     let model = String::from_utf8_lossy(model_bytes).into_owned();
-    if key_config.is_some_and(|config| !model_allowed(config, &model)) {
-        return error_response(
-            axum::http::StatusCode::FORBIDDEN,
-            &format!("Key is not allowed to access model '{model}'"),
-            "access_denied",
-        );
-    }
+    if let Err(response) = admit_inference(&state, &principal, &model, false).await { return response; }
     let client = reqwest::Client::new();
     let request_id = new_request_id();
     let start_time = now_ms();
@@ -896,6 +887,19 @@ async fn images(
     .await
 }
 
+/// Shared admission boundary for every inference family. Called before any
+/// upstream operation, including external preprocessing and conversation reads.
+async fn admit_inference(state: &AppState, principal: &Principal, model: &str, chat: bool) -> Result<(), Response> {
+    if let Principal::Limited { config, .. } = principal {
+        if !model_allowed(config, model) {
+            let suffix = if chat { " for chat" } else { "" };
+            return Err(error_response(axum::http::StatusCode::FORBIDDEN,
+                &format!("Key is not allowed to access model '{model}'{suffix}"), "access_denied"));
+        }
+    }
+    enforce_request_quotas(state, principal).await
+}
+
 async fn forward_json_api(
     state: &AppState,
     headers: &HeaderMap,
@@ -922,21 +926,7 @@ async fn forward_json_api(
         Principal::Limited { key_name, .. } => Some(key_name.as_str()),
         Principal::Admin => None,
     };
-    if let Err(response) = enforce_request_quotas(state, &principal).await {
-        return response;
-    }
-    // Validate image parts before dispatch. This keeps malformed multimodal
-    // payloads on the normal text path and avoids unsafe assumptions in
-    // provider transforms; descriptor generation is opt-in via configuration.
-    if let Some(config) = key_config {
-        if !model_allowed(config, &model) {
-            return error_response(
-                axum::http::StatusCode::FORBIDDEN,
-                &format!("Key is not allowed to access model '{model}'"),
-                "access_denied",
-            );
-        }
-    }
+    if let Err(response) = admit_inference(state, &principal, &model, false).await { return response; }
     apply_native_compaction(&mut body, state);
     apply_configured_headroom(&mut body, state).await;
     crate::system_logs::event(
@@ -1261,6 +1251,7 @@ async fn responses(
             "invalid_request_error",
         );
     };
+    if let Err(response) = admit_inference(&state, &principal, &model, false).await { return response; }
     let conversation_id = body.get("conversation").and_then(|value| {
         value
             .as_str()
@@ -1309,13 +1300,6 @@ async fn responses(
         Principal::Limited { key_name, .. } => Some(key_name.as_str()),
         Principal::Admin => None,
     };
-    if key_config.is_some_and(|config| !model_allowed(config, &model)) {
-        return error_response(
-            axum::http::StatusCode::FORBIDDEN,
-            &format!("Key is not allowed to access model '{model}'"),
-            "access_denied",
-        );
-    }
     let targets: Vec<_> = inference_targets(&state, &model, key_config).collect();
     if targets.is_empty() {
         return error_response(
@@ -1893,21 +1877,8 @@ async fn chat_completions(
             "invalid_request_error",
         );
     }
-    if let Err(response) = enforce_request_quotas(&state, &principal).await {
-        return response;
-    }
-    let key_config = if let Principal::Limited { config, .. } = &principal {
-        if !model_allowed(config, &model) {
-            return error_response(
-                axum::http::StatusCode::FORBIDDEN,
-                &format!("Key is not allowed to access model '{model}' for chat"),
-                "access_denied",
-            );
-        }
-        Some(config)
-    } else {
-        None
-    };
+    if let Err(response) = admit_inference(&state, &principal, &model, true).await { return response; }
+    let key_config = match &principal { Principal::Limited {config,..} => Some(config), Principal::Admin => None };
     apply_native_compaction(&mut body, &state);
     apply_configured_headroom(&mut body, &state).await;
     // Snapshot the eligible ordering before attempting a target. A failed
