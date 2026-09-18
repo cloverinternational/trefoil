@@ -608,7 +608,7 @@ async fn quota_result(
     {
         return Json(serde_json::json!({"checkerId":checker_id,"provider":row.try_get::<String,_>("provider").unwrap_or_default(),"checkedAt":checked,"success":false,"error":row.try_get::<Option<String>,_>("error_message").unwrap_or(None),"meters":[]})).into_response();
     }
-    Json(serde_json::json!({"checkerId":checker_id,"checkerType":latest[0].try_get::<String,_>("checker_type").unwrap_or_default(),"provider":latest[0].try_get::<String,_>("provider").unwrap_or_default(),"checkedAt":checked,"success":true,"meters":latest.iter().map(|r| snapshot_json(r)).collect::<Vec<_>>() })).into_response()
+    Json(serde_json::json!({"checkerId":checker_id,"checkerType":latest[0].try_get::<String,_>("checker_type").unwrap_or_default(),"provider":latest[0].try_get::<String,_>("provider").unwrap_or_default(),"checkedAt":checked,"success":true,"meters":latest.iter().filter(|r| !matches!(r.try_get::<String,_>("meter_key").unwrap_or_default().as_str(), "_empty" | "_error")).map(|r| snapshot_json(r)).collect::<Vec<_>>() })).into_response()
 }
 
 async fn quota_history(

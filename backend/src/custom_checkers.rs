@@ -702,6 +702,11 @@ async fn persist_result(
         return;
     }
     let values = meters.as_array().cloned().unwrap_or_default();
+    if values.is_empty() {
+        let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,utilization_state,status,success,checked_at,created_at) VALUES ($1,$1,$2,'_empty','allowance','','No meters','not_applicable','ok',true,$3,$3)")
+            .bind(checker_id).bind(provider).bind(now).execute(pool).await;
+        return;
+    }
     for meter in values {
         let key = meter.get("key").and_then(Value::as_str).unwrap_or("meter");
         let kind = meter.get("kind").and_then(Value::as_str).unwrap_or("quota");

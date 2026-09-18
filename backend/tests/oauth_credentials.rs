@@ -143,3 +143,23 @@ async fn checker_snapshots_persist_reported_utilization_and_iso_reset() {
     assert_eq!(row.get::<f32,_>("utilization_percent"),25.0);
     assert_eq!(row.get::<i64,_>("resets_at"),1789732800000);
 }
+
+#[tokio::test]
+#[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL"]
+async fn empty_checker_success_replaces_stale_quota_result() {
+    use axum::{body::Body,http::Request};
+    use tower::ServiceExt;
+    use http_body_util::BodyExt;
+    let pool=database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
+    database::migrate(&pool).await.unwrap();
+    let state=trefoil_backend::AppState::new(Some("admin".into()),Default::default()).with_database(pool.clone());
+    state.inner.providers.write().unwrap().insert("empty-provider".into(),Default::default());
+    let response=trefoil_backend::app(state.clone()).oneshot(Request::post("/v0/management/custom-checkers/empty-checker/check").header("x-admin-key","admin").header("content-type","application/json").body(Body::from(r#"{"provider":"empty-provider","code":"return []"}"#)).unwrap()).await.unwrap();
+    assert!(response.status().is_success());
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM meter_snapshots WHERE checker_id='empty-checker' AND meter_key='_empty' AND success=true").fetch_one(&pool).await.unwrap();
+    assert_eq!(count,1);
+    let response=trefoil_backend::app(state).oneshot(Request::get("/v0/management/quotas/empty-checker").header("x-admin-key","admin").body(Body::empty()).unwrap()).await.unwrap();
+    let body:serde_json::Value=serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["success"],true);
+    assert_eq!(body["meters"],serde_json::json!([]));
+}
