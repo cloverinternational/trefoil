@@ -174,7 +174,9 @@ impl LocalMcpTransport {
     pub async fn shutdown(&self) -> Result<(), TransportError> {
         self.inner.stdin.lock().await.shutdown().await.ok();
         if let Some(mut child) = self.child.lock().await.take() {
-            child.kill().await?;
+            if child.try_wait()?.is_none() {
+                child.kill().await?;
+            }
             let _ = child.wait().await?;
         }
         Ok(())
@@ -211,5 +213,86 @@ impl CloneError for TransportError {
                 data: data.clone(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::{process::Command, time::timeout};
+
+    fn scripted_child(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[tokio::test]
+    async fn request_and_notification_preserve_stdio_wire_contract() {
+        let script = r#"
+            while IFS= read -r line; do
+              case "$line" in
+                *'"method":"notify"'*) printf '%s\n' '{"jsonrpc":"2.0","method":"notice","params":{"seen":true}}' ;;
+                *'"id":"request"'*) printf '%s\n' '{"jsonrpc":"2.0","id":"request","result":{"ok":true}}' ;;
+              esac
+            done
+        "#;
+        let transport = LocalMcpTransport::spawn(scripted_child(script))
+            .await
+            .unwrap();
+
+        transport.notify("notify", None).await.unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(1), transport.next_notification())
+                .await
+                .unwrap()
+                .unwrap(),
+            json!({"jsonrpc":"2.0","method":"notice","params":{"seen":true}})
+        );
+        assert_eq!(
+            transport.request("request", "call", None).await.unwrap(),
+            json!({"ok":true})
+        );
+        transport.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn child_eof_completes_pending_request_and_cleanup_is_repeatable() {
+        let script = "IFS= read -r line; exit 0";
+        let transport = LocalMcpTransport::spawn(scripted_child(script))
+            .await
+            .unwrap();
+
+        let result = timeout(
+            Duration::from_secs(1),
+            transport.request("request", "call", None),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(matches!(result, TransportError::Closed));
+        assert!(transport.pid().await.is_some());
+        transport.shutdown().await.unwrap();
+        transport.shutdown().await.unwrap();
+        assert!(transport.pid().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_child_output_is_reported_to_pending_request() {
+        let script = "printf '%s\\n' 'not-json'";
+        let transport = LocalMcpTransport::spawn(scripted_child(script))
+            .await
+            .unwrap();
+
+        let result = timeout(
+            Duration::from_secs(1),
+            transport.request("request", "call", None),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(matches!(result, TransportError::Json(_)));
+        transport.shutdown().await.unwrap();
     }
 }
