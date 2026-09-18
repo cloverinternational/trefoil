@@ -294,7 +294,7 @@ pub async fn upsert_provider(
            auto_compat, adapter, model_autosync_enabled, model_autosync_interval,
            raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled,
            quota_checker_interval, quota_checker_options, retry_policy, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$24)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
          ON CONFLICT (slug) DO UPDATE SET
            display_name=EXCLUDED.display_name, api_base_url=EXCLUDED.api_base_url,
            api_key=EXCLUDED.api_key, oauth_provider_type=EXCLUDED.oauth_provider_type,
@@ -340,6 +340,7 @@ pub async fn upsert_provider(
     .bind(config.quota_checker.as_ref().map(|q| q.interval as i32).unwrap_or(30))
     .bind(config.quota_checker.as_ref().map(|q| q.options.clone()))
     .bind(serde_json::to_value(&config.retry_policy).unwrap())
+    .bind(now)
     .bind(now)
     .execute(pool)
     .await

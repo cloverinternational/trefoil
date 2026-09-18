@@ -1294,6 +1294,21 @@ async function main() {
   let failures = 0;
   await Promise.all([ensureFixture(PLEXUS_BASE_URL), ensureFixture(TREFOIL_BASE_URL)]);
 
+  // Plexus rebuilds its in-memory key cache asynchronously after management
+  // writes. Wait until the fixture is visible through the endpoint under test
+  // before comparing the rest of the suite; otherwise every limited-key case
+  // is reported as a parity failure even though provisioning succeeded.
+  for (const baseUrl of [PLEXUS_BASE_URL, TREFOIL_BASE_URL]) {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const response = await fetch(`${baseUrl}/v0/management/auth/verify`, {
+        headers: { 'x-admin-key': LIMITED_KEY_SECRET },
+      });
+      if (response.status === 200) break;
+      if (attempt === 39) throw new Error(`Fixture key did not become visible at ${baseUrl}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   for (const testCase of CASES) {
     const [plexus, trefoil] = await Promise.all([
       fetchVerify(PLEXUS_BASE_URL, testCase.header),
