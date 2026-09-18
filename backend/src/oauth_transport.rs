@@ -355,3 +355,29 @@ mod tests {
         assert!(!error.contains("secret-verifier"));
     }
 }
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use axum::{routing::post, Json, Router};
+    #[tokio::test]
+    async fn openrouter_wire_is_json_and_key_response_needs_no_expiry() {
+        let app = Router::new().route("/keys", post(|headers: axum::http::HeaderMap, Json(body): Json<Value>| async move {
+            assert_eq!(headers["content-type"], "application/json");
+            assert_eq!(body, serde_json::json!({"code":"code","code_verifier":"verifier","code_challenge_method":"S256"}));
+            Json(serde_json::json!({"key":"permanent-key"}))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let response = ReqwestTransport.send(OAuthRequest {
+            provider:"openrouter".into(), url:format!("http://{addr}/keys"), json:true,
+            fields:vec![("code".into(),"code".into()),("code_verifier".into(),"verifier".into()),("code_challenge_method".into(),"S256".into())], timeout:Duration::from_secs(1)
+        }).await.unwrap();
+        server.abort();
+        let token = parse_openrouter_response(&response.body).unwrap();
+        assert_eq!(token.access_token,"permanent-key");
+        assert!(token.refresh_token.is_empty());
+        assert_eq!(token.expires_in,0);
+    }
+}
