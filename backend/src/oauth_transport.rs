@@ -138,6 +138,36 @@ pub async fn refresh<T: OAuthTransport + ?Sized>(
     parse_token_response(&response.body, spec.token_field, refresh_token)
 }
 
+pub async fn exchange<T: OAuthTransport + ?Sized>(
+    transport: &T,
+    provider: &str,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+) -> Result<TokenResponse, OAuthTransportError> {
+    let spec = provider_spec(provider).ok_or(OAuthTransportError::UnsupportedProvider)?;
+    let response = transport
+        .send(OAuthRequest {
+            provider: provider.to_owned(),
+            url: spec.token_endpoint.to_owned(),
+            fields: vec![
+                ("grant_type".into(), "authorization_code".into()),
+                ("code".into(), code.into()),
+                ("client_id".into(), "trefoil".into()),
+                ("redirect_uri".into(), redirect_uri.into()),
+                ("code_verifier".into(), verifier.into()),
+            ],
+            timeout: Duration::from_secs(15),
+        })
+        .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(OAuthTransportError::Http {
+            status: response.status,
+        });
+    }
+    parse_token_response(&response.body, spec.token_field, "")
+}
+
 pub fn parse_token_response(
     body: &Value,
     field: TokenField,
@@ -250,5 +280,57 @@ mod tests {
             .to_string();
         assert_eq!(error, "OAuth endpoint returned HTTP 401");
         assert!(!error.contains("super-secret"));
+    }
+
+    #[tokio::test]
+    async fn exchange_uses_injected_transport_and_provider_token_field() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mock = Mock {
+            requests: requests.clone(),
+            response: OAuthResponse {
+                status: 200,
+                body: serde_json::json!({"key":"access-key", "expires_in":3600}),
+            },
+        };
+        let token = exchange(
+            &mock,
+            "openrouter",
+            "authorization-code",
+            "pkce-verifier",
+            "/callback",
+        )
+        .await
+        .unwrap();
+        assert_eq!(token.access_token, "access-key");
+        let request = &requests.lock().unwrap()[0];
+        assert_eq!(request.url, "https://openrouter.ai/api/v1/auth/keys");
+        assert!(request
+            .fields
+            .iter()
+            .any(|(name, value)| name == "code" && value == "authorization-code"));
+    }
+
+    #[tokio::test]
+    async fn exchange_failure_does_not_expose_code_or_verifier() {
+        let mock = Mock {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            response: OAuthResponse {
+                status: 502,
+                body: Value::Null,
+            },
+        };
+        let error = exchange(
+            &mock,
+            "anthropic",
+            "secret-code",
+            "secret-verifier",
+            "/callback",
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, "OAuth endpoint returned HTTP 502");
+        assert!(!error.contains("secret-code"));
+        assert!(!error.contains("secret-verifier"));
     }
 }

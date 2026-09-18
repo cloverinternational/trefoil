@@ -150,18 +150,6 @@ fn session_id() -> String {
         .collect()
 }
 
-fn token_endpoint(provider: &str) -> Option<&'static str> {
-    match provider {
-        "anthropic" => Some("https://console.anthropic.com/v1/oauth/token"),
-        "github-copilot" => Some("https://github.com/login/oauth/access_token"),
-        "kimi-coding" => Some("https://auth.kimi.com/oauth/token"),
-        "openai-codex" => Some("https://auth.openai.com/oauth/token"),
-        "openrouter" => Some("https://openrouter.ai/api/v1/auth/keys"),
-        "xai" => Some("https://accounts.x.ai/oauth/token"),
-        _ => None,
-    }
-}
-
 fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option<String> {
     let endpoint = match provider {
         "anthropic" => "https://console.anthropic.com/oauth/authorize",
@@ -325,28 +313,27 @@ async fn callback(
         )
             .into_response();
     };
-    let Some(endpoint) = token_endpoint(&session.provider_id) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"Unsupported OAuth provider"})),
-        )
-            .into_response();
-    };
     let redirect = format!("/v0/management/oauth/sessions/{id}/callback");
-    let result = reqwest::Client::new()
-        .post(endpoint)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
-            ("client_id", "trefoil"),
-            ("redirect_uri", redirect.as_str()),
-            ("code_verifier", verifier.as_str()),
-        ])
-        .timeout(std::time::Duration::from_secs(15))
-        .send()
-        .await;
-    let response = match result {
-        Ok(response) => response,
+    let transport = crate::oauth_transport::ReqwestTransport;
+    let token = match crate::oauth_transport::exchange(
+        &transport,
+        &session.provider_id,
+        &code,
+        &verifier,
+        &redirect,
+    )
+    .await
+    {
+        Ok(token) => token,
+        Err(crate::oauth_transport::OAuthTransportError::Http { .. }) => {
+            return oauth_failed(
+                &state,
+                &id,
+                "OAuth token exchange rejected",
+                StatusCode::BAD_GATEWAY,
+            )
+            .await;
+        }
         Err(_) => {
             return oauth_failed(
                 &state,
@@ -357,46 +344,16 @@ async fn callback(
             .await
         }
     };
-    let status = response.status();
-    let payload = response
-        .json::<serde_json::Value>()
-        .await
-        .unwrap_or_default();
-    if !status.is_success() {
-        return oauth_failed(
-            &state,
-            &id,
-            "OAuth token exchange rejected",
-            StatusCode::BAD_GATEWAY,
-        )
-        .await;
-    }
-    let Some(access) = payload.get("access_token").and_then(|v| v.as_str()) else {
-        return oauth_failed(
-            &state,
-            &id,
-            "OAuth response omitted access token",
-            StatusCode::BAD_GATEWAY,
-        )
-        .await;
-    };
-    let refresh = payload
-        .get("refresh_token")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let expires = now_ms()
-        + payload
-            .get("expires_in")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(3600)
-            * 1000;
+    let access = token.access_token;
+    let refresh = token.refresh_token;
+    let expires = now_ms() + token.expires_in * 1000;
     if let Some(pool) = &state.inner.database {
         if crate::database::upsert_oauth_credential(
             pool,
             &session.provider_id,
             &session.account_id,
-            access,
-            refresh,
+            &access,
+            &refresh,
             expires,
         )
         .await
