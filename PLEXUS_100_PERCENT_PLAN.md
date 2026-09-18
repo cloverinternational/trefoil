@@ -372,7 +372,7 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 300 unit + 4 integration tests pass |
+| `cargo test --all-targets` | 303 unit + 4 integration tests pass |
 | OAuth storage / dispatch / checker integration | 9 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
@@ -628,3 +628,19 @@ Full gate: 300 backend unit + 4 stdio integration, **9 executed PostgreSQL
 integration tests**, 45 frontend unit, 3 browser, 12 harness pass; live suite
 remains 406/407. Remaining provider onboarding and API-specific dispatch parity
 still prevent declaring the goal complete.
+
+## Latest metadata lifecycle and normalization pass
+
+Metadata catalogs initialize at server startup and refresh hourly, retaining the
+last successful source data on failures. Concurrent refresh calls share one
+in-flight future and its original trigger; a deterministic HTTP test proves only
+one set of three requests occurs. models.dev prices convert from per-million to
+per-token strings; architecture keys, supported parameters and top-provider token
+limits are normalized. Catwalk includes prices, vision/reasoning capabilities and
+output limits. Tests cover both source conversions. Daily usage summaries now
+resolve local midnight in the local timezone rather than treating it as UTC.
+
+Full eight-lane verification: seven pass, live comparison **406/407** (recent
+system logs). Backend 303 unit + 4 stdio, 9 PostgreSQL integration, 45 frontend,
+3 browser and 12 harness tests pass. This closes specific catalog/lifecycle gaps,
+not the outstanding provider-flow and dispatch-parity requirements.
