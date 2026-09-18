@@ -362,20 +362,13 @@ async fn callback(
         Ok(claim) => claim,
         Err(response) => return response,
     };
-    // Persist consumption before contacting the provider so process restart
-    // cannot replay a code whose exchange has already started.
+    // Claim durable state before contacting the provider. Only one process
+    // may exchange a session, even if several loaded the same waiting snapshot.
     if let Some(pool) = &state.inner.database {
-        if crate::database::upsert_oauth_session(pool, &session)
-            .await
-            .is_err()
-        {
-            return oauth_failed(
-                &state,
-                &id,
-                "Unable to persist OAuth session",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )
-            .await;
+        match crate::database::claim_oauth_exchange(pool, &id).await {
+            Ok(true) => {},
+            Ok(false) => return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response(),
+            Err(_) => return oauth_failed(&state, &id, "Unable to persist OAuth session", StatusCode::INTERNAL_SERVER_ERROR).await,
         }
     }
     let redirect = format!("/v0/management/oauth/sessions/{id}/callback");
@@ -425,24 +418,10 @@ async fn callback(
         now_ms().saturating_add(token.expires_in.saturating_mul(1000))
     };
     if let Some(pool) = &state.inner.database {
-        if crate::database::upsert_oauth_credential(
-            pool,
-            &session.provider_id,
-            &session.account_id,
-            &access,
-            &refresh,
-            expires,
-        )
-        .await
-        .is_err()
-        {
-            return oauth_failed(
-                &state,
-                &id,
-                "Unable to persist OAuth credentials",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )
-            .await;
+        match crate::database::complete_oauth_exchange(pool, &id, &session.provider_id, &session.account_id, &access, &refresh, expires).await {
+            Ok(true) => {},
+            Ok(false) => return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response(),
+            Err(_) => return oauth_failed(&state, &id, "Unable to persist OAuth credentials", StatusCode::INTERNAL_SERVER_ERROR).await,
         }
     }
     state

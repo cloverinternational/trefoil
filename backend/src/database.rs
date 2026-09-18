@@ -46,10 +46,36 @@ pub async fn upsert_oauth_session(
     pool: &PgPool,
     session: &OAuthSession,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO oauth_login_sessions (id,provider_id,account_id,status,auth_info,prompt,progress,error,created_at,updated_at,expires_at,pkce_verifier) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status,auth_info=EXCLUDED.auth_info,prompt=EXCLUDED.prompt,progress=EXCLUDED.progress,error=EXCLUDED.error,updated_at=EXCLUDED.updated_at,expires_at=EXCLUDED.expires_at,pkce_verifier=EXCLUDED.pkce_verifier")
+    sqlx::query("INSERT INTO oauth_login_sessions (id,provider_id,account_id,status,auth_info,prompt,progress,error,created_at,updated_at,expires_at,pkce_verifier) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status,auth_info=EXCLUDED.auth_info,prompt=EXCLUDED.prompt,progress=EXCLUDED.progress,error=EXCLUDED.error,updated_at=EXCLUDED.updated_at,expires_at=EXCLUDED.expires_at,pkce_verifier=EXCLUDED.pkce_verifier WHERE oauth_login_sessions.status NOT IN ('complete','cancelled','failed','expired')")
         .bind(&session.id).bind(&session.provider_id).bind(&session.account_id).bind(&session.status).bind(&session.auth_info)
         .bind(&session.prompt).bind(&session.progress).bind(&session.error).bind(session.created_at).bind(session.updated_at).bind(session.expires_at).bind(&session.pkce_verifier)
         .execute(pool).await.map(|_| ())
+}
+
+pub async fn claim_oauth_exchange(pool: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("UPDATE oauth_login_sessions SET status='exchanging',pkce_verifier=NULL,updated_at=$2 WHERE id=$1 AND status='waiting' AND expires_at>$2")
+        .bind(id).bind(chrono::Utc::now().timestamp_millis()).execute(pool).await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Complete a claimed exchange atomically with credential persistence. A
+/// cancellation or expired session wins before any token is inserted.
+pub async fn complete_oauth_exchange(
+    pool: &PgPool, session_id: &str, provider: &str, account: &str,
+    access: &str, refresh: &str, expires: i64,
+) -> Result<bool, sqlx::Error> {
+    let key = crate::credential_crypto::CredentialKey::from_env().map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
+    let access = crate::credential_crypto::encrypt(&key, provider, account, "access_token", access).map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
+    let refresh = crate::credential_crypto::encrypt(&key, provider, account, "refresh_token", refresh).map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut tx = pool.begin().await?;
+    let claimed = sqlx::query("UPDATE oauth_login_sessions SET status='complete',pkce_verifier=NULL,auth_info=NULL,updated_at=$2 WHERE id=$1 AND status='exchanging' AND expires_at>$2 AND provider_id=$3 AND account_id=$4")
+        .bind(session_id).bind(now).bind(provider).bind(account).execute(&mut *tx).await?;
+    if claimed.rows_affected() != 1 { tx.rollback().await?; return Ok(false); }
+    sqlx::query("INSERT INTO oauth_credentials (oauth_provider_type,account_id,access_token,refresh_token,expires_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$6) ON CONFLICT (oauth_provider_type,account_id) DO UPDATE SET access_token=EXCLUDED.access_token,refresh_token=EXCLUDED.refresh_token,expires_at=EXCLUDED.expires_at,updated_at=EXCLUDED.updated_at")
+        .bind(provider).bind(account).bind(access).bind(refresh).bind(expires).bind(now).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 pub async fn upsert_oauth_credential(
