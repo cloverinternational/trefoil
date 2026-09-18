@@ -660,6 +660,15 @@ fn anthropic_native_provider(provider: &crate::state::ProviderConfig) -> bool {
             .is_some_and(|name| name.eq_ignore_ascii_case("anthropic"))
 }
 
+fn claude_masking_enabled(provider: &crate::state::ProviderConfig) -> bool {
+    anthropic_native_provider(provider)
+        && (provider.use_claude_masking
+            || provider
+                .oauth_provider
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case("anthropic")))
+}
+
 fn anthropic_to_chat(mut body: Value) -> Value {
     let mut messages = Vec::new();
     if let Some(system) = body.get("system").cloned() {
@@ -900,12 +909,7 @@ async fn forward_json_api(
         let mut request_body = original_body.clone();
         request_body["model"] = Value::String(upstream_model.clone());
         let native_anthropic = path == "/messages" && anthropic_native_provider(&provider);
-        let claude_masking = native_anthropic
-            && (provider.use_claude_masking
-                || provider
-                    .oauth_provider
-                    .as_deref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("anthropic")));
+        let claude_masking = claude_masking_enabled(&provider);
         let codex_oauth = provider
             .oauth_provider
             .as_deref()
@@ -3162,6 +3166,27 @@ mod tests {
         assert!(dispatch_provider_url("not a URL").is_err());
         assert!(dispatch_provider_url("oauth://").is_err());
         assert!(dispatch_provider_url("file:///tmp/provider").is_err());
+    }
+
+    #[test]
+    fn claude_masking_requires_native_anthropic_boundary() {
+        let mut provider = crate::state::ProviderConfig {
+            api_base_url: "https://api.example.test".into(),
+            use_claude_masking: true,
+            ..Default::default()
+        };
+        assert!(!claude_masking_enabled(&provider));
+
+        provider.api_base_url = "https://api.anthropic.com".into();
+        assert!(claude_masking_enabled(&provider));
+
+        provider.api_base_url = "https://api.example.test".into();
+        provider.use_claude_masking = false;
+        provider.oauth_provider = Some("anthropic".into());
+        assert!(claude_masking_enabled(&provider));
+
+        provider.oauth_provider = Some("openai-codex".into());
+        assert!(!claude_masking_enabled(&provider));
     }
 
     #[test]
