@@ -468,6 +468,17 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(response.headers()["content-type"], "application/json");
     }
+
+    #[tokio::test]
+    async fn restore_error_envelope_contains_message() {
+        let response = super::restore_error(StatusCode::UNAUTHORIZED, "Unauthorized");
+        let body = response.into_body();
+        let bytes = http_body_util::BodyExt::collect(body)
+            .await
+            .expect("error response body");
+        let value: serde_json::Value = serde_json::from_slice(&bytes.to_bytes()).unwrap();
+        assert_eq!(value, serde_json::json!({"error": "Unauthorized"}));
+    }
 }
 
 fn csv_escape(value: &serde_json::Value) -> String {

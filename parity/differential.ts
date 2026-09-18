@@ -1405,7 +1405,8 @@ async function runCases(cases: KeysCase[]): Promise<number> {
     ]);
 
     const statusMatch = plexus.status === trefoil.status;
-    const contentTypeMatch = testCase.path.startsWith('/v0/management/backup')
+    const contentTypeMatch =
+      (testCase.path.startsWith('/v0/management/backup') || testCase.path === '/v0/management/restore')
       ? plexus.contentType === trefoil.contentType
       : true;
     const bodyMatch = deepEqual(
