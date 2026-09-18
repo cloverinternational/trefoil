@@ -24,3 +24,8 @@ onboarding implementations remain incomplete.
 Verify persistence against a disposable database only:
 `TREFOIL_TEST_DATABASE_URL=... TREFOIL_CREDENTIAL_KEY=... cargo test --test oauth_credentials -- --ignored`.
 The test does not read the production `DATABASE_URL` variable.
+
+Persistence verification was run against an isolated PostgreSQL 16 container:
+raw access/refresh columns carried `v1:` ciphertext, decrypted round-trip and
+nonexpiring timestamp values matched, and changing the account identifier caused
+authentication failure. This does not verify live provider authorization.

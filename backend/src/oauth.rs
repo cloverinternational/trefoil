@@ -512,9 +512,13 @@ async fn update_session(
         match action {
             "cancel" => {
                 session.status = "cancelled".into();
+                session.pkce_verifier = None;
                 session.prompt = None;
             }
             "prompt" => {
+                if session.status == "exchanging" {
+                    return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth exchange is already in progress"}))).into_response();
+                }
                 session.status = "waiting".into();
                 session.prompt = None;
                 session
