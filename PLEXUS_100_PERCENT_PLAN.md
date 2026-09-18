@@ -357,9 +357,9 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** 213 passing (`cargo test --all-targets`), including generic
-  non-chat failover ordering and exhaustion tests.
-- **Frontend:** typecheck, build, and 23 Vitest tests pass across 5 files, including OAuth
+- **Backend tests:** 216 passing (`cargo test --all-targets`), including generic
+  non-chat and speech failover plus custom-checker runtime tests.
+- **Frontend:** typecheck, build, and 34 Vitest tests pass across 8 files, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
@@ -367,9 +367,10 @@ and repeatable differential CI.
   and returns the last upstream error after all candidates fail, with no extra
   attempt; provider-not-found and chat transport-failure fallback tests remain
   green.
-- **Differential harness:** 135 named cases are registered in
-  `parity/differential.ts`; no live Plexus/Trefoil run was performed in this
-  refresh, so no end-to-end pass count is claimed.
+- **Differential harness:** 283 named cases are registered in
+  `parity/differential.ts`; the latest live run passed 282/283. The remaining
+  difference is OAuth provider discovery: Trefoil includes `capabilities`
+  metadata that Plexus omits.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.

@@ -90,8 +90,8 @@ one call per verb. Not an actual gap.
 | Backup/restore | Implemented | Table list (`TABLES` in `backup.rs`) is an exact match to Plexus's `OPERATIONAL_TABLES` (13 tables). Gzip+tar archive format, admin-only, size-capped. |
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
 | Frontend | Partial | Trefoil now includes configuration, detailed usage, request Logs (`/logs`), custom quota checkers, system logs, MCP management, debug trace management, Errors, and the Models catalog (`/models`); remaining major pages include MyKey and Playground. |
-| Rust test suite | 203/203 passing | Green, fast (<1s). No regressions from latest commit. |
-| Differential harness | ~275 named cases in `parity/differential.ts` | Requires manually running both live servers side-by-side (Plexus TS + Trefoil against Postgres) — not wired into CI per the README; last-run status unverified in this pass. |
+| Rust test suite | 216/216 passing | Green, fast (<1s), including speech failover and custom-checker runtime coverage. |
+| Differential harness | 283 named cases in `parity/differential.ts` | Latest live run executed 283 cases: 282 passed and 1 diverged on the extra OAuth provider `capabilities` field. |
 
 ## What's actually left (ranked by size/impact)
 
@@ -141,7 +141,7 @@ These are inventory measures, not a claim that every route or case is
 behaviorally complete. The JSON output is the fixture for this table and
 includes hashes and revisions needed to detect drift.
 
-- [x] 213/213 Rust tests pass (`cargo test --all-targets`, <1s), including generic non-chat failover ordering and exhaustion coverage.
+- [x] 216/216 Rust tests pass (`cargo test --all-targets`, <1s), including generic non-chat and speech failover plus custom-checker runtime coverage.
 - [historical] 156 route entries confirmed live in `lib.rs`/module routers.
 - [x] Backup table list is an exact 13-table match to Plexus.
 - [historical] Migration count was 84 (Trefoil) vs 83 (Plexus), consistent history.
@@ -161,10 +161,13 @@ includes hashes and revisions needed to detect drift.
 - [x] Generic failover coverage verifies non-chat requests preserve configured
       target order and return the final upstream error after exhausting targets
       without an extra attempt (`backend/src/inference.rs`).
+- [x] Unified verification records passing backend/frontend lanes and a live
+      differential run of 282/283 cases (`target/parity-report.json`).
+- [ ] OAuth provider discovery shape — Trefoil includes `capabilities` metadata
+      that Plexus omits; align the wire shape or update the contract fixture.
 - [ ] Differential harness (~275 cases) run end-to-end against live Plexus +
-      Trefoil in this pass — not executed (requires two live servers +
-      Postgres fixture provisioning per `parity/README.md`); route/config
-      parity was instead verified by direct code reading.
+      Trefoil with zero unexplained differences; the latest run completed 282
+      of 283 cases and has one OAuth provider-discovery shape difference.
 - [ ] MCP admin-shim tool-by-tool coverage — not enumerated.
 - [ ] Compaction execution path (vs config-only) — not confirmed.
 

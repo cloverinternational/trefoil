@@ -96,3 +96,8 @@ disposable-upstream evidence for inference failover: chat proves ordered
 traversal across two transport failures followed by success, while generic
 non-chat coverage proves configured target ordering and exhaustion returns the
 final error without an extra attempt.
+
+The latest unified run completed all local validation lanes and ran 283
+differential cases. 282 matched; the single divergence is OAuth provider
+discovery, where Trefoil includes a `capabilities` object that Plexus omits.
+This remains an open wire-shape parity item, not a passing end-to-end gate.
