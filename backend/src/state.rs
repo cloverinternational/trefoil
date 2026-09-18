@@ -180,6 +180,9 @@ pub struct AppStateInner {
     pub oauth_sessions: RwLock<HashMap<String, crate::oauth::OAuthSession>>,
     /// PKCE verifiers are kept server-side and are never sent to the browser.
     pub oauth_pkce_verifiers: RwLock<HashMap<String, String>>,
+    /// Per-account refresh gates. The network request is made outside the
+    /// database transaction, while this gate prevents duplicate refreshes.
+    pub oauth_refresh_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub usage_events: Option<tokio::sync::broadcast::Sender<crate::usage::UsageEvent>>,
     /// Subscribers for the admin-only live system log stream.
     pub system_logs: Option<tokio::sync::broadcast::Sender<crate::system_logs::SystemLog>>,
@@ -217,6 +220,7 @@ impl AppState {
             inner: Arc::new(AppStateInner {
                 oauth_sessions: RwLock::new(HashMap::new()),
                 oauth_pkce_verifiers: RwLock::new(HashMap::new()),
+                oauth_refresh_locks: std::sync::Mutex::new(HashMap::new()),
                 usage_events: Some(tokio::sync::broadcast::channel(256).0),
                 system_logs: Some(tokio::sync::broadcast::channel(256).0),
                 database: None,

@@ -64,6 +64,27 @@ pub async fn upsert_oauth_credential(
         .bind(expires_at).execute(pool).await.map(|_| ())
 }
 
+pub async fn load_oauth_credentials(
+    pool: &PgPool,
+) -> Result<Vec<(String, String, String, String, i64)>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT oauth_provider_type, account_id, access_token, refresh_token, expires_at FROM oauth_credentials",
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok((
+                row.try_get("oauth_provider_type")?,
+                row.try_get("account_id")?,
+                row.try_get("access_token")?,
+                row.try_get("refresh_token")?,
+                row.try_get("expires_at")?,
+            ))
+        })
+        .collect()
+}
+
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
     PgPoolOptions::new()
         .max_connections(

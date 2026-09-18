@@ -864,7 +864,12 @@ async fn forward_json_api(
         let mut request_body = original_body.clone();
         request_body["model"] = Value::String(upstream_model.clone());
         let native_anthropic = path == "/messages" && anthropic_native_provider(&provider);
-        let claude_masking = native_anthropic && (provider.use_claude_masking || provider.oauth_provider.as_deref().is_some_and(|name| name.eq_ignore_ascii_case("anthropic")));
+        let claude_masking = native_anthropic
+            && (provider.use_claude_masking
+                || provider
+                    .oauth_provider
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("anthropic")));
         let native_gemini = path.starts_with("/v1beta/models/")
             && gemini_native_provider(&provider_slug, &provider);
         if path == "/messages" && !native_anthropic {
@@ -883,7 +888,8 @@ async fn forward_json_api(
             .json(&request_body);
         if claude_masking {
             request_body = crate::anthropic_masking::mask_body(&request_body);
-            request = request.header("user-agent", crate::anthropic_masking::user_agent())
+            request = request
+                .header("user-agent", crate::anthropic_masking::user_agent())
                 .header("x-app", "cli")
                 .header("anthropic-dangerous-direct-browser-access", "true")
                 .json(&request_body);

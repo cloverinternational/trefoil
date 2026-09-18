@@ -21,6 +21,7 @@ pub mod mcp_proxy;
 pub mod mcp_stdio;
 pub mod metrics;
 pub mod oauth;
+pub mod oauth_refresh;
 pub mod oauth_server;
 pub mod openapi;
 pub mod performance;

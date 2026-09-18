@@ -43,6 +43,7 @@ async fn main() {
             std::process::exit(1);
         });
     let state = AppState::new(std::env::var("ADMIN_KEY").ok(), keys).with_database(pool);
+    trefoil_backend::oauth_refresh::start_scheduler(state.clone());
     let sessions = database::load_oauth_sessions(state.inner.database.as_ref().unwrap())
         .await
         .unwrap_or_else(|error| {
