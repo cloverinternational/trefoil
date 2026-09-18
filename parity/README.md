@@ -97,7 +97,8 @@ traversal across two transport failures followed by success, while generic
 non-chat coverage proves configured target ordering and exhaustion returns the
 final error without an extra attempt.
 
-The latest live differential runs completed all 283 cases with no divergence,
-including OAuth provider discovery. The parity gate is therefore clear for the
-currently ported endpoints; provider-backed success and SSE cases still
-require an explicitly configured disposable upstream as described above.
+The latest live differential run completed all 283 cases: 282 matched and one
+diverged on OAuth provider discovery because Trefoil includes a `capabilities`
+object that Plexus omits. The parity gate is not clear until that wire-shape
+difference is resolved; provider-backed success and SSE cases also require an
+explicitly configured disposable upstream as described above.

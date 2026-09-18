@@ -329,13 +329,13 @@ Missing pages (each needs its own API adapter + component + tests):
 
 ## 12. Differential harness — 🟡 partial
 
-`parity/differential.ts` currently has 135 named cases but this audit did not confirm
-they currently pass end-to-end (requires two live servers + Postgres
-fixtures per `parity/README.md`, not wired into CI).
+`parity/differential.ts` currently has 283 named cases. The latest full live
+run executed all 283 against Plexus and Trefoil: 282 matched and one diverged
+on OAuth provider discovery (Trefoil includes `capabilities`, Plexus omits it).
 
-- [ ] Wire a CI job (or at minimum a documented one-shot script) that boots
-      Plexus + Trefoil + Postgres, provisions fixtures, and runs
-      `bun run parity/differential.ts`, failing the build on any diff.
+- [x] Add a documented one-shot script that boots Plexus + Trefoil + Postgres,
+      provisions fixtures, and runs `bun run parity/differential.ts`, failing
+      the build on any diff; repeatable CI wiring remains open.
 - [~] Add differential cases for every route ported under items #1–#9 above
       as they land — the harness is the acceptance gate, not a checklist to
       backfill later.
@@ -368,9 +368,9 @@ and repeatable differential CI.
   attempt; provider-not-found and chat transport-failure fallback tests remain
   green.
 - **Differential harness:** 283 named cases are registered in
-  `parity/differential.ts`; the latest live run passed 282/283. The remaining
-  difference is OAuth provider discovery: Trefoil includes `capabilities`
-  metadata that Plexus omits.
+  `parity/differential.ts`; the latest full live run executed all 283, with
+  282 matches and one OAuth provider-discovery divergence. Trefoil includes
+  `capabilities` metadata that Plexus omits.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.
@@ -380,7 +380,8 @@ The checklist is capability-based: a checked route means the route exists and
 has real behavior, not that every Plexus edge case or frontend test has been
 ported. The unified gate now emits lane-level JSON reports and preserves the
 first failing lane exit code; a live run remains environment-dependent. Registered differential cases are coverage inventory, not evidence of
-an end-to-end pass until the live runner is executed.
+an end-to-end pass until the live runner is executed. The latest runner
+completed all cases but remains failing on the documented OAuth shape difference.
 
 ## Latest progress
 

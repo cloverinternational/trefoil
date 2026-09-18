@@ -91,7 +91,7 @@ one call per verb. Not an actual gap.
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
 | Frontend | Partial | Trefoil now includes configuration, detailed usage, request Logs (`/logs`), custom quota checkers, system logs, MCP management, debug trace management, Errors, and the Models catalog (`/models`); remaining major pages include MyKey and Playground. |
 | Rust test suite | 216/216 passing | Green, fast (<1s), including speech failover and custom-checker runtime coverage. |
-| Differential harness | 283 named cases in `parity/differential.ts` | Latest live run executed 283 cases: 282 passed and 1 diverged on the extra OAuth provider `capabilities` field. |
+| Differential harness | 283 named cases in `parity/differential.ts` | Latest live run executed all 283 cases: 282 matched and 1 diverged on the extra OAuth provider `capabilities` field. |
 
 ## What's actually left (ranked by size/impact)
 
@@ -161,13 +161,14 @@ includes hashes and revisions needed to detect drift.
 - [x] Generic failover coverage verifies non-chat requests preserve configured
       target order and return the final upstream error after exhausting targets
       without an extra attempt (`backend/src/inference.rs`).
-- [x] Unified verification records passing backend/frontend lanes and a live
-      differential run of 282/283 cases (`target/parity-report.json`).
+- [ ] Unified verification gate — backend/frontend lanes pass, but the live
+      differential lane records 282/283 cases due to the OAuth provider shape
+      difference (`target/parity-report.json`).
 - [ ] OAuth provider discovery shape — Trefoil includes `capabilities` metadata
       that Plexus omits; align the wire shape or update the contract fixture.
-- [ ] Differential harness (~275 cases) run end-to-end against live Plexus +
-      Trefoil with zero unexplained differences; the latest run completed 282
-      of 283 cases and has one OAuth provider-discovery shape difference.
+- [x] Differential harness run end-to-end against live Plexus + Trefoil; all
+      283 cases executed, with 282 matching and one documented unexplained
+      OAuth provider-discovery shape difference still open.
 - [ ] MCP admin-shim tool-by-tool coverage — not enumerated.
 - [ ] Compaction execution path (vs config-only) — not confirmed.
 
