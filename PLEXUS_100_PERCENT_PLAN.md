@@ -368,13 +368,13 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 271 unit + 4 integration tests pass |
+| `cargo test --all-targets` | 272 unit + 4 integration tests pass |
 | Frontend Vitest | 44 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
 | Playwright Chromium | 3 browser scenarios pass |
-| Differential harness unit tests | 8 pass |
-| Live differential | **383 pass, 24 fail, 407 observed, no missing/duplicate cases** |
+| Differential harness unit tests | 11 pass |
+| Live differential | **404 pass, 3 fail, 407 observed, no missing/duplicate cases** |
 
 Reports: `target/parity-report.json` and `target/differential-report.json`.
 These are regenerable local artifacts, not committed acceptance evidence.
@@ -427,7 +427,7 @@ reference checkout, and the runner owns only its disposable database container.
 
 ### Latest progress
 
-The full gate is intentionally red until the 24 live differences and remaining
+The full gate is intentionally red until the 3 live differences and remaining
 capability gaps are resolved. The old 82% estimate was not an acceptance result
 and should not be used to claim drop-in compatibility. Newly found gaps above
 supersede stale checked-item descriptions elsewhere in this document.
@@ -443,8 +443,8 @@ supersede stale checked-item descriptions elsewhere in this document.
 
 ## Follow-up completion pass
 
-Latest full gate: **383/407 live cases match; 24 differ**, with all six other
-lanes passing. Backend test count is now 271 unit + 4 integration: obsolete
+Earlier follow-up gate: **383/407 live cases matched; 24 differed**, with all six other
+lanes passing. Backend test count is now 272 unit + 4 integration: obsolete
 MCP tests for operations unsupported by the pinned reference were replaced with
 reference-contract validation tests, not treated as successful supported APIs.
 MCP tool errors, collection shapes, destructive confirmation and exact allowed
@@ -454,3 +454,22 @@ restore probes, exposing actual authorization differences rather than testing
 against a deleted reference key. Remaining live failures include full-backup
 comparison, metrics completeness, management authorization, MCP lifecycle,
 configuration/usage shapes, checker discovery, metadata refresh and audit logs.
+
+## Latest verified completion pass
+
+The full seven-lane gate now observes **404 passing / 3 failing live cases**,
+with 272 backend unit tests, 4 backend integration tests, 44 frontend unit tests,
+3 browser tests and 11 harness unit tests passing; frontend build/typecheck pass.
+Remaining live cases are metrics exposition, recent system logs, and model
+metadata refresh. This does **not** close untested capability gaps in sections
+1/2/4/9/10 or make the 407 cases exhaustive.
+
+This pass fixed limited-principal 403 responses, MCP lifecycle/settings/operation
+shapes, custom checker discovery, reference-shaped usage summaries, management
+MCP audit persistence and peer identity, reset of MCP audit records, and empty
+backup table files. Binary backups are now decompressed and compared by entry
+rather than decoded as UTF-8. Audit UUIDs/timings and backup timestamps/dialect
+are validated before normalization; identity, counts, tool, status and payload
+remain compared. Malformed restore probes run last because the reference
+partially mutates configuration even when rejecting them; Trefoil does not copy
+that unsafe behavior. Usage grouped breakdowns/exclusions remain incomplete.
