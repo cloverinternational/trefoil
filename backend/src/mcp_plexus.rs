@@ -912,14 +912,17 @@ async fn quota_operation(
         .oneshot(request.body(body).unwrap())
         .await
         .unwrap();
-    let ok = response.status().is_success();
+    let status = response.status();
+    let ok = status.is_success();
     let payload: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
             .unwrap_or_else(|_| json!({"error":{"message":"Invalid quota response"}}));
     let result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
-        json!({"ok":false,"operation":operation,"error":payload.get("error").cloned().unwrap_or(payload)})
+        let mut error = payload.get("error").cloned().unwrap_or(payload);
+        if let Some(object) = error.as_object_mut() { object.entry("code").or_insert(json!(status.as_u16())); }
+        json!({"ok":false,"operation":operation,"error":error})
     };
     rpc_result(
         id,
@@ -1521,7 +1524,6 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
     use tower::ServiceExt;
 
     async fn body(response: axum::response::Response) -> Value {
@@ -1555,8 +1557,7 @@ mod tests {
     }
 
     fn logging_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        crate::logging::test_lock()
     }
 
     #[tokio::test]

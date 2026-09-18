@@ -20,6 +20,12 @@ static MODULES: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
 static STARTUP_LEVEL: OnceLock<String> = OnceLock::new();
 const SUPPORTED: &[&str] = &["error", "warn", "info", "debug", "verbose", "silly"];
 
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap_or_else(|error| error.into_inner())
+}
+
 fn startup_level() -> &'static str {
     STARTUP_LEVEL
         .get_or_init(|| {
@@ -247,6 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn level_and_module_controls_round_trip_and_reset() {
+        let _lock = super::test_lock();
         let (_, reset) = request("DELETE", "/v0/management/logging/level", None).await;
         assert_eq!(reset["level"], reset["startupLevel"]);
         assert_eq!(reset["supportedLevels"], serde_json::json!(SUPPORTED));

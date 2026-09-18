@@ -1743,6 +1743,19 @@ async function main() {
   failures += await runCases(CONFIG_SNAPSHOT_CASES);
   failures += await runCases(CONFIG_EXPORT_CASES);
   failures += await runCases(BACKUP_CASES);
+  // A malformed restore may partially replace reference configuration before
+  // rejecting. Re-provision shared auth explicitly so later cases test their
+  // own contract rather than depending on a previous destructive probe.
+  for (const base of [PLEXUS_BASE_URL, TREFOIL_BASE_URL]) {
+    await ensureFixture(base);
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const result = await fetchVerify(base, LIMITED_KEY_SECRET);
+      if (result.status === 200) break;
+      if (attempt === 39) throw new Error(`Fixture not restored at ${base}`);
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
+
   failures += await runCases(OBSERVABILITY_CASES);
   failures += await runCases(CONCURRENCY_CASES);
   failures += await runCases(VISION_CACHE_CASES);
