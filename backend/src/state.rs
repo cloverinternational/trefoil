@@ -161,7 +161,7 @@ pub struct QuotaCheckerConfig {
     pub id: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_quota_interval")]
+    #[serde(default = "default_quota_interval", rename = "intervalMinutes", alias = "interval")]
     pub interval: u64,
     #[serde(default)]
     pub options: Value,

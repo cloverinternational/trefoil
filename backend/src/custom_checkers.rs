@@ -61,17 +61,22 @@ pub fn router() -> Router<AppState> {
 /// Poll enabled provider custom checkers in the background.
 pub fn start_poller(state: AppState) {
     tokio::spawn(async move {
+        let mut last_checked = std::collections::HashMap::<(String, String), tokio::time::Instant>::new();
         loop {
             let providers = state.inner.providers.read().unwrap().clone();
-            let mut delay = Duration::from_secs(30);
+            let delay = Duration::from_secs(1);
             for (provider, config) in providers {
+                if !config.enabled { continue; }
                 let Some(quota) = config.quota_checker.filter(|q| q.enabled) else {
                     continue;
                 };
                 let Some(checker_id) = quota.id.or(quota.checker_type) else {
                     continue;
                 };
-                delay = delay.min(Duration::from_secs(quota.interval.max(1)));
+                let schedule_key = (provider.clone(), checker_id.clone());
+                let now = tokio::time::Instant::now();
+                if !checker_due(last_checked.get(&schedule_key).copied(), now, quota.interval) { continue; }
+                last_checked.insert(schedule_key, now);
                 let result = if builtin(&checker_id) {
                     run_builtin_checker(&state, &checker_id, &provider, &quota.options).await
                 } else {
@@ -109,6 +114,10 @@ pub fn start_poller(state: AppState) {
             tokio::time::sleep(delay).await;
         }
     });
+}
+
+fn checker_due(last: Option<tokio::time::Instant>, now: tokio::time::Instant, minutes: u64) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(minutes.max(1).saturating_mul(60)))
 }
 
 fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
@@ -818,5 +827,19 @@ mod builtin_tests {
         assert_eq!(result[0]["periodUnit"], "hour");
         assert_eq!(result[1]["remaining"], 0.0);
         assert_eq!(result[1]["periodUnit"], "day");
+    }
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::*;
+    #[test]
+    fn each_checker_obeys_its_own_minute_interval() {
+        let start = tokio::time::Instant::now();
+        assert!(checker_due(None, start, 30));
+        assert!(!checker_due(Some(start), start + Duration::from_secs(30), 30));
+        assert!(checker_due(Some(start), start + Duration::from_secs(60), 1));
+        assert!(!checker_due(Some(start), start + Duration::from_secs(60), 30));
+        assert!(checker_due(Some(start), start + Duration::from_secs(1800), 30));
     }
 }
