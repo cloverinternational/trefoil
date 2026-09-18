@@ -290,10 +290,16 @@ async fn export(
         headers.get("x-admin-key").and_then(|v| v.to_str().ok()),
     ) {
         Some(Principal::Admin) => {}
-        Some(Principal::Limited { .. }) => {
-            return (StatusCode::FORBIDDEN, "Admin privileges required").into_response()
+        Some(Principal::Limited { .. }) => return axum::Json(serde_json::json!({
+            "error": { "message": "Admin privileges required", "type": "forbidden", "code": 403 }
+        }))
+        .into_response(),
+        None => {
+            return axum::Json(serde_json::json!({
+                "error": { "message": "Unauthorized", "type": "auth_error", "code": 401 }
+            }))
+            .into_response()
         }
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
     }
     let Some(pool) = &state.inner.database else {
         return (

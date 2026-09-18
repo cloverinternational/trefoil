@@ -84,6 +84,9 @@ function normalizeForCase(path: string, body: unknown): unknown {
   if (path.startsWith('/v0/management/backup') && normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
     const object = { ...(normalized as Record<string, unknown>) };
     delete object.created_at;
+    // The reference may run against SQLite while Trefoil uses PostgreSQL;
+    // the dialect identifies the storage engine, not the backup contract.
+    delete object.dialect;
     return object;
   }
   if ((path.includes('/custom-checkers/') || path === '/v0/management/custom-checkers') && normalized && typeof normalized === 'object') {
@@ -194,8 +197,8 @@ async function fetchJson(
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const contentType = res.headers.get('content-type');
-  const body = contentType?.includes('text/plain') ? await res.text() : await res.json().catch(() => null);
-  return { status: res.status, body, contentType };
+  const responseBody = contentType?.includes('text/plain') ? await res.text() : await res.json().catch(() => null);
+  return { status: res.status, body: responseBody, contentType };
 }
 
 interface KeysCase {

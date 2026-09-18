@@ -49,11 +49,23 @@ fn block(name: &str, kind: &str, help: &str) -> String {
 }
 
 fn unauthorized() -> Response {
-    (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({
+            "error": { "message": "Unauthorized", "type": "auth_error", "code": 401 }
+        })),
+    )
+        .into_response()
 }
 
 fn forbidden() -> Response {
-    (StatusCode::FORBIDDEN, "Admin privileges required").into_response()
+    (
+        StatusCode::FORBIDDEN,
+        axum::Json(serde_json::json!({
+            "error": { "message": "Admin privileges required", "type": "forbidden", "code": 403 }
+        })),
+    )
+        .into_response()
 }
 
 async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response {
