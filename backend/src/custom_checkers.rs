@@ -541,9 +541,16 @@ async fn run_builtin_checker(
     .await
     .map_err(|_| "failed to load OAuth credentials".to_string())?
     .ok_or_else(|| format!("OAuth credentials not found for {oauth_provider}/{account}"))?;
-    let mut request = Client::builder().timeout(Duration::from_secs(15)).build()
+    fetch_builtin_meters(id, endpoint, &token).await
+}
+
+async fn fetch_builtin_meters(id: &str, endpoint: &str, token: &str) -> Result<Value, String> {
+    let mut request = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
         .map_err(|_| "failed to initialize quota client".to_string())?
-        .get(endpoint).bearer_auth(token);
+        .get(endpoint)
+        .bearer_auth(token);
     if id == "claude-code" {
         request = request.header("anthropic-beta", "oauth-2025-04-20");
     }
@@ -553,16 +560,26 @@ async fn run_builtin_checker(
     if !status.is_success() {
         return Err(format!("quota request failed with status {status}"));
     }
+    Ok(builtin_meters(id, &payload))
+}
+
+fn builtin_meters(id: &str, payload: &Value) -> Value {
     let mut meters = Vec::new();
     if id == "claude-code" {
         for (key, label, field) in [
             ("five_hour", "5-hour quota", "five_hour"),
             ("weekly", "Weekly quota", "seven_day"),
+            ("weekly_model_opus", "Weekly · Opus", "seven_day_opus"),
+            (
+                "weekly_model_omelette",
+                "Weekly · Omelette",
+                "seven_day_omelette",
+            ),
         ] {
             if let Some(w) = payload.get(field) {
                 if let Some(raw) = w.get("utilization").and_then(Value::as_f64) {
                     let used = raw.clamp(0.0, 100.0);
-                    meters.push(serde_json::json!({"key":key,"label":label,"unit":"percentage","used":used,"remaining":100.0-used,"utilizationPercent":used,"status":meter_status(used),"periodCycle":"rolling","resetsAt":w.get("resets_at")}));
+                    meters.push(serde_json::json!({"key":key,"label":label,"kind":"allowance","unit":"percentage","used":used,"remaining":100.0-used,"utilizationPercent":used,"status":meter_status(used),"periodValue":if key == "five_hour" {5} else {7},"periodUnit":if key == "five_hour" {"hour"} else {"day"},"periodCycle":"rolling","resetsAt":w.get("resets_at")}));
                 }
             }
         }
@@ -574,12 +591,12 @@ async fn run_builtin_checker(
             if let Some(w) = rate.get(format!("{key}_window")) {
                 if let Some(raw) = w.get("used_percent").and_then(Value::as_f64) {
                     let used = raw.clamp(0.0, 100.0);
-                    meters.push(serde_json::json!({"key":key,"label":label,"unit":"percentage","used":used,"remaining":100.0-used,"utilizationPercent":used,"status":meter_status(used),"periodCycle":"rolling"}));
+                    meters.push(serde_json::json!({"key":key,"label":label,"kind":"allowance","unit":"percentage","used":used,"remaining":100.0-used,"utilizationPercent":used,"status":meter_status(used),"periodValue":if w.get("limit_window_seconds").and_then(Value::as_u64)==Some(18000) {5} else {7},"periodUnit":if w.get("limit_window_seconds").and_then(Value::as_u64)==Some(18000) {"hour"} else {"day"},"periodCycle":"rolling"}));
                 }
             }
         }
     }
-    Ok(Value::Array(meters))
+    Value::Array(meters)
 }
 
 fn meter_status(percent: f64) -> &'static str {
@@ -734,5 +751,75 @@ mod tests {
             assert!(!validate_code(code), "accepted unsafe checker code: {code}");
         }
         assert!(validate_code("return [{ key: 'balance', status: 'ok' }];"));
+    }
+}
+
+#[cfg(test)]
+mod builtin_tests {
+    use super::*;
+    use axum::{routing::get, Router};
+
+    #[tokio::test]
+    async fn claude_checker_sends_oauth_headers_and_maps_upstream_usage() {
+        let app = Router::new().route("/usage", get(|headers: HeaderMap| async move {
+            assert_eq!(headers["authorization"], "Bearer fixture-token");
+            assert_eq!(headers["anthropic-beta"], "oauth-2025-04-20");
+            Json(serde_json::json!({"five_hour":{"utilization":80,"resets_at":"2026-09-19T00:00:00Z"},"seven_day":{"utilization":100}}))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = fetch_builtin_meters(
+            "claude-code",
+            &format!("http://{address}/usage"),
+            "fixture-token",
+        )
+        .await
+        .unwrap();
+        server.abort();
+        assert_eq!(result[0]["kind"], "allowance");
+        assert_eq!(result[0]["periodValue"], 5);
+        assert_eq!(result[0]["status"], "warning");
+        assert_eq!(result[0]["remaining"], 20.0);
+        assert_eq!(result[1]["status"], "exhausted");
+    }
+
+    #[tokio::test]
+    async fn checker_upstream_failure_is_not_successful_empty_usage() {
+        let app = Router::new().route(
+            "/usage",
+            get(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error":"invalid token"})),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = fetch_builtin_meters(
+            "openai-codex",
+            &format!("http://{address}/usage"),
+            "fixture-token",
+        )
+        .await;
+        server.abort();
+        assert!(result.unwrap_err().contains("401"));
+    }
+
+    #[test]
+    fn codex_windows_clamp_percentages_and_preserve_period_units() {
+        let result = builtin_meters(
+            "openai-codex",
+            &serde_json::json!({"rate_limit":{
+                "primary_window":{"used_percent":-2,"limit_window_seconds":18000},
+                "secondary_window":{"used_percent":120,"limit_window_seconds":604800}
+            }}),
+        );
+        assert_eq!(result[0]["used"], 0.0);
+        assert_eq!(result[0]["periodUnit"], "hour");
+        assert_eq!(result[1]["remaining"], 0.0);
+        assert_eq!(result[1]["periodUnit"], "day");
     }
 }
