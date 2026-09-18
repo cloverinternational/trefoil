@@ -2377,6 +2377,47 @@ async fn record_response_usage(
     }
 }
 
+/// Request-local attempt bookkeeping shared by the chat and generic JSON
+/// dispatchers. Provider-specific request construction and response parsing
+/// remain at their call sites; this type owns only the durable attempt
+/// metadata and its monotonically ordered index.
+struct DispatchAttemptBookkeeper;
+
+impl DispatchAttemptBookkeeper {
+    async fn record(
+        state: &AppState,
+        request_id: &str,
+        attempt_index: i32,
+        started_at: i64,
+        provider: &str,
+        model: &str,
+        api_type: &str,
+        status: &str,
+        reason: Option<&str>,
+        status_code: Option<i32>,
+        retryable: bool,
+    ) {
+        if let Some(pool) = &state.inner.database {
+            let _ = crate::database::insert_inference_attempt(
+                pool,
+                request_id,
+                attempt_index,
+                provider,
+                model,
+                Some(api_type),
+                status,
+                reason,
+                status_code,
+                retryable,
+                None,
+                started_at,
+                Some(now_ms()),
+            )
+            .await;
+        }
+    }
+}
+
 /// Persist one provider attempt as soon as its outcome is known. The unique
 /// request/index constraint makes repeated recovery updates duplicate-safe.
 async fn record_attempt(
@@ -2392,24 +2433,20 @@ async fn record_attempt(
     retryable: bool,
     started_at: i64,
 ) {
-    if let Some(pool) = &state.inner.database {
-        let _ = crate::database::insert_inference_attempt(
-            pool,
-            request_id,
-            attempt_index,
-            provider,
-            model,
-            Some(api_type),
-            status,
-            reason,
-            status_code,
-            retryable,
-            None,
-            started_at,
-            Some(now_ms()),
-        )
-        .await;
-    }
+    DispatchAttemptBookkeeper::record(
+        state,
+        request_id,
+        attempt_index,
+        started_at,
+        provider,
+        model,
+        api_type,
+        status,
+        reason,
+        status_code,
+        retryable,
+    )
+    .await;
 }
 
 fn dispatch_provider_url(value: &str) -> Result<url::Url, ()> {
