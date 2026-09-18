@@ -333,6 +333,54 @@ fn safe_configured_header(name: &str) -> bool {
     )
 }
 
+fn strip_zero_ttl(value: &mut Value) -> bool {
+    let messages = match value {
+        Value::Array(items) => items.iter_mut().collect::<Vec<_>>(),
+        _ => vec![value],
+    };
+    let mut changed = false;
+    for message in messages {
+        let Some(result) = message.get_mut("result").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if result.get("tools").is_some_and(Value::is_array)
+            && result
+                .get("ttlMs")
+                .and_then(Value::as_i64)
+                .is_some_and(|ttl| ttl <= 0)
+        {
+            result.remove("ttlMs");
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn sanitize_sse_lines(buffer: &mut String, chunk: &[u8]) -> Bytes {
+    buffer.push_str(&String::from_utf8_lossy(chunk));
+    let mut output = String::new();
+    while let Some(index) = buffer.find('\n') {
+        let line = buffer[..index].to_owned();
+        *buffer = buffer[index + 1..].to_owned();
+        let data = line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"));
+        if let Some(data) = data {
+            if let Ok(mut value) = serde_json::from_str::<Value>(data) {
+                if strip_zero_ttl(&mut value) {
+                    output.push_str("data: ");
+                    output.push_str(&value.to_string());
+                    output.push('\n');
+                    continue;
+                }
+            }
+        }
+        output.push_str(&line);
+        output.push('\n');
+    }
+    Bytes::from(output)
+}
+
 fn copy_request_headers(
     mut request: reqwest::RequestBuilder,
     incoming: &HeaderMap,
@@ -372,8 +420,8 @@ async fn forward(
         }
     };
     let mut request = copy_request_headers(client.request(method, url), &headers, &configured);
-    if let Some(body) = body {
-        request = request.body(body);
+    if let Some(ref body) = body {
+        request = request.body(body.clone());
     }
     let upstream = match request.send().await {
         Ok(response) => response,
@@ -387,11 +435,33 @@ async fn forward(
     };
     let status = upstream.status();
     let response_headers = upstream.headers().clone();
-    let mut response = Response::new(Body::from_stream(
-        upstream
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(std::io::Error::other)),
-    ));
+    let is_event_stream = response_headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"));
+    let is_tools_list = body.as_ref().is_some_and(|body| {
+        serde_json::from_slice::<Value>(body).is_ok_and(|value| match value {
+            Value::Array(items) => items
+                .iter()
+                .any(|item| item.get("method") == Some(&Value::String("tools/list".into()))),
+            _ => value.get("method") == Some(&Value::String("tools/list".into())),
+        })
+    });
+    let sanitize = is_event_stream && is_tools_list;
+    let mut sse_buffer = String::new();
+    let mut response = Response::new(Body::from_stream(upstream.bytes_stream().map(
+        move |chunk| {
+            chunk
+                .map(|bytes| {
+                    if sanitize {
+                        sanitize_sse_lines(&mut sse_buffer, &bytes)
+                    } else {
+                        bytes
+                    }
+                })
+                .map_err(std::io::Error::other)
+        },
+    )));
     *response.status_mut() =
         StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     for key in [
