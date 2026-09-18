@@ -209,6 +209,9 @@ async fn call_tool(
         | ("plexus_mcp_gateway", "get")
         | ("plexus_mcp_gateway", "status")
         | ("plexus_mcp_gateway", "process_logs")
+        | ("plexus_mcp_gateway", "start")
+        | ("plexus_mcp_gateway", "stop")
+        | ("plexus_mcp_gateway", "restart")
         | ("plexus_mcp_gateway", "put")
         | ("plexus_mcp_gateway", "update")
         | ("plexus_mcp_gateway", "delete") => {
@@ -1038,6 +1041,16 @@ async fn mcp_gateway_operation(
                 None,
             )
         }
+        "start" | "stop" | "restart" => {
+            let Some(name) = args.get("id").and_then(Value::as_str) else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            (
+                "POST",
+                format!("/v0/management/mcp-servers/{name}/{}", operation),
+                None,
+            )
+        }
         "delete" => {
             if args.get("destructive").and_then(Value::as_str) != Some("acknowledged") {
                 return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
@@ -1512,6 +1525,25 @@ mod tests {
         .await;
         assert_eq!(response["error"]["code"], -32602);
         assert_eq!(response["error"]["message"], "id is required");
+    }
+
+    #[tokio::test]
+    async fn mcp_gateway_lifecycle_operations_require_id() {
+        for operation in ["start", "stop", "restart"] {
+            let response = body(
+                dispatch(
+                    &state(),
+                    json!({
+                        "jsonrpc":"2.0", "id": 13, "method":"tools/call",
+                        "params":{"name":"plexus_mcp_gateway","arguments":{"operation":operation}}
+                    }),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(response["error"]["code"], -32602);
+            assert_eq!(response["error"]["message"], "id is required");
+        }
     }
 
     #[tokio::test]
