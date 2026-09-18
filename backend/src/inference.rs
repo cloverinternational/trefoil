@@ -1959,7 +1959,7 @@ async fn chat_completions(
         );
     };
     let original_body = body.clone();
-    body["model"] = Value::String(upstream_model);
+    body["model"] = Value::String(upstream_model.clone());
     let endpoint = format!(
         "{}/chat/completions",
         provider_url.as_str().trim_end_matches('/')
@@ -2034,7 +2034,7 @@ async fn chat_completions(
                     &request_id,
                     1,
                     &provider_slug,
-                    &model,
+                    &upstream_model,
                     "chat",
                     "failed",
                     Some(&reason),
@@ -2043,7 +2043,7 @@ async fn chat_completions(
                     start_time,
                 )
                 .await;
-                register_provider_failure(&state, &provider_slug, &model, reason).await;
+                register_provider_failure(&state, &provider_slug, &upstream_model, reason).await;
                 return chat_status_failover(
                     &state,
                     &client,
