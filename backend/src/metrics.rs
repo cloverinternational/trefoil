@@ -83,16 +83,19 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let mut errors = 0i64;
     let mut input = 0i64;
     let mut output = 0i64;
+    let mut reasoning = 0i64;
     let mut cached = 0i64;
     let mut cache_write = 0i64;
     let mut duration = 0i64;
     let mut average = 0f64;
+    let mut cost = 0f64;
+    let mut today_cost = 0f64;
     let mut today = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
 
     if let Some(pool) = &state.inner.database {
-        if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(duration_ms),0)::bigint AS duration, coalesce(avg(duration_ms),0)::double precision AS average FROM request_usage").fetch_one(pool).await {
+        if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(cost_total),0)::double precision AS cost, coalesce(sum(duration_ms),0)::bigint AS duration, coalesce(avg(duration_ms),0)::double precision AS average FROM request_usage").fetch_one(pool).await {
             total = row.try_get("requests").unwrap_or(0); errors = row.try_get("errors").unwrap_or(0);
-            input = row.try_get("input").unwrap_or(0); output = row.try_get("output").unwrap_or(0);
+            input = row.try_get("input").unwrap_or(0); output = row.try_get("output").unwrap_or(0); reasoning = row.try_get("reasoning").unwrap_or(0); cost = row.try_get("cost").unwrap_or(0.0);
             cached = row.try_get("cached").unwrap_or(0); cache_write = row.try_get("cache_write").unwrap_or(0);
             duration = row.try_get("duration").unwrap_or(0); average = row.try_get("average").unwrap_or(0.0);
         }
@@ -102,11 +105,13 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .unwrap()
             .and_utc()
             .timestamp_millis();
-        if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write FROM request_usage WHERE start_time >= $1").bind(midnight).fetch_one(pool).await {
-            today = (row.try_get("requests").unwrap_or(0), row.try_get("errors").unwrap_or(0), row.try_get("input").unwrap_or(0), row.try_get("output").unwrap_or(0), row.try_get("reasoning").unwrap_or(0), row.try_get("cached").unwrap_or(0), row.try_get("cache_write").unwrap_or(0));
+        if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(cost_total),0)::double precision AS cost FROM request_usage WHERE start_time >= $1").bind(midnight).fetch_one(pool).await {
+            today = (row.try_get("requests").unwrap_or(0), row.try_get("errors").unwrap_or(0), row.try_get("input").unwrap_or(0), row.try_get("output").unwrap_or(0), row.try_get("reasoning").unwrap_or(0), row.try_get("cached").unwrap_or(0), row.try_get("cache_write").unwrap_or(0)); today_cost = row.try_get("cost").unwrap_or(0.0);
         }
         body.push_str(&dimension_metrics(pool).await);
+        body.push_str(&performance_metrics(pool).await);
     }
+    body.push_str(&cooldown_metrics(&state));
 
     body.push_str(&block(
         "plexus_requests_total",
@@ -128,6 +133,7 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
     for (kind, value) in [
         ("input", input),
         ("output", output),
+        ("reasoning", reasoning),
         ("cached", cached),
         ("cache_write", cache_write),
     ] {
@@ -171,6 +177,18 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
         "Average inference duration in milliseconds.",
     ));
     body.push_str(&line("plexus_avg_duration_ms", &[], average));
+    body.push_str(&block(
+        "plexus_cost_usd_total",
+        "counter",
+        "Cumulative request cost in USD.",
+    ));
+    body.push_str(&line("plexus_cost_usd_total", &[], cost));
+    body.push_str(&block(
+        "plexus_cost_today_usd",
+        "gauge",
+        "Request cost in USD since local midnight.",
+    ));
+    body.push_str(&line("plexus_cost_today_usd", &[], today_cost));
     body.push_str("\n");
     (
         StatusCode::OK,
@@ -181,6 +199,116 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
         body,
     )
         .into_response()
+}
+
+async fn performance_metrics(pool: &sqlx::PgPool) -> String {
+    let mut body = String::new();
+    let Ok(rows) = sqlx::query("SELECT provider, coalesce(canonical_model_name, model) AS model, avg(time_to_first_token_ms)::double precision AS avg_ttft, min(time_to_first_token_ms)::double precision AS min_ttft, max(time_to_first_token_ms)::double precision AS max_ttft, avg(tokens_per_sec)::double precision AS avg_tps, min(tokens_per_sec)::double precision AS min_tps, max(tokens_per_sec)::double precision AS max_tps, count(*)::bigint AS samples, coalesce(sum(success_count),0)::bigint AS successes, coalesce(sum(failure_count),0)::bigint AS failures FROM provider_performance GROUP BY provider, coalesce(canonical_model_name, model)").fetch_all(pool).await else { return body };
+    for (name, help) in [
+        ("plexus_perf_avg_ttft_ms", "Average time to first token."),
+        ("plexus_perf_min_ttft_ms", "Minimum time to first token."),
+        ("plexus_perf_max_ttft_ms", "Maximum time to first token."),
+        (
+            "plexus_perf_avg_tokens_per_sec",
+            "Average token throughput.",
+        ),
+        (
+            "plexus_perf_min_tokens_per_sec",
+            "Minimum token throughput.",
+        ),
+        (
+            "plexus_perf_max_tokens_per_sec",
+            "Maximum token throughput.",
+        ),
+        ("plexus_perf_sample_count", "Performance sample count."),
+        ("plexus_perf_success_count", "Successful samples."),
+        ("plexus_perf_failure_count", "Failed samples."),
+    ] {
+        body.push_str(&block(name, "gauge", help));
+    }
+    for row in rows {
+        let provider: String = row.try_get("provider").unwrap_or_else(|_| "unknown".into());
+        let model: String = row.try_get("model").unwrap_or_else(|_| "unknown".into());
+        let labels = [("provider", provider.as_str()), ("model", model.as_str())];
+        for (name, col) in [
+            ("plexus_perf_avg_ttft_ms", "avg_ttft"),
+            ("plexus_perf_min_ttft_ms", "min_ttft"),
+            ("plexus_perf_max_ttft_ms", "max_ttft"),
+            ("plexus_perf_avg_tokens_per_sec", "avg_tps"),
+            ("plexus_perf_min_tokens_per_sec", "min_tps"),
+            ("plexus_perf_max_tokens_per_sec", "max_tps"),
+        ] {
+            body.push_str(&line(
+                name,
+                &labels,
+                row.try_get::<f64, _>(col).unwrap_or(0.0),
+            ));
+        }
+        for (name, col) in [
+            ("plexus_perf_sample_count", "samples"),
+            ("plexus_perf_success_count", "successes"),
+            ("plexus_perf_failure_count", "failures"),
+        ] {
+            body.push_str(&line(
+                name,
+                &labels,
+                row.try_get::<i64, _>(col).unwrap_or(0),
+            ));
+        }
+    }
+    body
+}
+
+fn cooldown_metrics(state: &AppState) -> String {
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut body = String::new();
+    let providers = state.inner.providers.read().unwrap();
+    let entries: Vec<_> = state
+        .inner
+        .cooldowns
+        .read()
+        .unwrap()
+        .iter()
+        .filter(|((provider, _), entry)| {
+            entry.expiry_ms > now && !providers.get(provider).is_some_and(|p| p.disable_cooldown)
+        })
+        .map(|((provider, model), entry)| {
+            (
+                provider.clone(),
+                model.clone(),
+                entry.expiry_ms - now,
+                entry.consecutive_failures,
+            )
+        })
+        .collect();
+    for (name, help) in [
+        ("plexus_cooldown_active", "Whether a cooldown is active."),
+        (
+            "plexus_cooldown_time_remaining_ms",
+            "Cooldown milliseconds remaining.",
+        ),
+        (
+            "plexus_cooldown_consecutive_failures",
+            "Consecutive cooldown failures.",
+        ),
+    ] {
+        body.push_str(&block(name, "gauge", help));
+    }
+    for (provider, model, remaining, failures) in entries {
+        let labels = [("provider", provider.as_str()), ("model", model.as_str())];
+        body.push_str(&line("plexus_cooldown_active", &labels, 1));
+        body.push_str(&line(
+            "plexus_cooldown_time_remaining_ms",
+            &labels,
+            remaining,
+        ));
+        body.push_str(&line(
+            "plexus_cooldown_consecutive_failures",
+            &labels,
+            failures,
+        ));
+    }
+    body
 }
 
 async fn dimension_metrics(pool: &sqlx::PgPool) -> String {
