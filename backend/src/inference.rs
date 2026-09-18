@@ -4707,4 +4707,85 @@ data: [DONE]
             "speech-b"
         );
     }
+
+    #[tokio::test]
+    async fn image_generation_failover_preserves_target_order_after_upstream_failure() {
+        let (first, first_request) = inference_mock_with_capture(
+            "503 Service Unavailable",
+            "application/json",
+            r#"{"error":{"message":"image provider unavailable"}}"#,
+        );
+        let (second, second_request) = inference_mock_with_capture(
+            "200 OK",
+            "application/json",
+            r#"{"created":1,"data":[{"url":"https://example.test/fallback.png"}]}"#,
+        );
+        let aliases = HashMap::from([(
+            "picture".to_owned(),
+            crate::state::ModelConfig {
+                target_groups: vec![crate::state::ModelTargetGroup {
+                    name: "fallback".into(),
+                    selector: "sequential".into(),
+                    targets: vec![
+                        crate::state::ModelTarget {
+                            provider: Some("first".into()),
+                            model: Some("image-a".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                        crate::state::ModelTarget {
+                            provider: Some("second".into()),
+                            model: Some("image-b".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        )]);
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        *state.inner.aliases.write().unwrap() = aliases;
+        state.inner.providers.write().unwrap().extend([
+            (
+                "first".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: first,
+                    ..Default::default()
+                },
+            ),
+            (
+                "second".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: second,
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::post("/v1/images/generations")
+                    .header("x-api-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"picture","prompt":"a tree"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+
+        assert_eq!(body["data"][0]["url"], "https://example.test/fallback.png");
+        assert_eq!(
+            first_request.lock().unwrap().as_ref().unwrap()["model"],
+            "image-a"
+        );
+        assert_eq!(
+            second_request.lock().unwrap().as_ref().unwrap()["model"],
+            "image-b"
+        );
+    }
 }
