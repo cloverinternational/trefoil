@@ -1177,14 +1177,36 @@ async fn delete(State(state): State<AppState>, headers: HeaderMap) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, enabled, TOOLS};
+    use super::{dispatch, enabled, router, TOOLS};
     use crate::{state::KeyConfig, AppState};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use std::collections::HashMap;
+    use tower::ServiceExt;
 
     async fn body(response: axum::response::Response) -> Value {
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+    }
+
+    async fn request(
+        state: AppState,
+        method: &str,
+        body: Body,
+        key: Option<&str>,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder().method(method).uri("/mcp/plexus");
+        if let Some(key) = key {
+            builder = builder.header("x-admin-key", key);
+        }
+        router()
+            .with_state(state)
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap()
     }
 
     fn state() -> AppState {
@@ -1276,5 +1298,80 @@ mod tests {
             response["result"]["structuredContent"]["data"],
             json!(["alpha", "zeta"])
         );
+    }
+
+    #[tokio::test]
+    async fn post_enforces_auth_and_reports_parse_errors() {
+        let state = state();
+        let unauthorized = request(state.clone(), "POST", Body::from("{}"), None).await;
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body(unauthorized).await["error"]["code"], 401);
+
+        let malformed = request(state, "POST", Body::from("not-json"), Some("admin")).await;
+        assert_eq!(malformed.status(), StatusCode::OK);
+        let value = body(malformed).await;
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], Value::Null);
+        assert_eq!(value["error"]["code"], -32700);
+    }
+
+    #[tokio::test]
+    async fn tool_validation_and_unknown_tool_are_jsonrpc_success_envelopes() {
+        let state = state();
+        let missing_name = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id": 3, "method":"tools/call", "params":{}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(missing_name["error"]["code"], -32602);
+
+        let missing_id = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id": 4, "method":"tools/call",
+                    "params":{"name":"plexus_mcp_gateway","arguments":{"operation":"get"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(missing_id["error"]["code"], -32602);
+        assert_eq!(missing_id["error"]["message"], "id is required");
+
+        let unknown = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id": 5, "method":"tools/call",
+                    "params":{"name":"not-a-tool","arguments":{"operation":"list"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(unknown["result"]["isError"], true);
+        assert_eq!(unknown["result"]["content"][0]["text"], "Unknown tool");
+    }
+
+    #[tokio::test]
+    async fn disabled_mcp_rejects_all_http_methods_before_dispatch() {
+        let state = state();
+        state
+            .inner
+            .settings
+            .write()
+            .unwrap()
+            .insert("mcpEnabled".into(), json!(false));
+        for method in ["GET", "POST", "DELETE"] {
+            let response = request(state.clone(), method, Body::from("{}"), Some("admin")).await;
+            assert_eq!(response.status(), StatusCode::IM_A_TEAPOT);
+            assert_eq!(body(response).await["error"]["type"], "mcp_disabled");
+        }
     }
 }
