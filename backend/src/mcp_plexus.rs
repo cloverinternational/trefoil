@@ -187,6 +187,9 @@ async fn call_tool(
         ("plexus_config", "stall") => {
             return config_stall_operation(state, id, args).await;
         }
+        ("plexus_config", "vision_fallthrough") => {
+            return config_vision_fallthrough_operation(state, id, args).await;
+        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
             // HashMap iteration order is intentionally unstable.  MCP clients
@@ -597,6 +600,39 @@ async fn config_stall_operation(state: &AppState, id: Value, args: Option<&Value
                 "stall",
                 "GET",
                 "/v0/management/config/stall",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_vision_fallthrough_operation(
+    state: &AppState,
+    id: Value,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "vision_fallthrough",
+                "PATCH",
+                "/v0/management/config/vision-fallthrough",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "vision_fallthrough",
+                "GET",
+                "/v0/management/config/vision-fallthrough",
                 None,
             )
             .await
@@ -1846,6 +1882,70 @@ mod tests {
         )
         .await;
         assert_eq!(invalid["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn config_vision_fallthrough_supports_read_patch_and_validation() {
+        let state = state();
+        let read = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id":34, "method":"tools/call",
+                    "params":{"name":"plexus_config","arguments":{"operation":"vision_fallthrough"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(read["result"]["structuredContent"]["ok"], true);
+        assert_eq!(read["result"]["structuredContent"]["data"], json!({}));
+
+        let patched = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id":35, "method":"tools/call",
+                    "params":{"name":"plexus_config","arguments":{"operation":"vision_fallthrough","body":{"enabled":true,"model":"vision"}}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(patched["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            patched["result"]["structuredContent"]["data"],
+            json!({"enabled":true,"model":"vision"})
+        );
+
+        let invalid = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id":36, "method":"tools/call",
+                    "params":{"name":"plexus_config","arguments":{"operation":"vision_fallthrough","body":[]}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(invalid["error"]["code"], -32602);
+
+        let unchanged = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id":37, "method":"tools/call",
+                    "params":{"name":"plexus_config","arguments":{"operation":"vision_fallthrough"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            unchanged["result"]["structuredContent"]["data"],
+            json!({"enabled":true,"model":"vision"})
+        );
     }
 
     #[tokio::test]
