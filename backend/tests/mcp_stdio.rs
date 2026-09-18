@@ -59,3 +59,27 @@ async fn malformed_child_output_is_reported_to_pending_request() {
     assert!(matches!(result, TransportError::Json(_)));
     transport.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn rpc_error_preserves_code_message_and_data() {
+    let transport = LocalMcpTransport::spawn(fixture("rpc-error"))
+        .await
+        .unwrap();
+    let result = transport
+        .request("request", "call", None)
+        .await
+        .unwrap_err();
+    match result {
+        TransportError::Rpc {
+            code,
+            message,
+            data,
+        } => {
+            assert_eq!(code, -32602);
+            assert_eq!(message, "bad params");
+            assert_eq!(data, Some(json!({"field": "value"})));
+        }
+        other => panic!("expected RPC error, got {other:?}"),
+    }
+    transport.shutdown().await.unwrap();
+}

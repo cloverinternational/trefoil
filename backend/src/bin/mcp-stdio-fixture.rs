@@ -14,6 +14,19 @@ fn main() {
                 stdout.flush().unwrap();
                 return;
             }
+            "rpc-error" => {
+                let message: Value = serde_json::from_str(&line).unwrap();
+                if let Some(id) = message.get("id") {
+                    writeln!(
+                        stdout,
+                        r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":-32602,"message":"bad params","data":{{"field":"value"}}}}}}"#,
+                        id
+                    )
+                    .unwrap();
+                    stdout.flush().unwrap();
+                    return;
+                }
+            }
             "success" => {
                 let message: Value = serde_json::from_str(&line).unwrap();
                 if message.get("method").and_then(Value::as_str) == Some("notify") {
