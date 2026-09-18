@@ -122,6 +122,10 @@ one call per verb. Not an actual gap.
       with a launcher allowlist.
 - [x] `plexus_quota` MCP operations (`status`, `clear`, `recompute`) are wired
       with admin auth, confirmation, attachment, and not-found/error handling.
+- [x] Frontend management API adapter parity is covered by wire-level Vitest
+      tests (`frontend/src/lib/api.test.ts`): auth, decoded GET responses,
+      encoded paths, JSON mutation bodies, text metrics, HTTP failures, and
+      transport failures.
 - [ ] Differential harness (~275 cases) run end-to-end against live Plexus +
       Trefoil in this pass — not executed (requires two live servers +
       Postgres fixture provisioning per `parity/README.md`); route/config
