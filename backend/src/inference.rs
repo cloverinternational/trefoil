@@ -937,10 +937,8 @@ async fn forward_json_api(
     // Snapshot candidates before dispatch: failed candidates enter cooldown,
     // so re-evaluating the selector while iterating would skip later targets.
     let targets: Vec<_> = inference_targets(state, &model, key_config).collect();
-    for (attempt, (provider_slug, upstream_model)) in targets.into_iter().enumerate() {
-        if !failover && attempt > 0 {
-            break;
-        }
+    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover);
+    while let Some((attempt, (provider_slug, upstream_model))) = failover_policy.next() {
         if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
             return error_response(
                 axum::http::StatusCode::FORBIDDEN,
@@ -2264,8 +2262,9 @@ async fn chat_status_failover(
     start_time: i64,
 ) -> Response {
     let mut last_error = "retryable upstream error".to_owned();
-    for (attempt_offset, (provider_slug, upstream_model)) in targets.into_iter().skip(1).enumerate()
-    {
+    let mut failover_policy = RetryableFailoverPolicy::new(targets, true);
+    let _ = failover_policy.next();
+    while let Some((attempt_offset, (provider_slug, upstream_model))) = failover_policy.next() {
         let Some(provider) = state
             .inner
             .providers
@@ -3005,6 +3004,37 @@ fn quota_exceeded_response(blocked: &[(String, i32, i64, i64)]) -> Response {
         })),
     )
         .into_response()
+}
+
+/// Shared ordered retry/failover policy for JSON dispatchers.
+///
+/// A disabled failover policy permits only the first target; retryable failures
+/// are handled by callers, while this type owns attempt numbering and target
+/// ordering so chat and generic JSON dispatch cannot drift apart.
+struct RetryableFailoverPolicy {
+    targets: std::vec::IntoIter<(String, String)>,
+    allow_failover: bool,
+    next_attempt: usize,
+}
+
+impl RetryableFailoverPolicy {
+    fn new(targets: Vec<(String, String)>, allow_failover: bool) -> Self {
+        Self {
+            targets: targets.into_iter(),
+            allow_failover,
+            next_attempt: 0,
+        }
+    }
+
+    fn next(&mut self) -> Option<(usize, (String, String))> {
+        if !self.allow_failover && self.next_attempt > 0 {
+            return None;
+        }
+        let target = self.targets.next()?;
+        let attempt = self.next_attempt;
+        self.next_attempt += 1;
+        Some((attempt, target))
+    }
 }
 
 /// Iterate through every eligible target in configured priority order.
