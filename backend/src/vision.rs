@@ -84,13 +84,32 @@ pub async fn generate_descriptor(
     model: &str,
     image_url: &str,
 ) -> Result<String, VisionDescriptorError> {
+    generate_descriptor_with_prompt(
+        client,
+        endpoint,
+        api_key,
+        model,
+        image_url,
+        "Describe this image briefly and factually for another language model.",
+    )
+    .await
+}
+
+pub async fn generate_descriptor_with_prompt(
+    client: &reqwest::Client,
+    endpoint: &str,
+    api_key: Option<&str>,
+    model: &str,
+    image_url: &str,
+    prompt: &str,
+) -> Result<String, VisionDescriptorError> {
     if !valid_image_url(image_url) || model.trim().is_empty() {
         return Err(VisionDescriptorError::InvalidImageUrl);
     }
     let mut request = client.post(endpoint).json(&serde_json::json!({
         "model": model,
         "messages": [{"role":"user", "content":[
-            {"type":"text", "text":"Describe this image briefly and factually for another language model."},
+            {"type":"text", "text":prompt},
             {"type":"image_url", "image_url":{"url":image_url}}
         ]}],
         "max_tokens": 256,
