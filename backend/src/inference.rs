@@ -1899,7 +1899,17 @@ async fn chat_completions(
     } else {
         None
     };
-    let (provider_slug, upstream_model) = resolve_target(&state, &model, key_config);
+    // Snapshot the eligible ordering before attempting a target. A failed
+    // target is put on cooldown, so resolving the iterator again would omit
+    // it and make `nth(1)` skip the actual next candidate.
+    let targets: Vec<_> = inference_targets(&state, &model, key_config).collect();
+    let Some((provider_slug, upstream_model)) = targets.first().cloned() else {
+        return error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "No provider configured for model",
+            "model_not_found",
+        );
+    };
     if let Some(config) = key_config {
         if !provider_allowed(config, &provider_slug) {
             return error_response(
@@ -2071,105 +2081,115 @@ async fn chat_completions(
             )
             .await;
             register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
-            // `resolve_target` intentionally returns the first eligible target.
-            // Calling it again here therefore retries the same provider rather
-            // than traversing the alias's ordered failover chain. Select the
-            // next target explicitly so chat follows the same ordering as the
-            // other inference routes.
-            if let Some((fallback_provider_slug, fallback_model)) =
-                inference_targets(&state, &model, key_config).nth(1)
+            for (offset, (fallback_provider_slug, fallback_model)) in
+                targets.into_iter().skip(1).enumerate()
             {
-                let fallback_provider = {
-                    state
-                        .inner
-                        .providers
-                        .read()
-                        .unwrap()
-                        .get(&fallback_provider_slug)
-                        .cloned()
+                let attempt = (offset + 2) as i32;
+                let Some(fallback_provider) = state
+                    .inner
+                    .providers
+                    .read()
+                    .unwrap()
+                    .get(&fallback_provider_slug)
+                    .cloned()
+                else {
+                    continue;
                 };
-                if let Some(fallback_provider) = fallback_provider {
-                    if let Ok(fallback_base) =
-                        dispatch_provider_url(&fallback_provider.api_base_url)
-                    {
-                        let mut fallback_body = original_body;
-                        fallback_body["model"] = Value::String(fallback_model.clone());
-                        let mut fallback_request = client
-                            .post(format!(
-                                "{}/chat/completions",
-                                fallback_base.as_str().trim_end_matches('/')
-                            ))
-                            .json(&fallback_body);
-                        if let Some(api_key) = fallback_provider.api_key {
-                            fallback_request = fallback_request.bearer_auth(api_key);
+                let Ok(fallback_base) = dispatch_provider_url(&fallback_provider.api_base_url)
+                else {
+                    continue;
+                };
+                let mut fallback_body = original_body.clone();
+                fallback_body["model"] = Value::String(fallback_model.clone());
+                let mut fallback_request = client
+                    .post(format!(
+                        "{}/chat/completions",
+                        fallback_base.as_str().trim_end_matches('/')
+                    ))
+                    .json(&fallback_body);
+                if let Some(api_key) = fallback_provider.api_key {
+                    fallback_request = fallback_request.bearer_auth(api_key);
+                }
+                match fallback_request.send().await {
+                    Ok(fallback) => {
+                        let fallback_status = fallback.status();
+                        let fallback_payload = fallback.json::<Value>().await.unwrap_or_else(|_| {
+                            serde_json::json!({"error": {"message": "Invalid response from upstream provider", "type": "upstream_error"}})
+                        });
+                        let retryable = is_retryable_upstream_status(&state, fallback_status, None);
+                        record_attempt(
+                            &state,
+                            &request_id,
+                            attempt,
+                            &fallback_provider_slug,
+                            &fallback_model,
+                            "chat",
+                            if fallback_status.is_success() {
+                                "success"
+                            } else {
+                                "failed"
+                            },
+                            fallback_payload["error"]["message"].as_str(),
+                            Some(fallback_status.as_u16() as i32),
+                            retryable,
+                            start_time,
+                        )
+                        .await;
+                        if retryable {
+                            register_provider_failure(
+                                &state,
+                                &fallback_provider_slug,
+                                &fallback_model,
+                                fallback_payload["error"]["message"]
+                                    .as_str()
+                                    .unwrap_or("retryable upstream error")
+                                    .to_owned(),
+                            )
+                            .await;
+                            continue;
                         }
-                        match fallback_request.send().await {
-                            Ok(fallback) => {
-                                let fallback_status = fallback.status();
-                                let fallback_payload = fallback.json::<Value>().await.unwrap_or_else(|_| {
-                                    serde_json::json!({"error": {"message": "Invalid response from upstream provider", "type": "upstream_error"}})
-                                });
-                                record_attempt(
-                                    &state,
-                                    &request_id,
-                                    2,
-                                    &fallback_provider_slug,
-                                    &fallback_model,
-                                    "chat",
-                                    if fallback_status.is_success() {
-                                        "success"
-                                    } else {
-                                        "failed"
-                                    },
-                                    fallback_payload["error"]["message"].as_str(),
-                                    Some(fallback_status.as_u16() as i32),
-                                    false,
-                                    start_time,
-                                )
-                                .await;
-                                record_response_usage(
-                                    &state,
-                                    &request_id,
-                                    usage_key_name,
-                                    &fallback_provider_slug,
-                                    &model,
-                                    "chat",
-                                    fallback_status.is_success(),
-                                    start_time,
-                                    &fallback_payload,
-                                    true,
-                                )
-                                .await;
-                                return response_with_request_id(
-                                    fallback_status,
-                                    fallback_payload,
-                                    &request_id,
-                                );
-                            }
-                            Err(fallback_error) => {
-                                record_attempt(
-                                    &state,
-                                    &request_id,
-                                    2,
-                                    &fallback_provider_slug,
-                                    &fallback_model,
-                                    "chat",
-                                    "failed",
-                                    Some(&fallback_error.to_string()),
-                                    None,
-                                    true,
-                                    start_time,
-                                )
-                                .await;
-                                register_provider_failure(
-                                    &state,
-                                    &fallback_provider_slug,
-                                    &fallback_model,
-                                    fallback_error.to_string(),
-                                )
-                                .await;
-                            }
-                        }
+                        record_response_usage(
+                            &state,
+                            &request_id,
+                            usage_key_name,
+                            &fallback_provider_slug,
+                            &model,
+                            "chat",
+                            fallback_status.is_success(),
+                            start_time,
+                            &fallback_payload,
+                            true,
+                        )
+                        .await;
+                        return response_with_request_id(
+                            fallback_status,
+                            fallback_payload,
+                            &request_id,
+                        );
+                    }
+                    Err(fallback_error) => {
+                        let reason = fallback_error.to_string();
+                        record_attempt(
+                            &state,
+                            &request_id,
+                            attempt,
+                            &fallback_provider_slug,
+                            &fallback_model,
+                            "chat",
+                            "failed",
+                            Some(&reason),
+                            None,
+                            true,
+                            start_time,
+                        )
+                        .await;
+                        register_provider_failure(
+                            &state,
+                            &fallback_provider_slug,
+                            &fallback_model,
+                            reason,
+                        )
+                        .await;
                     }
                 }
             }
@@ -3570,6 +3590,91 @@ mod tests {
             "status={status:?} body={body}"
         );
         assert_eq!(body["content"][0]["text"], "ok");
+    }
+
+    #[tokio::test]
+    async fn chat_failover_advances_through_every_candidate_after_transport_failures() {
+        let third = inference_mock(
+            "200 OK",
+            "application/json",
+            r#"{"id":"chat-1","model":"model-c","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+        );
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "model".to_owned(),
+            crate::state::ModelConfig {
+                target_groups: vec![crate::state::ModelTargetGroup {
+                    name: "fallback".into(),
+                    selector: "sequential".into(),
+                    targets: vec![
+                        crate::state::ModelTarget {
+                            provider: Some("first".into()),
+                            model: Some("model-a".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                        crate::state::ModelTarget {
+                            provider: Some("second".into()),
+                            model: Some("model-b".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                        crate::state::ModelTarget {
+                            provider: Some("third".into()),
+                            model: Some("model-c".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        *state.inner.aliases.write().unwrap() = aliases;
+        state.inner.providers.write().unwrap().extend([
+            (
+                "first".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: "http://127.0.0.1:1/v1".into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "second".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: "http://127.0.0.1:2/v1".into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "third".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: third,
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::post("/v1/chat/completions")
+                    .header("x-api-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"model","messages":[{"role":"user","content":"hi"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(body["choices"][0]["message"]["content"], "ok");
     }
 
     fn inference_mock(status: &str, content_type: &str, body: &str) -> String {
