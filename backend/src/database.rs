@@ -60,14 +60,25 @@ pub async fn upsert_oauth_credential(
     refresh_token: &str,
     expires_at: i64,
 ) -> Result<(), sqlx::Error> {
+    let key = crate::credential_crypto::CredentialKey::from_env()
+        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+    let access_token =
+        crate::credential_crypto::encrypt(&key, provider, account, "access_token", access_token)
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+    let refresh_token =
+        crate::credential_crypto::encrypt(&key, provider, account, "refresh_token", refresh_token)
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+    let now = chrono::Utc::now().timestamp_millis();
     sqlx::query("INSERT INTO oauth_credentials (oauth_provider_type,account_id,access_token,refresh_token,expires_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$6) ON CONFLICT (oauth_provider_type,account_id) DO UPDATE SET access_token=EXCLUDED.access_token,refresh_token=EXCLUDED.refresh_token,expires_at=EXCLUDED.expires_at,updated_at=EXCLUDED.updated_at")
         .bind(provider).bind(account).bind(access_token).bind(refresh_token)
-        .bind(expires_at).execute(pool).await.map(|_| ())
+        .bind(expires_at).bind(now).execute(pool).await.map(|_| ())
 }
 
 pub async fn load_oauth_credentials(
     pool: &PgPool,
 ) -> Result<Vec<(String, String, String, String, i64)>, sqlx::Error> {
+    let key = crate::credential_crypto::CredentialKey::from_env()
+        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
     let rows = sqlx::query(
         "SELECT oauth_provider_type, account_id, access_token, refresh_token, expires_at FROM oauth_credentials",
     )
@@ -75,11 +86,31 @@ pub async fn load_oauth_credentials(
     .await?;
     rows.into_iter()
         .map(|row| {
+            let provider: String = row.try_get("oauth_provider_type")?;
+            let account: String = row.try_get("account_id")?;
+            let access: String = row.try_get("access_token")?;
+            let refresh: String = row.try_get("refresh_token")?;
+            let access = crate::credential_crypto::decrypt(
+                &key,
+                &provider,
+                &account,
+                "access_token",
+                &access,
+            )
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+            let refresh = crate::credential_crypto::decrypt(
+                &key,
+                &provider,
+                &account,
+                "refresh_token",
+                &refresh,
+            )
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
             Ok((
-                row.try_get("oauth_provider_type")?,
-                row.try_get("account_id")?,
-                row.try_get("access_token")?,
-                row.try_get("refresh_token")?,
+                provider,
+                account,
+                access,
+                refresh,
                 row.try_get("expires_at")?,
             ))
         })

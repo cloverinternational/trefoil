@@ -61,12 +61,15 @@ pub fn router() -> Router<AppState> {
 /// Poll enabled provider custom checkers in the background.
 pub fn start_poller(state: AppState) {
     tokio::spawn(async move {
-        let mut last_checked = std::collections::HashMap::<(String, String), tokio::time::Instant>::new();
+        let mut last_checked =
+            std::collections::HashMap::<(String, String), tokio::time::Instant>::new();
         loop {
             let providers = state.inner.providers.read().unwrap().clone();
             let delay = Duration::from_secs(1);
             for (provider, config) in providers {
-                if !config.enabled { continue; }
+                if !config.enabled {
+                    continue;
+                }
                 let Some(quota) = config.quota_checker.filter(|q| q.enabled) else {
                     continue;
                 };
@@ -75,7 +78,13 @@ pub fn start_poller(state: AppState) {
                 };
                 let schedule_key = (provider.clone(), checker_id.clone());
                 let now = tokio::time::Instant::now();
-                if !checker_due(last_checked.get(&schedule_key).copied(), now, quota.interval) { continue; }
+                if !checker_due(
+                    last_checked.get(&schedule_key).copied(),
+                    now,
+                    quota.interval,
+                ) {
+                    continue;
+                }
                 last_checked.insert(schedule_key, now);
                 let result = if builtin(&checker_id) {
                     run_builtin_checker(&state, &checker_id, &provider, &quota.options).await
@@ -116,8 +125,15 @@ pub fn start_poller(state: AppState) {
     });
 }
 
-fn checker_due(last: Option<tokio::time::Instant>, now: tokio::time::Instant, minutes: u64) -> bool {
-    last.is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(minutes.max(1).saturating_mul(60)))
+fn checker_due(
+    last: Option<tokio::time::Instant>,
+    now: tokio::time::Instant,
+    minutes: u64,
+) -> bool {
+    last.is_none_or(|last| {
+        now.saturating_duration_since(last)
+            >= Duration::from_secs(minutes.max(1).saturating_mul(60))
+    })
 }
 
 fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
@@ -126,7 +142,9 @@ fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
         headers.get("x-admin-key").and_then(|v| v.to_str().ok()),
     ) {
         Some(Principal::Admin) => Ok(()),
-        Some(Principal::Limited { .. }) => Err(error(StatusCode::FORBIDDEN, "Admin privileges required")),
+        Some(Principal::Limited { .. }) => {
+            Err(error(StatusCode::FORBIDDEN, "Admin privileges required"))
+        }
         None => Err(error(StatusCode::UNAUTHORIZED, "Unauthorized")),
     }
 }
@@ -538,15 +556,13 @@ async fn run_builtin_checker(
         .database
         .as_ref()
         .ok_or("PostgreSQL is required for OAuth quota checks")?;
-    let token = sqlx::query_scalar::<_, String>(
-        "SELECT access_token FROM oauth_credentials WHERE oauth_provider_type=$1 AND account_id=$2",
-    )
-    .bind(oauth_provider)
-    .bind(account)
-    .fetch_optional(pool)
-    .await
-    .map_err(|_| "failed to load OAuth credentials".to_string())?
-    .ok_or_else(|| format!("OAuth credentials not found for {oauth_provider}/{account}"))?;
+    let token = crate::database::load_oauth_credentials(pool)
+        .await
+        .map_err(|_| "failed to load OAuth credentials".to_string())?
+        .into_iter()
+        .find(|(provider, candidate, _, _, _)| provider == oauth_provider && candidate == account)
+        .map(|(_, _, access, _, _)| access)
+        .ok_or_else(|| format!("OAuth credentials not found for {oauth_provider}/{account}"))?;
     fetch_builtin_meters(id, endpoint, &token).await
 }
 
@@ -837,9 +853,21 @@ mod scheduling_tests {
     fn each_checker_obeys_its_own_minute_interval() {
         let start = tokio::time::Instant::now();
         assert!(checker_due(None, start, 30));
-        assert!(!checker_due(Some(start), start + Duration::from_secs(30), 30));
+        assert!(!checker_due(
+            Some(start),
+            start + Duration::from_secs(30),
+            30
+        ));
         assert!(checker_due(Some(start), start + Duration::from_secs(60), 1));
-        assert!(!checker_due(Some(start), start + Duration::from_secs(60), 30));
-        assert!(checker_due(Some(start), start + Duration::from_secs(1800), 30));
+        assert!(!checker_due(
+            Some(start),
+            start + Duration::from_secs(60),
+            30
+        ));
+        assert!(checker_due(
+            Some(start),
+            start + Duration::from_secs(1800),
+            30
+        ));
     }
 }

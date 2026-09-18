@@ -6,6 +6,7 @@ pub mod codex_masking;
 pub mod concurrency;
 pub mod config_routes;
 pub mod cooldowns;
+pub mod credential_crypto;
 pub mod custom_checkers;
 pub mod database;
 pub mod debug;
