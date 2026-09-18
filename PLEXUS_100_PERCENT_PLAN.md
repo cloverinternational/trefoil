@@ -351,7 +351,7 @@ fixtures per `parity/README.md`, not wired into CI).
 
 Using the 12 plan areas with equal weight, and scoring partial areas by
 checked capability items rather than route count, the current estimate is
-**approximately 89%**. This is a progress metric, not a claim of drop-in
+**approximately 90%**. This is a progress metric, not a claim of drop-in
 compatibility. Remaining risk is concentrated in provider-specific OAuth
 exchanges, complete dispatch cancellation/attempt-history semantics,
 custom-checker runtime parity, MCP edge cases, frontend browser coverage,
@@ -359,8 +359,8 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** 203 passing (`cargo test --all-targets`).
-- **Frontend:** typecheck, build, and 23 Vitest tests pass, including OAuth
+- **Backend tests:** 206 passing (`cargo test --all-targets`).
+- **Frontend:** typecheck, build, and 26 Vitest tests pass, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
@@ -374,7 +374,8 @@ and repeatable differential CI.
 
 The checklist is capability-based: a checked route means the route exists and
 has real behavior, not that every Plexus edge case or frontend test has been
-ported. Registered differential cases are coverage inventory, not evidence of
+ported. The unified gate now emits lane-level JSON reports and preserves the
+first failing lane exit code; a live run remains environment-dependent. Registered differential cases are coverage inventory, not evidence of
 an end-to-end pass until the live runner is executed.
 
 ## Latest progress

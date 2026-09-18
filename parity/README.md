@@ -15,8 +15,13 @@ From the repository root, run the complete validation gate:
 
 It runs, in order, `cargo test --all-targets`, the frontend Vitest suite,
 frontend typechecking, the frontend production build, and `parity/run.sh`.
-The command is fail-fast: the first failing lane determines the non-zero exit
-status, and each successful lane is labelled in the output. It does not install
+Every lane runs even when an earlier lane fails. The command exits non-zero
+using the first failing lane's status, while the remaining results are still
+reported. A machine-readable JSON report is written atomically to
+`target/parity-report.json`; set `PARITY_REPORT=/path/to/report.json` to change
+the destination. Each report lane includes its stable ordinal, command, status,
+exit code, duration, and captured stdout/stderr. A report-write failure is also
+fatal, but never replaces an existing lane failure. It does not install
 dependencies; run `npm ci` in `frontend` and install Bun/Cargo/Docker first.
 All environment overrides documented below are passed through to the harness.
 
