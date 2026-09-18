@@ -417,6 +417,7 @@ async fn forwarded_request(
     let payload = if status.is_success() && (path == "/v0/management/config" || path == "/v0/management/config/export") {
         redact_key_secrets(payload)
     } else { payload };
+    let payload = if status.is_success() && path == "/v0/management/user-quotas" && operation == "list" { record_list(payload) } else { payload };
     let result = if status.is_success() {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -886,9 +887,7 @@ async fn quota_operation(
                     json!({"structuredContent":{"ok":false,"operation":operation,"error":{"message":"Confirmation required","type":"confirmation_required","code":400}},"content":[{"type":"text","text":"Confirmation required"}],"isError":true}),
                 );
             }
-            let Some(body) = args.get("body") else {
-                return rpc_error(id, -32602, "body is required");
-            };
+            let body = args.get("body").cloned().unwrap_or_else(|| json!({}));
             (
                 "POST",
                 format!("/v0/management/quota/{operation}"),
@@ -1041,6 +1040,7 @@ async fn model_alias_operation(
     let payload: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
             .unwrap_or_else(|_| json!({"error":"Invalid alias response"}));
+    let payload = if ok && operation == "list" { record_list(payload) } else { payload };
     let result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -1050,6 +1050,17 @@ async fn model_alias_operation(
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
     )
+}
+
+fn record_list(payload: Value) -> Value {
+    match payload {
+        Value::Object(records) => Value::Array(records.into_iter().map(|(id, value)| {
+            let mut object = value.as_object().cloned().unwrap_or_else(|| serde_json::Map::from_iter([("value".into(), value)]));
+            object.insert("id".into(), Value::String(id));
+            Value::Object(object)
+        }).collect()),
+        other => other,
+    }
 }
 
 fn redact_provider(provider: &crate::state::ProviderConfig) -> Value {
@@ -1140,6 +1151,7 @@ async fn key_operation(
     } else {
         payload
     };
+    let payload = if ok && operation == "list" { record_list(payload) } else { payload };
     let result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -1271,6 +1283,7 @@ async fn mcp_gateway_operation(
     let payload: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
             .unwrap_or_else(|_| json!({"error": "Invalid MCP gateway response"}));
+    let payload = if ok && matches!(operation, "list" | "servers_list") { record_list(payload) } else { payload };
     let result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -1947,5 +1960,15 @@ mod redaction_regression_tests {
         );
         assert_eq!(nested["safe"], "keep");
         assert!(!nested.to_string().contains("private"));
+    }
+}
+
+#[cfg(test)]
+mod collection_contract_tests {
+    use super::*;
+    #[test]
+    fn record_collections_become_id_bearing_arrays() {
+        assert_eq!(record_list(json!({})), json!([]));
+        assert_eq!(record_list(json!({"alpha":{"enabled":true}})), json!([{"id":"alpha","enabled":true}]));
     }
 }
