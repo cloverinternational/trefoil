@@ -52,6 +52,7 @@ pub fn router() -> Router<AppState> {
 
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 const MAX_ENTRY_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_UNCOMPRESSED_BACKUP_BYTES: u64 = 512 * 1024 * 1024;
 
 async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     match resolve_principal(
@@ -106,21 +107,23 @@ async fn restore_archive(
     use flate2::read::GzDecoder;
     let mut archive = tar::Archive::new(GzDecoder::new(input));
     let mut files = HashMap::new();
+    let mut total_size = 0u64;
     for item in archive.entries().map_err(|e| e.to_string())? {
         let mut entry = item.map_err(|e| e.to_string())?;
         let path = entry.path().map_err(|e| e.to_string())?.to_path_buf();
         let name = path.to_str().ok_or("invalid archive path")?.to_string();
-        if path.components().count() != 1
-            || !(name == "manifest.json"
-                || name == "config.json"
-                || TABLES.iter().any(|t| name == format!("{t}.csv.gz")))
-            || entry.size() > MAX_ENTRY_BYTES
-            || files.contains_key(&name)
-        {
+        if !valid_archive_entry(
+            &path,
+            entry.header().entry_type(),
+            entry.size(),
+            total_size,
+            files.contains_key(&name),
+        ) {
             return Err("unsafe, unknown, duplicate, or oversized archive entry".into());
         }
         let mut data = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut data).map_err(|e| e.to_string())?;
+        total_size += data.len() as u64;
         files.insert(name, data);
     }
     let manifest: serde_json::Value = serde_json::from_slice(
@@ -169,13 +172,37 @@ async fn restore_archive(
     Ok(counts)
 }
 
+fn valid_archive_entry(
+    path: &std::path::Path,
+    entry_type: tar::EntryType,
+    size: u64,
+    total_size: u64,
+    duplicate: bool,
+) -> bool {
+    let Some(name) = path.to_str() else {
+        return false;
+    };
+    entry_type.is_file()
+        && path.components().count() == 1
+        && (name == "manifest.json"
+            || name == "config.json"
+            || TABLES.iter().any(|table| name == format!("{table}.csv.gz")))
+        && size <= MAX_ENTRY_BYTES
+        && total_size.saturating_add(size) <= MAX_UNCOMPRESSED_BACKUP_BYTES
+        && !duplicate
+}
+
 fn parse_csv(data: &[u8]) -> Result<Vec<serde_json::Map<String, serde_json::Value>>, String> {
     use flate2::read::GzDecoder;
     use std::io::Read;
     let mut text = String::new();
     GzDecoder::new(data)
+        .take(MAX_ENTRY_BYTES + 1)
         .read_to_string(&mut text)
         .map_err(|_| "invalid compressed CSV")?;
+    if text.len() as u64 > MAX_ENTRY_BYTES {
+        return Err("compressed CSV expands beyond entry limit".into());
+    }
     let mut reader = csv::Reader::from_reader(text.as_bytes());
     let headers = reader.headers().map_err(|_| "invalid CSV headers")?.clone();
     let mut rows = Vec::new();
@@ -377,6 +404,60 @@ fn append_bytes<W: Write>(
     header.set_mode(0o600);
     header.set_cksum();
     archive.append_data(&mut header, name, data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_archive_entry;
+    use std::path::Path;
+
+    #[test]
+    fn rejects_traversal_links_duplicates_and_oversized_entries() {
+        assert!(valid_archive_entry(
+            Path::new("config.json"),
+            tar::EntryType::Regular,
+            10,
+            0,
+            false
+        ));
+        for path in ["../config.json", "/config.json", "nested/config.json"] {
+            assert!(!valid_archive_entry(
+                Path::new(path),
+                tar::EntryType::Regular,
+                10,
+                0,
+                false
+            ));
+        }
+        assert!(!valid_archive_entry(
+            Path::new("config.json"),
+            tar::EntryType::Symlink,
+            10,
+            0,
+            false
+        ));
+        assert!(!valid_archive_entry(
+            Path::new("config.json"),
+            tar::EntryType::Regular,
+            10,
+            0,
+            true
+        ));
+        assert!(!valid_archive_entry(
+            Path::new("config.json"),
+            tar::EntryType::Regular,
+            super::MAX_ENTRY_BYTES + 1,
+            0,
+            false
+        ));
+        assert!(!valid_archive_entry(
+            Path::new("config.json"),
+            tar::EntryType::Regular,
+            1,
+            super::MAX_UNCOMPRESSED_BACKUP_BYTES,
+            false
+        ));
+    }
 }
 
 fn csv_escape(value: &serde_json::Value) -> String {
