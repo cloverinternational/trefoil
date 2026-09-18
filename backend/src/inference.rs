@@ -3298,4 +3298,135 @@ mod tests {
         );
         assert_eq!(body["content"][0]["text"], "ok");
     }
+
+    fn inference_mock(status: &str, content_type: &str, body: &str) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let status = status.to_owned();
+        let content_type = content_type.to_owned();
+        let body = body.to_owned();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        format!("http://{address}/v1")
+    }
+
+    fn provider_state(api_base_url: String) -> AppState {
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        state.inner.providers.write().unwrap().insert(
+            "mock".into(),
+            crate::state::ProviderConfig {
+                api_base_url,
+                ..Default::default()
+            },
+        );
+        state
+    }
+
+    #[tokio::test]
+    async fn chat_completions_forwards_to_provider_and_returns_json_contract() {
+        let state = provider_state(inference_mock(
+            "200 OK",
+            "application/json",
+            r#"{"id":"chat-1","model":"mock-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}"#,
+        ));
+        let response = router().with_state(state).oneshot(
+            Request::post("/v1/chat/completions")
+                .header("x-api-key", "admin")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"mock/mock-model","messages":[{"role":"user","content":"hi"}]}"#))
+                .unwrap(),
+        ).await.unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["choices"][0]["message"]["content"], "hello");
+        assert_eq!(body["usage"]["completion_tokens"], 1);
+    }
+
+    #[tokio::test]
+    async fn chat_completions_stream_preserves_sse_chunks_and_done_marker() {
+        let state = provider_state(inference_mock(
+            "200 OK",
+            "text/event-stream",
+            r#"data: {"id":"chat-1","choices":[{"delta":{"content":"hel"}}]}
+
+data: {"choices":[{"delta":{"content":"lo"}}]}
+
+data: [DONE]
+
+"#,
+        ));
+        let response = router().with_state(state).oneshot(
+            Request::post("/v1/chat/completions")
+                .header("x-api-key", "admin")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"mock/mock-model","stream":true,"messages":[{"role":"user","content":"hi"}]}"#))
+                .unwrap(),
+        ).await.unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        let body = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains("\"content\":\"hel\""));
+        assert!(body.contains("data: [DONE]"));
+    }
+
+    #[tokio::test]
+    async fn embeddings_and_completions_forward_successful_provider_payloads() {
+        for (path, request_body, expected) in [
+            (
+                "/v1/embeddings",
+                r#"{"model":"mock/mock-model","input":"hi"}"#,
+                "embedding",
+            ),
+            (
+                "/v1/completions",
+                r#"{"model":"mock/mock-model","prompt":"hi"}"#,
+                "completion",
+            ),
+        ] {
+            let payload = format!(r#"{{"object":"{expected}","model":"mock-model","choices":[]}}"#);
+            let state = provider_state(inference_mock("200 OK", "application/json", &payload));
+            let response = router()
+                .with_state(state)
+                .oneshot(
+                    Request::post(path)
+                        .header("x-api-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(request_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let body: Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(body["object"], expected);
+        }
+    }
 }
