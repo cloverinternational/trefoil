@@ -363,10 +363,11 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** `cargo test --all-targets` passes 256 tests, including
-  image-generation, image-edit, speech, and transcription failover ordering,
-  terminal failure behavior, and disabled-failover limits.
-- **Frontend:** typecheck, build, and 34 Vitest tests pass across 8 files, including OAuth
+- **Backend tests:** `cargo test --all-targets` passes 257 tests, including
+  OAuth cancellation cleanup and late-callback rejection, image-generation,
+  image-edit, speech, and transcription failover ordering, terminal failure
+  behavior, and disabled-failover limits.
+- **Frontend:** typecheck, build, and 38 Vitest tests pass across 8 files, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image generation, image edit, audio speech, and
@@ -390,8 +391,9 @@ and repeatable differential CI.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation,
   and provider login-session persistence/PKCE URL generation are implemented.
-  New deterministic tests cover persistence redaction and one-time callback
-  verifier consumption; provider-specific exchanges and masking remain partial.
+  New deterministic tests cover persistence redaction, one-time callback
+  verifier consumption, and rejection of callbacks after cancellation;
+  provider-specific exchanges and masking remain partial.
 - **Observability:** Prometheus metrics, usage SSE, and system-log SSE routes are implemented.
 
 The checklist is capability-based: a checked route means the route exists and

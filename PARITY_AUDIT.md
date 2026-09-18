@@ -128,7 +128,7 @@ external and both repositories continue to change. A successful command emits
 `target/parity-counts.json` when redirected as shown above; its `inputs` hashes
 provide source-to-count traceability.
 
-At this revision (`895bbf7`, reference `31b09ce`), the command produced:
+At this revision (`af9de44`, reference `31b09ce`), the command produced:
 
 | Input-derived measure | Count |
 |---|---:|
@@ -142,7 +142,7 @@ These are inventory measures, not a claim that every route or case is
 behaviorally complete. The JSON output is the fixture for this table and
 includes hashes and revisions needed to detect drift.
 
-- [x] 257/257 Rust tests pass (`cargo test --all-targets`, <1s), including OAuth cancellation cleanup, generic non-chat, image-generation, image-edit, speech, and transcription failover, disabled media failover limits, custom-checker runtime coverage, and MCP system-log round trips (`backend/src/oauth.rs`: `cancelling_session_cleans_up_pkce_verifier_and_is_terminal`).
+- [x] 257/257 Rust tests pass (`cargo test --all-targets`, <1s), including OAuth cancellation cleanup and late-callback rejection, generic non-chat, image-generation, image-edit, speech, and transcription failover, disabled media failover limits, custom-checker runtime coverage, and MCP system-log round trips (`backend/src/oauth.rs`: `cancelling_session_cleans_up_pkce_verifier_and_is_terminal`).
 - [historical] 156 route entries confirmed live in `lib.rs`/module routers.
 - [x] Backup table list is an exact 13-table match to Plexus.
 - [x] Backup/restore parity cases cover config-only and full export responses,
@@ -192,7 +192,7 @@ includes hashes and revisions needed to detect drift.
       and `usesCallbackServer` fields.
 - [x] OAuth cancellation cleanup — cancelling an active session marks it
       terminal, removes its one-shot in-memory PKCE verifier on success, and
-      rejects repeated cancellation with conflict; covered by
+      rejects late callbacks and repeated cancellation with conflict; covered by
       `oauth::tests::cancelling_session_cleans_up_pkce_verifier_and_is_terminal`.
 - [historical] Differential harness MCP/custom-checker lane run end-to-end
       against live Plexus + Trefoil; all 302 cases matched at the prior

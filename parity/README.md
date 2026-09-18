@@ -144,7 +144,8 @@ verifier survives session persistence without entering the API response, and
 callback consumes the process-local verifier. The cancellation test
 `oauth::tests::cancelling_session_cleans_up_pkce_verifier_and_is_terminal`
 verifies successful cancellation removes the one-shot verifier and makes the
-session terminal, including conflict on repeated cancellation. Migration `0086`
+session terminal, rejects a late callback with conflict, and rejects repeated
+cancellation with conflict. Migration `0086`
 and the startup session loader cover recovery of the persisted verifier after a
 restart.
 
@@ -179,7 +180,7 @@ Since that live run, the MCP admin shim has added configuration operations for
 MCP enablement, timeout, compaction, exploration/failover/cooldown, tracing,
 stall, vision fallthrough, background exploration, and trusted proxies, plus
 system-log level and module operations. These milestones are verified by the
-Rust unit suite at revision `895bbf7` (`cargo test --all-targets`: 257 passed),
+Rust unit suite at revision `af9de44` (`cargo test --all-targets`: 257 passed),
 but are not yet represented by a newer live differential-run claim.
 
 Media failover has deterministic backend evidence in
