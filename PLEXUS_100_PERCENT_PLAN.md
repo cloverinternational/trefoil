@@ -259,7 +259,7 @@ how Plexus's `configuration.ts` shim wraps its own REST route handlers.
 
 ---
 
-## 9. Vision descriptor generation — 🔴 not started (currently a truthful no-op)
+## 9. Vision descriptor generation — 🟡 partial
 
 `/v0/management/cache/vision-descriptor/clear` exists but clears nothing,
 because vision descriptors are never generated in the first place. Reference:
@@ -268,13 +268,13 @@ textual descriptions of image inputs for providers/models that need
 image-to-text fallback (`vision_fallthrough` config, which Trefoil *does*
 already store/validate).
 
-- [ ] Implement descriptor generation triggered by `vision_fallthrough`
+- [x] Implement descriptor generation triggered by `vision_fallthrough`
       config on non-vision-capable target models.
-- [ ] Wire the cache clear endpoint to actually clear it.
+- [x] Wire the cache clear endpoint to actually clear it.
 
 ---
 
-## 10. Compaction execution — 🟡 unverified
+## 10. Compaction execution — 🟡 partial
 
 Config CRUD (`GET`/`PATCH /v0/management/config/compaction`) is implemented
 and validated in `config_routes.rs`, but whether the inference path actually
@@ -283,9 +283,8 @@ not confirmed in this audit — needs a direct code check against
 `services/compaction/compaction-service.ts` (265 lines) +
 `headroom-compactor.ts` (320 lines) equivalence.
 
-- [ ] Verify/implement compaction application in the request pipeline before
-      dispatch, for both `native` (provider-side truncation) and `headroom`
-      (external compaction service call) strategies.
+- [x] Implement native and local headroom compaction application before dispatch.
+- [ ] External LLM-based headroom compaction remains unsupported and explicit.
 
 ---
 
@@ -329,7 +328,7 @@ Missing pages (each needs its own API adapter + component + tests):
 
 ---
 
-## 12. Differential harness — run it, don't just extend it
+## 12. Differential harness — 🟡 partial
 
 `parity/differential.ts` has ~275 named cases but this audit did not confirm
 they currently pass end-to-end (requires two live servers + Postgres
@@ -338,7 +337,7 @@ fixtures per `parity/README.md`, not wired into CI).
 - [ ] Wire a CI job (or at minimum a documented one-shot script) that boots
       Plexus + Trefoil + Postgres, provisions fixtures, and runs
       `bun run parity/differential.ts`, failing the build on any diff.
-- [ ] Add differential cases for every route ported under items #1–#9 above
+- [~] Add differential cases for every route ported under items #1–#9 above
       as they land — the harness is the acceptance gate, not a checklist to
       backfill later.
 - [ ] Add differential cases for the admin MCP shim (`tools/call` for each
@@ -351,24 +350,25 @@ fixtures per `parity/README.md`, not wired into CI).
 
 Using the 12 plan areas with equal weight, and scoring partial areas by
 checked capability items rather than route count, the current estimate is
-**approximately 82%**. This is a progress metric, not a claim of drop-in
+**approximately 86%**. This is a progress metric, not a claim of drop-in
 compatibility: several high-complexity unchecked items (provider-specific
 OAuth/masking, exact dispatch cancellation/retry policy, vision/compaction,
 frontend browser tests, and differential CI) still carry substantial risk.
 
 ## Current verified status
 
-- **Backend tests:** 174 passing.
-- **Frontend:** typecheck, build, and 18 Vitest tests pass, including OAuth
+- **Backend tests:** 199 passing.
+- **Frontend:** typecheck, build, and 26 Vitest tests pass, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
+- **Differential harness:** 283/283 currently-covered cases passed live after inference auth/validation parity fixes.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.
 - **Observability:** Prometheus metrics, usage SSE, and system-log SSE routes are implemented.
 
-The checklist is capability-based: a checked route means the route exists and has real behavior, not that every Plexus edge case or frontend test has been ported.
+The checklist is capability-based: a checked route means the route exists and has real behavior, not that every Plexus edge case or frontend test has been ported. The 283/283 live pass covers the currently registered cases; broader inference and MCP edge-case coverage remains in progress.
 
 ## Latest progress
 

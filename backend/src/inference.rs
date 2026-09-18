@@ -1581,6 +1581,9 @@ async fn embeddings(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    if let Err(response) = authenticate(&state, &headers) {
+        return response;
+    }
     if body.get("input").is_none() {
         return error_response(
             axum::http::StatusCode::BAD_REQUEST,
@@ -1603,14 +1606,25 @@ fn auth_error(status: axum::http::StatusCode, message: &'static str) -> Response
 
 #[allow(clippy::result_large_err)] // Route handlers return Axum responses directly on auth failure.
 fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Principal, Response> {
+    if !headers.contains_key("authorization") && !headers.contains_key("x-api-key") {
+        return Err(auth_error(
+            axum::http::StatusCode::UNAUTHORIZED,
+            "missing authorization header",
+        ));
+    }
     let key = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()))
-        .or_else(|| headers.get("x-admin-key").and_then(|v| v.to_str().ok()));
-    resolve_principal(state, key)
-        .ok_or_else(|| auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized"))
+        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
+    match resolve_principal(state, key) {
+        Some(principal) if headers.contains_key("x-api-key") => Ok(principal),
+        Some(Principal::Limited { key_name, config }) => Ok(Principal::Limited { key_name, config }),
+        Some(Principal::Admin) | None => Err(auth_error(
+            axum::http::StatusCode::UNAUTHORIZED,
+            "invalid authorization header",
+        )),
+    }
 }
 
 async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -2976,7 +2990,7 @@ mod tests {
             .unwrap()
             .insert("gpt-4o-alias".into(), Default::default());
         let request = Request::get("/v1/models")
-            .header("Authorization", "Bearer admin")
+            .header("x-api-key", "admin")
             .body(Body::empty())
             .unwrap();
         let response = router().with_state(state).oneshot(request).await.unwrap();
