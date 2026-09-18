@@ -128,6 +128,13 @@ pub fn parse_refresh_response(
     if old_refresh_token.is_empty() {
         return Err("refresh token is unavailable");
     }
+    let expires_at_ms = now_ms
+        .checked_add(
+            expires_in
+                .checked_mul(1000)
+                .ok_or("refresh expiry is too large")?,
+        )
+        .ok_or("refresh expiry is too large")?;
     Ok(RefreshedToken {
         access_token: access_token.to_owned(),
         refresh_token: payload
@@ -136,7 +143,7 @@ pub fn parse_refresh_response(
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(old_refresh_token)
             .to_owned(),
-        expires_at_ms: now_ms.saturating_add(expires_in.saturating_mul(1000)),
+        expires_at_ms,
     })
 }
 
@@ -168,6 +175,18 @@ mod tests {
             &serde_json::json!({"access_token":"secret","expires_in":1}),
             "",
             0
+        )
+        .is_err());
+        assert!(parse_refresh_response(
+            &serde_json::json!({"access_token":"new","expires_in":i64::MAX}),
+            "old",
+            0
+        )
+        .is_err());
+        assert!(parse_refresh_response(
+            &serde_json::json!({"access_token":"new","expires_in":1}),
+            "old",
+            i64::MAX
         )
         .is_err());
     }
