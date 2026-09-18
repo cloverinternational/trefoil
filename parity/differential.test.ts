@@ -34,11 +34,17 @@ describe('differential reconciliation', () => {
       'case inventory reconciliation failed: missing: b; unexpected: replacement'
     );
     expect(() => reconcileCaseInventory(['a', 'a'], ['a', 'b'])).toThrow(
-      'case inventory reconciliation failed: missing: b'
+      'case inventory reconciliation failed: duplicate observed: a; missing: b'
     );
     expect(() => reconcileCaseInventory(['a', 'b'], ['a', 'a'])).toThrow(
       'case inventory reconciliation failed: duplicate registered: a; unexpected: b'
     );
     expect(() => reconcileCaseInventory(['a', 'b'], ['a', 'b'])).not.toThrow();
+  });
+
+  test('reports every inventory mismatch in deterministic order', () => {
+    expect(() => reconcileCaseInventory(['z', 'z', 'x'], ['b', 'a', 'b'])).toThrow(
+      'case inventory reconciliation failed: duplicate registered: b; duplicate observed: z; missing: a, b; unexpected: x, z'
+    );
   });
 });

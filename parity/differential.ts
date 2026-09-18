@@ -75,12 +75,15 @@ export function reconcileCaseCount(observed: number, expected = EXPECTED_CASE_CO
 export function reconcileCaseInventory(observed: string[], registered: string[]) {
   const registeredSet = new Set(registered);
   const observedSet = new Set(observed);
-  const duplicateRegistered = registered.filter((name, index) => registered.indexOf(name) !== index);
-  const missing = registered.filter((name) => !observedSet.has(name));
-  const unexpected = observed.filter((name) => !registeredSet.has(name));
-  if (duplicateRegistered.length || missing.length || unexpected.length || observed.length !== registered.length) {
+  const duplicateNames = (names: string[]) => [...new Set(names.filter((name, index) => names.indexOf(name) !== index))].sort();
+  const duplicateRegistered = duplicateNames(registered);
+  const duplicateObserved = duplicateNames(observed);
+  const missing = [...new Set(registered.filter((name) => !observedSet.has(name)))].sort();
+  const unexpected = [...new Set(observed.filter((name) => !registeredSet.has(name)))].sort();
+  if (duplicateRegistered.length || duplicateObserved.length || missing.length || unexpected.length || observed.length !== registered.length) {
     const details = [
-      duplicateRegistered.length ? `duplicate registered: ${[...new Set(duplicateRegistered)].join(', ')}` : '',
+      duplicateRegistered.length ? `duplicate registered: ${duplicateRegistered.join(', ')}` : '',
+      duplicateObserved.length ? `duplicate observed: ${duplicateObserved.join(', ')}` : '',
       missing.length ? `missing: ${missing.join(', ')}` : '',
       unexpected.length ? `unexpected: ${unexpected.join(', ')}` : '',
     ].filter(Boolean).join('; ');
@@ -88,8 +91,9 @@ export function reconcileCaseInventory(observed: string[], registered: string[])
   }
 }
 
-async function writeReport(status: 'complete' | 'incomplete') {
+async function writeReport(status: 'complete' | 'incomplete', error?: string) {
   const report = buildReport(caseResults, status);
+  if (error) report.error = error;
   const destination = Bun.file(REPORT_PATH);
   await Bun.write(destination, JSON.stringify(report, null, 2) + '\n');
 }
@@ -1551,8 +1555,14 @@ async function runCases(cases: KeysCase[]): Promise<number> {
       normalizeForCase(testCase.path, trefoil.body)
     );
     const pass = statusMatch && bodyMatch && contentTypeMatch;
+    const differences = [
+      !statusMatch ? `status (plexus ${plexus.status}, trefoil ${trefoil.status})` : '',
+      !contentTypeMatch ? `content-type (plexus ${plexus.contentType ?? '<missing>'}, trefoil ${trefoil.contentType ?? '<missing>'})` : '',
+      !bodyMatch ? 'response body' : '',
+    ].filter(Boolean);
     if (!pass) failures += 1;
-    recordCase({ name: testCase.name, status: pass ? 'pass' : 'fail', plexus_status: plexus.status, trefoil_status: trefoil.status });
+    recordCase({ name: testCase.name, status: pass ? 'pass' : 'fail', plexus_status: plexus.status, trefoil_status: trefoil.status,
+      ...(differences.length ? { error: `mismatch: ${differences.join(', ')}` } : {}) });
 
     console.log(`${pass ? 'PASS' : 'FAIL'} ${testCase.name}`);
     if (!pass) {
@@ -1604,8 +1614,13 @@ async function main() {
     const statusMatch = plexus.status === trefoil.status;
     const bodyMatch = deepEqual(normalize(plexus.body), normalize(trefoil.body));
     const pass = statusMatch && bodyMatch;
+    const differences = [
+      !statusMatch ? `status (plexus ${plexus.status}, trefoil ${trefoil.status})` : '',
+      !bodyMatch ? 'response body' : '',
+    ].filter(Boolean);
     if (!pass) failures += 1;
-    recordCase({ name: testCase.name, status: pass ? 'pass' : 'fail', plexus_status: plexus.status, trefoil_status: trefoil.status });
+    recordCase({ name: testCase.name, status: pass ? 'pass' : 'fail', plexus_status: plexus.status, trefoil_status: trefoil.status,
+      ...(differences.length ? { error: `mismatch: ${differences.join(', ')}` } : {}) });
 
     console.log(`${pass ? 'PASS' : 'FAIL'} ${testCase.name}`);
     if (!pass) {
@@ -1687,7 +1702,7 @@ async function main() {
   await writeReport('complete');
   console.log(`\nAll ${total} cases match.`);
   } catch (error) {
-    await writeReport('incomplete');
+    await writeReport('incomplete', String(error));
     console.error(`\nDifferential run incomplete: ${String(error)}`);
     process.exit(2);
   }
