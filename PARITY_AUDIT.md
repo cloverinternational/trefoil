@@ -128,7 +128,7 @@ external and both repositories continue to change. A successful command emits
 `target/parity-counts.json` when redirected as shown above; its `inputs` hashes
 provide source-to-count traceability.
 
-At this revision (`828c710`, reference `31b09ce`), the command produced:
+At this revision (`6962d85`, reference `31b09ce`), the command produced:
 
 | Input-derived measure | Count |
 |---|---:|
@@ -187,6 +187,10 @@ includes hashes and revisions needed to detect drift.
       disabled-failover edge case that forbids a fallback attempt.
 - [x] Unified verification gate — backend/frontend lanes pass, and OAuth
       provider discovery matches the reference wire shape.
+- [x] Differential report evidence — four Bun tests cover deterministic report
+      ordering/counts, incomplete-run missing-case accounting, duplicate case
+      rejection, and exact inventory reconciliation; the live harness performs
+      the same inventory check before writing a complete report.
 - [x] OAuth provider discovery shape — Trefoil omits the internal
       `capabilities` metadata that Plexus omits, preserving provider ordering
       and `usesCallbackServer` fields.

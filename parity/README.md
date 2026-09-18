@@ -104,6 +104,13 @@ shape difference. That historical run is not evidence that the current 313
 registered cases passed. Provider-backed success and SSE cases still require
 an explicitly configured disposable upstream as described above.
 
+The report/reconciliation contract is covered by four deterministic Bun tests
+in `parity/differential.test.ts`: stable case sorting and status counts,
+incomplete-run missing-case accounting, duplicate-name rejection, and exact
+inventory reconciliation. The harness also reconciles the registered case
+inventory before declaring a live run complete, so an inventory drift cannot
+produce a falsely complete report.
+
 The deterministic backend suite currently passes 258 tests plus four
 subprocess integration tests, including
 `mcp_stdio::tests::request_and_notification_preserve_stdio_wire_contract`,
