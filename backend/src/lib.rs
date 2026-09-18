@@ -20,6 +20,7 @@ pub mod mcp_oauth;
 pub mod mcp_plexus;
 pub mod mcp_proxy;
 pub mod mcp_stdio;
+pub mod metadata;
 pub mod metrics;
 pub mod oauth;
 pub mod oauth_masking;

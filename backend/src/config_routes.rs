@@ -136,7 +136,8 @@ async fn refresh_metadata(State(state): State<AppState>, headers: HeaderMap) -> 
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    Json(serde_json::json!({"success":true,"refreshed":false})).into_response()
+    Json(crate::metadata::refresh(crate::metadata::SourceUrls::default(), "manual").await)
+        .into_response()
 }
 
 async fn get_compaction(State(state): State<AppState>, headers: HeaderMap) -> Response {
