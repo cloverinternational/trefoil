@@ -125,3 +125,21 @@ async fn encrypted_openrouter_key_is_used_by_real_inference_dispatch() {
     let response=trefoil_backend::app(state).oneshot(Request::post("/v1/chat/completions").header("x-api-key","admin").header("content-type","application/json").body(Body::from(r#"{"model":"oauth/model","messages":[{"role":"user","content":"hello"}]}"#)).unwrap()).await.unwrap();
     assert_eq!(response.status(),StatusCode::OK);server.abort();
 }
+
+#[tokio::test]
+#[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL"]
+async fn checker_snapshots_persist_reported_utilization_and_iso_reset() {
+    use axum::{body::Body,http::{Request,StatusCode}};
+    use tower::ServiceExt;
+    let pool=database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
+    database::migrate(&pool).await.unwrap();
+    let state=trefoil_backend::AppState::new(Some("admin".into()),Default::default()).with_database(pool.clone());
+    state.inner.providers.write().unwrap().insert("fixture".into(),Default::default());
+    let body=serde_json::json!({"provider":"fixture","code":"return [{key:'meter',kind:'allowance',unit:'percentage',used:25,remaining:75,utilizationPercent:25,status:'ok',resetsAt:'2026-09-18T12:00:00Z'}]"});
+    let response=trefoil_backend::app(state).oneshot(Request::post("/v0/management/custom-checkers/fixture-checker/check").header("x-admin-key","admin").header("content-type","application/json").body(Body::from(body.to_string())).unwrap()).await.unwrap();
+    assert_eq!(response.status(),StatusCode::OK);
+    let row=sqlx::query("SELECT utilization_state,utilization_percent,resets_at FROM meter_snapshots WHERE checker_id='fixture-checker' AND meter_key='meter'").fetch_one(&pool).await.unwrap();
+    assert_eq!(row.get::<String,_>("utilization_state"),"reported");
+    assert_eq!(row.get::<f32,_>("utilization_percent"),25.0);
+    assert_eq!(row.get::<i64,_>("resets_at"),1789732800000);
+}
