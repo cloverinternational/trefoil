@@ -120,9 +120,7 @@ To port:
 
 ## 4. Custom quota checkers — 🟡 partial
 
-No `custom_checkers` table, no CRUD, no execution engine. Trefoil's
-`quota_checkers` endpoint returns a hardcoded mirror of Plexus's *built-in*
-checker types and an always-empty `configured: []`.
+Custom checker persistence, CRUD, validation, sandboxed execution, history, and scheduling are implemented. Remaining parity is concentrated in built-in provider checker upstream calls and exact result semantics.
 
 Plexus reference: `services/quota/checker-registry.ts` (311 lines),
 `services/quota/custom-checker-runtime.ts`, `checkers/claude-code-checker.ts`
@@ -178,7 +176,7 @@ set:
 | `plexus_debug` | state | 1/1 |
 | `plexus_operations` | backup, restore, refresh_metadata, list_cooldowns, clear_cooldowns | 5/5 |
 
-To port: **~48 remaining operations.** Since every underlying management
+The listed operation adapters are implemented; remaining work is exact edge-case and exhaustive differential parity. Since every underlying management
 route already exists as a REST handler (aliases.rs, keys.rs, providers.rs,
 etc.), the fastest path is thin adapters that call the same internal
 functions the REST routes call, rather than reimplementing logic — mirrors
@@ -380,7 +378,7 @@ an end-to-end pass until the live runner is executed.
 
 ## Latest progress
 
-The completed work is recorded above; unchecked items remain intentionally open until directly verified by tests or source comparison. The current strongest remaining work items are provider-specific OAuth/masking, shared dispatch extraction/cancellation semantics, built-in custom checkers, MCP shim edge cases, frontend browser tests, and differential CI.
+The completed work is recorded above; unchecked items remain intentionally open until directly verified by tests or source comparison. The current strongest remaining work items are provider-specific OAuth exchanges/masking, shared dispatch extraction/cancellation semantics, built-in checker upstream calls, external LLM compaction, MCP edge cases, frontend browser tests, and differential CI.
 
 ## Suggested order of attack
 
