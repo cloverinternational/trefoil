@@ -1756,6 +1756,7 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
     use tower::ServiceExt;
 
     async fn body(response: axum::response::Response) -> Value {
@@ -1786,6 +1787,11 @@ mod tests {
         providers.insert("alpha".into(), Default::default());
         drop(providers);
         state
+    }
+
+    fn logging_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
     }
 
     #[tokio::test]
@@ -1896,6 +1902,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_logs_set_level_accepts_body_and_validates_level() {
+        let _lock = logging_test_lock();
         let response = body(
             dispatch(
                 &state(),
@@ -1930,6 +1937,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_logs_level_operations_round_trip_through_management_router() {
+        let _lock = logging_test_lock();
         let changed = body(
             dispatch(
                 &state(),
@@ -1974,6 +1982,60 @@ mod tests {
         let reset_data = &reset["result"]["structuredContent"]["data"];
         assert_eq!(reset["result"]["structuredContent"]["ok"], true);
         assert_eq!(reset_data["level"], reset_data["startupLevel"]);
+    }
+
+    #[tokio::test]
+    async fn system_logs_module_operations_round_trip_through_management_router() {
+        let _lock = logging_test_lock();
+        let changed = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 50, "method":"tools/call",
+                    "params":{"name":"plexus_system_logs","arguments":{"operation":"set_modules","modules":["routing","routing","quota"]}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(changed["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            changed["result"]["structuredContent"]["data"]["modules"],
+            json!(["routing", "quota"])
+        );
+
+        let read = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 51, "method":"tools/call",
+                    "params":{"name":"plexus_system_logs","arguments":{"operation":"modules"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            read["result"]["structuredContent"]["data"]["modules"],
+            json!(["routing", "quota"])
+        );
+
+        let reset = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 52, "method":"tools/call",
+                    "params":{"name":"plexus_system_logs","arguments":{"operation":"reset_modules"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(reset["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            reset["result"]["structuredContent"]["data"]["modules"],
+            json!([])
+        );
     }
 
     #[tokio::test]
