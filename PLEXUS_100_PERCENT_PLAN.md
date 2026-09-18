@@ -373,7 +373,7 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 | Gate | Result |
 |---|---|
 | `cargo test --all-targets` | 303 unit + 4 integration tests pass |
-| OAuth storage / dispatch / checker integration | 9 disposable PostgreSQL tests pass |
+| OAuth storage / dispatch / checker integration | 10 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
@@ -644,3 +644,21 @@ Full eight-lane verification: seven pass, live comparison **406/407** (recent
 system logs). Backend 303 unit + 4 stdio, 9 PostgreSQL integration, 45 frontend,
 3 browser and 12 harness tests pass. This closes specific catalog/lifecycle gaps,
 not the outstanding provider-flow and dispatch-parity requirements.
+
+## Latest quota wire-contract and fixture lifecycle pass
+
+Latest quota results now expose reference meter fields (`key`, optional scope/
+limit/reset, utilization value or state) rather than raw snapshot rows. Checked
+and reset timestamps are ISO strings; nullable optional fields are omitted.
+A PostgreSQL-to-HTTP integration test verifies the actual public shape.
+
+Scheduler dispatch now distinguishes a configured checker ID from its runtime
+type, and persisted snapshots retain both. An integration test verifies a custom
+configured ID is returned with its actual checker type. Catalog startup refresh
+is explicitly awaited on both differential fixtures before comparing manual
+refresh triggers, eliminating startup/manual timing contamination without
+normalizing away the trigger contract.
+
+Full eight-lane gate: seven pass; live comparison 406/407 (recent logs). Backend
+303 unit + 4 stdio, **10 executed PostgreSQL integration tests**, 45 frontend,
+3 browser and 12 harness tests pass. Remaining plan items remain open.
