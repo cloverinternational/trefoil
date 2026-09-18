@@ -326,6 +326,7 @@ fn safe_configured_header(name: &str) -> bool {
             | "proxy-authorization"
             | "te"
             | "trailer"
+            | "trailers"
             | "transfer-encoding"
             | "upgrade"
             | "host"
@@ -462,19 +463,44 @@ async fn forward(
     });
     let sanitize = is_event_stream && is_tools_list;
     let mut sse_buffer = String::new();
-    let mut response = Response::new(Body::from_stream(upstream.bytes_stream().map(
-        move |chunk| {
-            chunk
-                .map(|bytes| {
-                    if sanitize {
-                        sanitize_sse_lines(&mut sse_buffer, &bytes)
+    let mut response = if is_event_stream {
+        Response::new(Body::from_stream(upstream.bytes_stream().map(
+            move |chunk| {
+                chunk
+                    .map(|bytes| {
+                        if sanitize {
+                            sanitize_sse_lines(&mut sse_buffer, &bytes)
+                        } else {
+                            bytes
+                        }
+                    })
+                    .map_err(std::io::Error::other)
+            },
+        )))
+    } else {
+        // The reference proxy buffers ordinary JSON responses so it can apply
+        // the tools/list compatibility fix without forwarding a stale
+        // Content-Length. Non-JSON bodies remain byte-for-byte unchanged.
+        let bytes = match upstream.bytes().await {
+            Ok(bytes) => bytes,
+            Err(_) => return error(StatusCode::BAD_GATEWAY, "MCP upstream response failed"),
+        };
+        let body = if is_tools_list {
+            match serde_json::from_slice::<Value>(&bytes) {
+                Ok(mut value) => {
+                    if strip_zero_ttl(&mut value) {
+                        serde_json::to_vec(&value).unwrap_or_else(|_| bytes.to_vec())
                     } else {
-                        bytes
+                        bytes.to_vec()
                     }
-                })
-                .map_err(std::io::Error::other)
-        },
-    )));
+                }
+                _ => bytes.to_vec(),
+            }
+        } else {
+            bytes.to_vec()
+        };
+        Response::new(Body::from(body))
+    };
     *response.status_mut() =
         StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     for (name, value) in &response_headers {
@@ -499,6 +525,10 @@ async fn forward(
             HeaderName::from_static("x-accel-buffering"),
             HeaderValue::from_static("no"),
         );
+    }
+    if !is_event_stream && is_tools_list {
+        // A transformed buffered body can no longer use the upstream length.
+        response.headers_mut().remove(header::CONTENT_LENGTH);
     }
     response
 }
@@ -691,6 +721,17 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn strips_non_positive_tool_ttl_but_preserves_positive_ttl() {
+        let mut zero = json!({"result":{"tools":[],"ttlMs":0}});
+        assert!(super::strip_zero_ttl(&mut zero));
+        assert!(zero["result"].get("ttlMs").is_none());
+
+        let mut positive = json!({"result":{"tools":[],"ttlMs":1000}});
+        assert!(!super::strip_zero_ttl(&mut positive));
+        assert_eq!(positive["result"]["ttlMs"], 1000);
+    }
+
+    #[test]
     fn rejects_hop_by_hop_and_routing_headers() {
         for name in [
             "Connection",
@@ -698,6 +739,7 @@ mod tests {
             "Content-Length",
             "Proxy-Authorization",
             "Transfer-Encoding",
+            "Trailers",
         ] {
             assert!(!safe_configured_header(name));
         }
