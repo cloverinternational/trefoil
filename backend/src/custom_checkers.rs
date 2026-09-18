@@ -561,6 +561,7 @@ async fn run_builtin_checker(
         .map_err(|_| "failed to load OAuth credentials".to_string())?
         .into_iter()
         .find(|(provider, candidate, _, _, _)| provider == oauth_provider && candidate == account)
+        .filter(|(_, _, _, _, expires)| *expires > chrono::Utc::now().timestamp_millis())
         .map(|(_, _, access, _, _)| access)
         .ok_or_else(|| format!("OAuth credentials not found for {oauth_provider}/{account}"))?;
     fetch_builtin_meters(id, endpoint, &token).await
@@ -575,6 +576,11 @@ async fn fetch_builtin_meters(id: &str, endpoint: &str, token: &str) -> Result<V
         .bearer_auth(token);
     if id == "claude-code" {
         request = request.header("anthropic-beta", "oauth-2025-04-20");
+    } else if id == "openai-codex" {
+        request = request.header("content-type","application/json")
+            .header("user-agent",crate::codex_masking::user_agent())
+            .header("version",crate::codex_masking::CODEX_VERSION);
+        if let Some(account)=crate::codex_masking::account_id(token) { request=request.header("chatgpt-account-id",account); }
     }
     let response = request.send().await.map_err(|e| e.to_string())?;
     let status = response.status();
@@ -950,5 +956,26 @@ mod provider_window_tests {
     #[test]
     fn malformed_legacy_window_rejects_all_claude_meters() {
         assert_eq!(builtin_meters("claude-code",&serde_json::json!({"five_hour":{"utilization":1},"seven_day":{"utilization":"bad"}})),serde_json::json!([]));
+    }
+}
+
+#[cfg(test)]
+mod codex_header_tests {
+    use super::*;
+    use axum::routing::get;
+    use base64::Engine;
+    #[tokio::test]
+    async fn codex_usage_request_carries_account_and_client_headers() {
+        let token=format!("x.{}.x",base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"account-test"}}"#));
+        let app=Router::new().route("/usage",get(|headers:HeaderMap|async move {
+            assert_eq!(headers["chatgpt-account-id"],"account-test");
+            assert_eq!(headers["version"],crate::codex_masking::CODEX_VERSION);
+            assert!(headers["user-agent"].to_str().unwrap().contains("codex"));
+            Json(serde_json::json!({"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":18000}}}))
+        }));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let result=fetch_builtin_meters("openai-codex",&format!("http://{addr}/usage"),&token).await.unwrap();
+        assert_eq!(result[0]["remaining"],75.0);server.abort();
     }
 }
