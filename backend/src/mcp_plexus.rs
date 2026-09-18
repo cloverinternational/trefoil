@@ -175,6 +175,12 @@ async fn call_tool(
         ("plexus_config", "exploration_rate") => {
             return config_exploration_rate_operation(state, id, args).await;
         }
+        ("plexus_config", "failover") => {
+            return config_failover_operation(state, id, args).await;
+        }
+        ("plexus_config", "cooldown") => {
+            return config_cooldown_operation(state, id, args).await;
+        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
             // HashMap iteration order is intentionally unstable.  MCP clients
@@ -465,6 +471,64 @@ async fn config_exploration_rate_operation(
                 "exploration_rate",
                 "GET",
                 "/v0/management/config/exploration-rate",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_failover_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "failover",
+                "PATCH",
+                "/v0/management/config/failover",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "failover",
+                "GET",
+                "/v0/management/config/failover",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_cooldown_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "cooldown",
+                "PATCH",
+                "/v0/management/config/cooldown",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "cooldown",
+                "GET",
+                "/v0/management/config/cooldown",
                 None,
             )
             .await
