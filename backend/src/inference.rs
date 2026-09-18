@@ -2926,6 +2926,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shared_dispatch_target_order_matches_direct_dispatch_for_boundary_cases() {
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        state.inner.providers.write().unwrap().extend([
+            ("first".into(), crate::state::ProviderConfig::default()),
+            ("second".into(), crate::state::ProviderConfig::default()),
+        ]);
+        state.inner.aliases.write().unwrap().insert(
+            "model".into(),
+            crate::state::ModelConfig {
+                target_groups: vec![crate::state::ModelTargetGroup {
+                    name: "ordered".into(),
+                    selector: "sequential".into(),
+                    targets: vec![
+                        crate::state::ModelTarget {
+                            provider: Some("first".into()),
+                            model: Some("model-a".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                        crate::state::ModelTarget {
+                            provider: Some("second".into()),
+                            model: Some("model-b".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+
+        let cases = [
+            (
+                "model",
+                None,
+                vec![("first", "model-a"), ("second", "model-b")],
+            ),
+            ("first/model-a", None, vec![("first", "model-a")]),
+            ("missing", None, vec![]),
+        ];
+        for (model, key_config, expected) in cases {
+            let shared: Vec<_> = inference_targets(&state, model, key_config)
+                .map(|(provider, target_model)| (provider, target_model))
+                .collect();
+            assert_eq!(
+                shared,
+                expected
+                    .into_iter()
+                    .map(|(p, m)| (p.into(), m.into()))
+                    .collect::<Vec<_>>()
+            );
+            let direct = resolve_target(&state, model, key_config);
+            assert_eq!(
+                direct,
+                shared
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| (model.into(), model.into()))
+            );
+        }
+
+        let limited = crate::state::KeyConfig {
+            allowed_providers: vec!["second".into()],
+            ..Default::default()
+        };
+        let shared: Vec<_> = inference_targets(&state, "model", Some(&limited)).collect();
+        assert_eq!(shared, vec![("second".into(), "model-b".into())]);
+        assert_eq!(resolve_target(&state, "model", Some(&limited)), shared[0]);
+    }
+
     #[tokio::test]
     async fn messages_failover_retries_provider_not_found() {
         use std::io::{Read, Write};

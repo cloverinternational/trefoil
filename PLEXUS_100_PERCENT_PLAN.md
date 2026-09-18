@@ -90,6 +90,9 @@ To port:
 - [x] Consolidate the 4 near-duplicate "try provider, on retryable status
       try fallback" blocks in `inference.rs` (chat/completions/embeddings/
       messages each hand-roll this) into one shared function.
+- [x] Add deterministic shared-vs-direct target-selection parity coverage for
+      ordered, direct-provider, missing-model, and provider-policy cases;
+      HTTP-path parity and the extracted dispatch entry point remain open.
 
 **Impact if skipped:** works fine for the common case (one healthy fallback);
 degrades ungracefully with multiple simultaneous provider outages, and the
