@@ -290,7 +290,10 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_child_output_is_reported_to_pending_request() {
-        let script = "printf '%s\\n' 'not-json'";
+        // Wait until the request is written before emitting the malformed
+        // response.  Without this handshake the child can exit and its output
+        // can be consumed before `request` registers its pending receiver.
+        let script = "IFS= read -r line; printf '%s\\n' 'not-json'";
         let transport = LocalMcpTransport::spawn(scripted_child(script))
             .await
             .unwrap();
