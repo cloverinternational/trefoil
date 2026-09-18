@@ -156,7 +156,11 @@ async fn call_tool(
         }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
-            json!({"ok":true,"operation":operation,"data":providers.keys().collect::<Vec<_>>()})
+            // HashMap iteration order is intentionally unstable.  MCP clients
+            // commonly diff this result, so expose a stable identity order.
+            let mut provider_ids = providers.keys().collect::<Vec<_>>();
+            provider_ids.sort();
+            json!({"ok":true,"operation":operation,"data":provider_ids})
         }
         ("plexus_provider", "get") => {
             let Some(provider_id) = args.and_then(|v| v.get("id")).and_then(Value::as_str) else {
@@ -1169,4 +1173,108 @@ async fn delete(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return response;
     }
     (StatusCode::OK, Json(json!({"closed":true}))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dispatch, enabled, TOOLS};
+    use crate::{state::KeyConfig, AppState};
+    use http_body_util::BodyExt;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+
+    async fn body(response: axum::response::Response) -> Value {
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+    }
+
+    fn state() -> AppState {
+        let state = AppState::new(Some("admin".into()), HashMap::<String, KeyConfig>::new());
+        let mut providers = state.inner.providers.write().unwrap();
+        providers.insert("zeta".into(), Default::default());
+        providers.insert("alpha".into(), Default::default());
+        drop(providers);
+        state
+    }
+
+    #[tokio::test]
+    async fn initialize_and_tools_list_preserve_mcp_wire_contract() {
+        let state = state();
+        assert!(enabled(&state));
+        let initialized = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id":"init", "method":"initialize"
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(initialized["jsonrpc"], "2.0");
+        assert_eq!(initialized["id"], "init");
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
+
+        let listed = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id":1, "method":"tools/list"
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            listed["result"]["tools"].as_array().unwrap().len(),
+            TOOLS.len()
+        );
+        assert_eq!(listed["result"]["tools"][0]["name"], "plexus_config");
+        assert_eq!(
+            listed["result"]["tools"][0]["inputSchema"]["required"],
+            json!(["operation"])
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_and_unknown_requests_return_jsonrpc_errors() {
+        let state = state();
+        let malformed = body(
+            dispatch(
+                &state,
+                json!({"jsonrpc":"1.0","id":7,"method":"tools/list"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(malformed["error"]["code"], -32600);
+        let unknown = body(
+            dispatch(
+                &state,
+                json!({"jsonrpc":"2.0","id":8,"method":"does/not-exist"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], -32601);
+        assert_eq!(unknown["id"], 8);
+    }
+
+    #[tokio::test]
+    async fn provider_list_is_deterministically_sorted() {
+        let response = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                    "params":{"name":"plexus_provider","arguments":{"operation":"list"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            response["result"]["structuredContent"]["data"],
+            json!(["alpha", "zeta"])
+        );
+    }
 }
