@@ -208,6 +208,7 @@ async fn call_tool(
         ("plexus_mcp_gateway", "servers_list")
         | ("plexus_mcp_gateway", "get")
         | ("plexus_mcp_gateway", "status")
+        | ("plexus_mcp_gateway", "process_logs")
         | ("plexus_mcp_gateway", "put")
         | ("plexus_mcp_gateway", "update")
         | ("plexus_mcp_gateway", "delete") => {
@@ -1020,13 +1021,20 @@ async fn mcp_gateway_operation(
                 Some(body.clone()),
             )
         }
-        "status" => {
+        "status" | "process_logs" => {
             let Some(name) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
             (
                 "GET",
-                format!("/v0/management/mcp-servers/{name}/status"),
+                format!(
+                    "/v0/management/mcp-servers/{name}/{}",
+                    if operation == "status" {
+                        "status"
+                    } else {
+                        "process-logs"
+                    }
+                ),
                 None,
             )
         }
@@ -1487,6 +1495,23 @@ mod tests {
             structured["error"]["message"],
             "Operation is not implemented yet"
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_gateway_process_logs_requires_id() {
+        let response = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 12, "method":"tools/call",
+                    "params":{"name":"plexus_mcp_gateway","arguments":{"operation":"process_logs"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(response["error"]["code"], -32602);
+        assert_eq!(response["error"]["message"], "id is required");
     }
 
     #[tokio::test]
