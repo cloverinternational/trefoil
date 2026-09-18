@@ -894,9 +894,8 @@ async fn forward_json_api(
     // Validate image parts before dispatch. This keeps malformed multimodal
     // payloads on the normal text path and avoids unsafe assumptions in
     // provider transforms; descriptor generation is opt-in via configuration.
-    apply_vision_fallthrough(&mut body, state).await;
     apply_native_compaction(&mut body, state);
-    apply_headroom_compaction(&mut body, state).await;
+    apply_headroom_compaction(&mut body, state);
     if let Some(config) = key_config {
         if !model_allowed(config, &model) {
             return error_response(
@@ -1865,9 +1864,7 @@ async fn chat_completions(
         return response;
     }
     apply_native_compaction(&mut body, &state);
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(apply_headroom_compaction(&mut body, &state));
+    apply_headroom_compaction(&mut body, &state);
     let key_config = if let Principal::Limited { config, .. } = &principal {
         if !model_allowed(config, &model) {
             return error_response(
@@ -2609,30 +2606,6 @@ fn dispatch_provider_url(value: &str) -> Result<url::Url, ()> {
     }
 }
 
-async fn apply_vision_fallthrough(body: &mut Value, state: &AppState) {
-    let config = state.inner.settings.read().unwrap().get("vision_fallthrough").and_then(Value::as_object).cloned();
-    let Some(config) = config else { return };
-    if config.get("enabled").and_then(Value::as_bool) != Some(true) { return; }
-    let Some(model) = config.get("model").or_else(|| config.get("fallback_model")).and_then(Value::as_str).filter(|v| !v.trim().is_empty()) else { return; };
-    let provider_name = config.get("provider").and_then(Value::as_str).or_else(|| config.get("provider_filter").and_then(Value::as_array).and_then(|v| v.iter().find_map(Value::as_str)));
-    let provider = { let providers = state.inner.providers.read().unwrap(); provider_name.and_then(|n| providers.get(n)).or_else(|| providers.values().find(|p| p.enabled)).cloned() };
-    let Some(provider) = provider else { return };
-    let Ok(base) = dispatch_provider_url(&provider.api_base_url) else { return };
-    let images = crate::vision::image_urls(body);
-    if images.is_empty() { return; }
-    let endpoint = format!("{}{}", base.as_str().trim_end_matches('/'), "/chat/completions");
-    let client = reqwest::Client::new();
-    let mut descriptions = std::collections::HashMap::new();
-    for image in images {
-        let cached = state.inner.vision_descriptor_cache.lock().unwrap().get(&image, model);
-        let description = match cached { Some(value) => value, None => match crate::vision::generate_descriptor(&client, &endpoint, provider.api_key.as_deref(), model, &image).await { Ok(value) => { state.inner.vision_descriptor_cache.lock().unwrap().insert(&image, model, value.clone()); value }, Err(_) => continue } };
-        descriptions.insert(image, description);
-    }
-    fn replace(value: &mut Value, descriptions: &std::collections::HashMap<String, String>) {
-        match value { Value::Array(values) => values.iter_mut().for_each(|v| replace(v, descriptions)), Value::Object(object) => { if object.get("type").and_then(Value::as_str) == Some("image_url") { if let Some(url) = object.get("image_url").and_then(|v| v.get("url")).and_then(Value::as_str) { if let Some(description) = descriptions.get(url) { *value = json!({"type":"text","text":format!("[Image description: {description}]" )}); return; } } } object.values_mut().for_each(|v| replace(v, descriptions)); }, _ => {} }
-    }
-    replace(body, &descriptions);
-}
 
 fn apply_native_compaction(body: &mut Value, state: &AppState) {
     let settings = state.inner.settings.read().unwrap();
@@ -2685,15 +2658,9 @@ fn apply_native_compaction(body: &mut Value, state: &AppState) {
     compact_json_value(body, arrays, strings, protect_recent);
 }
 
-async fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
-    let config = {
-        let settings = state.inner.settings.read().unwrap();
-        settings
-            .get("compaction")
-            .and_then(Value::as_object)
-            .cloned()
-    };
-    let Some(config) = config.as_ref() else {
+fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
+    let settings = state.inner.settings.read().unwrap();
+    let Some(config) = settings.get("compaction").and_then(Value::as_object) else {
         return;
     };
     if config.get("enabled").and_then(Value::as_bool) != Some(true)
@@ -2719,6 +2686,7 @@ async fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
         .and_then(Value::as_f64)
         .filter(|ratio| ratio.is_finite() && (0.0..=1.0).contains(ratio))
         .unwrap_or(0.8);
+    let target = (limit as f64 * target_ratio).floor() as usize;
     let protect_recent = config
         .get("protectRecent")
         .and_then(Value::as_u64)
@@ -2742,85 +2710,30 @@ async fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
     if removable.is_empty() {
         return;
     }
-    let Some(headroom) = config.get("headroom").and_then(Value::as_object) else {
-        return;
-    };
-    let Some(base_url) = headroom.get("baseUrl").and_then(Value::as_str) else {
-        return; // Fail open when external compaction is not configured.
-    };
-    let Ok(base_url) = dispatch_provider_url(base_url) else {
-        return;
-    };
-    let timeout_ms = headroom
-        .get("timeoutMs")
-        .and_then(Value::as_u64)
-        .unwrap_or(5000);
-    let endpoint = format!(
-        "{}{}",
-        base_url.as_str().trim_end_matches('/'),
-        "/chat/completions"
-    );
-    let source = Value::Array(
-        removable
+    let mut removed = vec![false; messages.len()];
+    for index in removable {
+        let mut candidate = body.clone();
+        candidate["messages"] = Value::Array(
+            messages
+                .iter()
+                .enumerate()
+                .filter(|(position, _)| !removed[*position] && *position != index)
+                .map(|(_, message)| message.clone())
+                .collect(),
+        );
+        removed[index] = true;
+        if estimate_tokens(&candidate) <= target {
+            break;
+        }
+    }
+    body["messages"] = Value::Array(
+        messages
             .iter()
-            .map(|index| messages[*index].clone())
+            .enumerate()
+            .filter(|(index, _)| !removed[*index])
+            .map(|(_, message)| message.clone())
             .collect(),
     );
-    let model = headroom
-        .get("model")
-        .and_then(Value::as_str)
-        .or_else(|| body.get("model").and_then(Value::as_str))
-        .unwrap_or("default");
-    let prompt = "Summarize the following conversation history faithfully. Preserve decisions, facts, constraints, tool results, and unresolved questions. Return only the concise summary.";
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return,
-    };
-    let mut request = client.post(endpoint).json(&json!({
-        "model": model,
-        "messages": [{"role":"system","content":prompt},{"role":"user","content":source.to_string()}],
-        "temperature": 0,
-        "max_tokens": ((limit as f64 * target_ratio).floor() as usize).max(64)
-    }));
-    if let Some(api_key) = headroom.get("apiKey").and_then(Value::as_str) {
-        request = request.bearer_auth(api_key);
-    }
-    let response =
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), request.send()).await {
-            Ok(Ok(response)) => response,
-            _ => return, // Timeout, cancellation, or transport failure: preserve input.
-        };
-    let response = match response.error_for_status() {
-        Ok(response) => response,
-        Err(_) => return,
-    };
-    let Ok(payload) = response.json::<Value>().await else {
-        return;
-    };
-    let Some(summary) = payload
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    else {
-        return;
-    };
-    let first = *removable.first().unwrap();
-    let mut compacted = Vec::with_capacity(messages.len() - removable.len() + 1);
-    for (index, message) in messages.iter().enumerate() {
-        if index == first {
-            compacted.push(
-                json!({"role":"system","content":format!("Conversation summary:\n{summary}")}),
-            );
-        }
-        if !removable.contains(&index) {
-            compacted.push(message.clone());
-        }
-    }
-    body["messages"] = Value::Array(compacted);
 }
 
 fn estimate_tokens(value: &Value) -> usize {
@@ -3356,7 +3269,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn headroom_compaction_preserves_instructions_and_recent_history() {
         let state = AppState::new(Some("admin".into()), HashMap::new());
         state.inner.settings.write().unwrap().insert(
@@ -3376,9 +3288,7 @@ mod tests {
             {"role":"user","content":"latest"}
         ],"padding":"x".repeat(200)});
         let mut body = original.clone();
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(apply_headroom_compaction(&mut body, &state));
+        apply_headroom_compaction(&mut body, &state);
         assert_eq!(body["messages"][0], original["messages"][0]);
         assert_eq!(
             body["messages"].as_array().unwrap().last().unwrap(),
@@ -3389,7 +3299,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn headroom_compaction_is_noop_without_messages_or_removable_history() {
         let state = AppState::new(Some("admin".into()), HashMap::new());
         state.inner.settings.write().unwrap().insert(
@@ -3397,14 +3306,10 @@ mod tests {
             serde_json::json!({"enabled":true,"strategy":"headroom","absoluteTriggerTokens":1}),
         );
         let mut malformed = serde_json::json!({"messages":"not-an-array"});
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(apply_headroom_compaction(&mut malformed, &state));
+        apply_headroom_compaction(&mut malformed, &state);
         assert_eq!(malformed["messages"], "not-an-array");
         let mut instructions = serde_json::json!({"messages":[{"role":"system","content":"x"}]});
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(apply_headroom_compaction(&mut instructions, &state));
+        apply_headroom_compaction(&mut instructions, &state);
         assert_eq!(instructions["messages"].as_array().unwrap().len(), 1);
     }
 
