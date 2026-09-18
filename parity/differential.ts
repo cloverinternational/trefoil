@@ -23,6 +23,7 @@ const TREFOIL_BASE_URL = process.env.TREFOIL_BASE_URL ?? 'http://127.0.0.1:8080'
 //   Trefoil: same admin key / key config wired into AppState for this run.
 const ADMIN_KEY = 'correct-admin-key';
 const LIMITED_KEY_SECRET = 'sk-test-secret';
+const REQUEST_TIMEOUT_MS = 15_000;
 
 interface Case {
   name: string;
@@ -41,7 +42,10 @@ const CASES: Case[] = [
 async function fetchVerify(baseUrl: string, header: string | undefined) {
   const headers: Record<string, string> = {};
   if (header !== undefined) headers['x-admin-key'] = header;
-  const res = await fetch(`${baseUrl}/v0/management/auth/verify`, { headers });
+  const res = await fetch(`${baseUrl}/v0/management/auth/verify`, {
+    headers,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
   const body = await res.json().catch(() => null);
   return { status: res.status, body };
 }
@@ -149,15 +153,18 @@ async function fetchJson(
   method: string,
   path: string,
   adminHeader: string | undefined,
-  body?: unknown
+  body?: unknown,
+  extraHeaders?: Record<string, string>
 ) {
   const headers: Record<string, string> = {};
+  if (extraHeaders !== undefined) Object.assign(headers, extraHeaders);
   if (adminHeader !== undefined) headers['x-admin-key'] = adminHeader;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const res = await fetch(`${baseUrl}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const json = await res.json().catch(() => null);
   return { status: res.status, body: json };
@@ -168,8 +175,65 @@ interface KeysCase {
   method: string;
   path: string;
   adminHeader?: string;
+  headers?: Record<string, string>;
   body?: unknown;
 }
+
+// These cases deliberately stop before an upstream provider call.  They make
+// the public inference boundary testable in a clean disposable environment
+// while still exercising live authentication, validation, and model routing.
+// Provider-backed success/streaming cases belong in a run with an explicitly
+// configured disposable upstream, not against production credentials.
+const INFERENCE_CASES: KeysCase[] = [
+  {
+    name: 'chat completions rejects missing credentials',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    body: { model: 'missing-provider/missing-model', messages: [] },
+  },
+  {
+    name: 'chat completions rejects missing model',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    adminHeader: ADMIN_KEY,
+    body: { messages: [] },
+  },
+  {
+    name: 'chat completions rejects non-array messages',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    adminHeader: ADMIN_KEY,
+    body: { model: 'missing-provider/missing-model', messages: {} },
+  },
+  {
+    name: 'chat completions validates streaming requests before dispatch',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    adminHeader: ADMIN_KEY,
+    body: { model: 'missing-provider/missing-model', stream: true },
+  },
+  {
+    name: 'embeddings rejects missing input',
+    method: 'POST',
+    path: '/v1/embeddings',
+    adminHeader: ADMIN_KEY,
+    body: { model: 'missing-provider/missing-model' },
+  },
+  {
+    name: 'chat completions accepts bearer authentication before routing',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    headers: { authorization: `Bearer ${ADMIN_KEY}` },
+    body: { model: 'missing-provider/missing-model', messages: [] },
+  },
+  {
+    name: 'chat completions reports an unknown provider/model',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    adminHeader: ADMIN_KEY,
+    body: { model: 'missing-provider/missing-model', messages: [] },
+  },
+];
 
 // A fresh key name per run avoids collisions with state left over from a
 // previous run against the same live Plexus instance.
@@ -1269,8 +1333,8 @@ async function runCases(cases: KeysCase[]): Promise<number> {
   let failures = 0;
   for (const testCase of cases) {
     const [plexus, trefoil] = await Promise.all([
-      fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body),
-      fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body),
+      fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers),
+      fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers),
     ]);
 
     const statusMatch = plexus.status === trefoil.status;
@@ -1361,6 +1425,7 @@ async function main() {
   failures += await runCases(QUOTA_CLEAR_CASES);
   failures += await runCases(DEBUG_LOG_CASES);
   failures += await runCases(MCP_LOG_CASES);
+  failures += await runCases(INFERENCE_CASES);
 
   // Plexus's ConfigService coalesces config-mutating writes into an
   // in-memory cache rebuild ~100ms after the write (see COALESCE_MS in
@@ -1419,6 +1484,7 @@ async function main() {
     QUOTA_CLEAR_CASES.length +
     DEBUG_LOG_CASES.length +
     MCP_LOG_CASES.length +
+    INFERENCE_CASES.length +
     SELF_CASES.length;
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
