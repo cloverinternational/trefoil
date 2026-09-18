@@ -520,7 +520,8 @@ async fn restart_server(
         return response;
     }
     lifecycle_log(&state, format!("MCP local restart requested for '{name}'"));
-    let _ = stop_server(State(state.clone()), headers.clone(), Path(name.clone())).await;
+    { let mut processes=state.inner.mcp_processes.lock().await; if let Some(transport)=processes.remove(&name) {let _=transport.shutdown().await;} }
+    state.inner.mcp_process_status.lock().await.insert(name.clone(),("stopped".into(),None));
     start_server(State(state), headers, Path(name)).await
 }
 

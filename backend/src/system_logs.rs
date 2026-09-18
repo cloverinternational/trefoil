@@ -61,7 +61,7 @@ pub fn event(
         SystemLog {
             level: level.into(),
             message: message.into(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             context: context.into_iter().collect(),
         },
     );
