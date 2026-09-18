@@ -1,7 +1,6 @@
 //! Ephemeral management logging controls.
 //!
-//! This ports the management API state contract. Trefoil does not yet wire
-//! these values into a runtime tracing/log subscriber.
+//! Runtime levels apply to both the recent-log buffer and live stream.
 
 use axum::{
     extract::State,
@@ -41,6 +40,22 @@ fn level() -> &'static RwLock<String> {
 }
 fn modules() -> &'static RwLock<Vec<String>> {
     MODULES.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Mirror Winston severity ordering. Module filters are console-only in the
+/// reference and must not suppress the management stream.
+pub fn enabled(event_level: &str) -> bool {
+    level_enabled(&level().read().unwrap(), event_level)
+}
+
+fn level_enabled(configured: &str, event_level: &str) -> bool {
+    match (
+        SUPPORTED.iter().position(|v| *v == configured),
+        SUPPORTED.iter().position(|v| *v == event_level),
+    ) {
+        (Some(limit), Some(event)) => event <= limit,
+        _ => false,
+    }
 }
 
 pub fn router() -> Router<AppState> {
@@ -286,5 +301,18 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod severity_tests {
+    #[test]
+    fn filtering_matches_winston_order() {
+        for (limit, configured) in super::SUPPORTED.iter().enumerate() {
+            for (severity, event) in super::SUPPORTED.iter().enumerate() {
+                assert_eq!(super::level_enabled(configured, event), severity <= limit);
+            }
+        }
+        assert!(!super::level_enabled("info", "unknown"));
     }
 }

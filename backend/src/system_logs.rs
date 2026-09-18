@@ -31,6 +31,9 @@ pub struct SystemLog {
 
 /// Publish a system log entry to all currently connected admin clients.
 pub fn publish(state: &AppState, log: SystemLog) {
+    if !crate::logging::enabled(&log.level) {
+        return;
+    }
     {
         let mut recent = state
             .inner
@@ -175,7 +178,7 @@ mod tests {
     async fn recent_logs_are_bounded_newest_first_and_paginated() {
         let state = AppState::new(Some("admin".into()), Default::default());
         for i in 0..1005 {
-            event(&state, "info", i.to_string(), []);
+            event(&state, "error", i.to_string(), []);
         }
         let response = router()
             .with_state(state)
@@ -216,7 +219,7 @@ mod tests {
             state.inner.system_logs.as_ref().unwrap().receiver_count(),
             1
         );
-        event(&state, "info", "live test", []);
+        event(&state, "error", "live test", []);
         let mut body = response.into_body();
         let frame = tokio::time::timeout(Duration::from_secs(1), body.frame())
             .await
