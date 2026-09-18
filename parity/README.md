@@ -104,13 +104,18 @@ shape difference. That historical run is not evidence that the current 313
 registered cases passed. Provider-backed success and SSE cases still require
 an explicitly configured disposable upstream as described above.
 
-The deterministic backend suite currently passes 261 tests, including
+The deterministic backend suite currently passes 258 tests plus four
+subprocess integration tests, including
 `mcp_stdio::tests::request_and_notification_preserve_stdio_wire_contract`,
 `child_eof_completes_pending_request_and_cleanup_is_repeatable`, and
-`malformed_child_output_is_reported_to_pending_request`. Together these tests
-verify stdio framing, terminal EOF/error propagation, and repeatable child
-cleanup after the lifecycle fix; they are local transport evidence, not a
-live differential claim.
+`malformed_child_output_is_reported_to_pending_request` and
+`rpc_error_preserves_code_message_and_data`. Together these tests verify
+newline-delimited stdio framing, notification/request routing, terminal
+EOF and malformed-output propagation, JSON-RPC error code/message/data
+preservation, and repeatable child cleanup after the lifecycle fix. The
+fixture is a Rust subprocess (`backend/src/bin/mcp-stdio-fixture.rs`), so
+the evidence exercises portable process I/O rather than a Unix shell
+script. These are local transport evidence, not a live differential claim.
 
 ### Backup and restore parity coverage
 
@@ -197,7 +202,7 @@ Since that live run, the MCP admin shim has added configuration operations for
 MCP enablement, timeout, compaction, exploration/failover/cooldown, tracing,
 stall, vision fallthrough, background exploration, and trusted proxies, plus
 system-log level and module operations. These milestones are verified by the
-Rust unit suite is current at 260 passing tests,
+Rust unit suite is current at 258 passing tests,
 but are not yet represented by a newer live differential-run claim.
 
 Media failover has deterministic backend evidence in
