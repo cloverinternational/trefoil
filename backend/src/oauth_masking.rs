@@ -9,6 +9,7 @@ const SECRET_KEYS: &[&str] = &[
     "key",
     "api_key",
     "authorization",
+    "state",
     "code",
     "code_verifier",
     "client_secret",
@@ -21,22 +22,39 @@ pub fn mask_token(value: &str) -> String {
     if value.len() <= 8 {
         return "***".into();
     }
-    format!("{}…{}", &value[..4], &value[value.len() - 4..])
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= 8 {
+        return "***".into();
+    }
+    format!(
+        "{}…{}",
+        chars[..4].iter().collect::<String>(),
+        chars[chars.len() - 4..].iter().collect::<String>()
+    )
 }
 
 pub fn mask_url(input: &str) -> String {
     let Ok(mut url) = url::Url::parse(input) else {
         return input.to_owned();
     };
-    let keys: Vec<String> = url.query_pairs().map(|(k, _)| k.into_owned()).collect();
-    for key in keys {
-        if SECRET_KEYS
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    let mut query = url.query_pairs_mut();
+    query.clear();
+    for (key, value) in pairs {
+        let value = if SECRET_KEYS
             .iter()
             .any(|secret| key.eq_ignore_ascii_case(secret))
         {
-            url.query_pairs_mut().clear().append_pair(&key, "***");
-        }
+            "***".to_owned()
+        } else {
+            value
+        };
+        query.append_pair(&key, &value);
     }
+    drop(query);
     url.to_string()
 }
 
@@ -99,11 +117,18 @@ mod tests {
         assert!(
             !mask_url("https://example.test/callback?state=secret&code=hidden").contains("secret")
         );
+        assert!(
+            !mask_url("https://example.test/callback?state=secret&code=hidden").contains("hidden")
+        );
         let headers = mask_headers(&[
             ("Authorization".into(), "Bearer secret".into()),
             ("X-Trace".into(), "trace".into()),
         ]);
         assert!(!headers[0].1.contains("secret"));
         assert_eq!(headers[1].1, "trace");
+        assert_eq!(mask_token("éclair-token"), "écla…oken");
+        assert!(
+            mask_url("https://example.test/callback?state=secret&keep=yes").contains("keep=yes")
+        );
     }
 }

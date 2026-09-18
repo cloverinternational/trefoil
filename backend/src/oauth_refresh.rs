@@ -20,14 +20,7 @@ fn now_ms() -> i64 {
 }
 
 fn endpoint(provider: &str) -> Option<&'static str> {
-    match provider {
-        "anthropic" => Some("https://console.anthropic.com/v1/oauth/token"),
-        "github-copilot" => Some("https://github.com/login/oauth/access_token"),
-        "kimi-coding" => Some("https://auth.kimi.com/oauth/token"),
-        "openai-codex" => Some("https://auth.openai.com/oauth/token"),
-        "xai" => Some("https://accounts.x.ai/oauth/token"),
-        _ => None,
-    }
+    crate::oauth_transport::provider_spec(provider).map(|spec| spec.token_endpoint)
 }
 
 async fn refresh_one(state: &AppState, provider: String, account: String, refresh_token: String) {

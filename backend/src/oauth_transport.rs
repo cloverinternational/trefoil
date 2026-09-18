@@ -28,6 +28,7 @@ pub struct ProviderSpec {
     pub id: &'static str,
     pub token_endpoint: &'static str,
     pub token_field: TokenField,
+    pub client_id: &'static str,
 }
 
 pub fn provider_spec(provider: &str) -> Option<ProviderSpec> {
@@ -36,31 +37,37 @@ pub fn provider_spec(provider: &str) -> Option<ProviderSpec> {
             id: "anthropic",
             token_endpoint: "https://console.anthropic.com/v1/oauth/token",
             token_field: TokenField::AccessToken,
+            client_id: "9dcf250a-e61b-4d95-88ed-594d1962f5e",
         },
         "github-copilot" => ProviderSpec {
             id: "github-copilot",
             token_endpoint: "https://github.com/login/oauth/access_token",
             token_field: TokenField::AccessToken,
+            client_id: "Iv1.b507da08c87ecfe98",
         },
         "kimi-coding" => ProviderSpec {
             id: "kimi-coding",
             token_endpoint: "https://auth.kimi.com/oauth/token",
             token_field: TokenField::AccessToken,
+            client_id: "17e5f671-d194-4dfb-9706-5516cb48c098",
         },
         "openai-codex" => ProviderSpec {
             id: "openai-codex",
             token_endpoint: "https://auth.openai.com/oauth/token",
             token_field: TokenField::AccessToken,
+            client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
         },
         "openrouter" => ProviderSpec {
             id: "openrouter",
             token_endpoint: "https://openrouter.ai/api/v1/auth/keys",
             token_field: TokenField::Key,
+            client_id: "",
         },
         "xai" => ProviderSpec {
             id: "xai",
             token_endpoint: "https://accounts.x.ai/oauth/token",
             token_field: TokenField::AccessToken,
+            client_id: "b1a00492-073a-47ea-816f-4c329264a828",
         },
         _ => return None,
     })
@@ -125,7 +132,7 @@ pub async fn refresh<T: OAuthTransport + ?Sized>(
             fields: vec![
                 ("grant_type".into(), "refresh_token".into()),
                 ("refresh_token".into(), refresh_token.into()),
-                ("client_id".into(), "trefoil".into()),
+                ("client_id".into(), spec.client_id.into()),
             ],
             timeout: Duration::from_secs(15),
         })
@@ -153,7 +160,7 @@ pub async fn exchange<T: OAuthTransport + ?Sized>(
             fields: vec![
                 ("grant_type".into(), "authorization_code".into()),
                 ("code".into(), code.into()),
-                ("client_id".into(), "trefoil".into()),
+                ("client_id".into(), spec.client_id.into()),
                 ("redirect_uri".into(), redirect_uri.into()),
                 ("code_verifier".into(), verifier.into()),
             ],
@@ -182,7 +189,7 @@ pub fn parse_token_response(
     let expires_in = body
         .get("expires_in")
         .and_then(Value::as_i64)
-        .unwrap_or(i64::MAX / 1000);
+        .ok_or(OAuthTransportError::MissingFields)?;
     if expires_in <= 0 {
         return Err(OAuthTransportError::MissingFields);
     }
