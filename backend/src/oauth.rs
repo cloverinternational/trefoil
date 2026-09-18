@@ -246,6 +246,24 @@ async fn create_session(
     session_response(session)
 }
 
+fn claim_exchange(state: &AppState, id: &str) -> Result<(OAuthSession, String), Response> {
+    let mut sessions = state.inner.oauth_sessions.write().unwrap();
+    let Some(session) = sessions.get_mut(id) else {
+        return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"OAuth session not found"}))).into_response());
+    };
+    if session.status != "waiting" || session.expires_at <= now_ms() {
+        return Err((StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response());
+    }
+    let verifier = state.inner.oauth_pkce_verifiers.write().unwrap().remove(id).or_else(|| session.pkce_verifier.take());
+    let Some(verifier) = verifier else {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"OAuth verifier unavailable"}))).into_response());
+    };
+    session.pkce_verifier = None;
+    session.status = "exchanging".into();
+    session.updated_at = now_ms();
+    Ok((session.clone(), verifier))
+}
+
 async fn callback(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -299,20 +317,17 @@ async fn callback(
         )
             .into_response();
     }
-    let verifier = state
-        .inner
-        .oauth_pkce_verifiers
-        .write()
-        .unwrap()
-        .remove(&id)
-        .or_else(|| session.pkce_verifier.clone());
-    let Some(verifier) = verifier else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"OAuth verifier unavailable"})),
-        )
-            .into_response();
+    let (session, verifier) = match claim_exchange(&state, &id) {
+        Ok(claim) => claim,
+        Err(response) => return response,
     };
+    // Persist consumption before contacting the provider so process restart
+    // cannot replay a code whose exchange has already started.
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_oauth_session(pool, &session).await.is_err() {
+            return oauth_failed(&state, &id, "Unable to persist OAuth session", StatusCode::INTERNAL_SERVER_ERROR).await;
+        }
+    }
     let redirect = format!("/v0/management/oauth/sessions/{id}/callback");
     let transport = crate::oauth_transport::ReqwestTransport;
     let token = match crate::oauth_transport::exchange(
@@ -346,7 +361,7 @@ async fn callback(
     };
     let access = token.access_token;
     let refresh = token.refresh_token;
-    let expires = now_ms() + token.expires_in * 1000;
+    let expires = if session.provider_id == "openrouter" && token.expires_in == 0 { i64::MAX } else { now_ms().saturating_add(token.expires_in.saturating_mul(1000)) };
     if let Some(pool) = &state.inner.database {
         if crate::database::upsert_oauth_credential(
             pool,
@@ -554,7 +569,7 @@ async fn manual_code(
         )
             .into_response();
     }
-    update_session(&state, &id, "manual-code", Some(body.value)).await
+    (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error":"Manual provider code exchange is not implemented; no credentials were saved"}))).into_response()
 }
 
 async fn models(
@@ -775,6 +790,20 @@ mod tests {
             Some("deterministic-verifier")
         );
         assert!(json.get("pkceVerifier").is_none());
+    }
+
+    #[test]
+    fn exchange_claim_is_atomic_and_consumes_persisted_verifier() {
+        let state = fixture();
+        state.inner.oauth_sessions.write().unwrap().insert("claim".into(), OAuthSession {
+            id:"claim".into(),provider_id:"openrouter".into(),account_id:"default".into(),status:"waiting".into(),
+            auth_info:None,prompt:None,progress:vec![],error:None,created_at:now_ms(),updated_at:now_ms(),expires_at:now_ms()+60000,pkce_verifier:Some("verifier".into())
+        });
+        let (session, verifier) = claim_exchange(&state, "claim").unwrap();
+        assert_eq!(verifier, "verifier");
+        assert_eq!(session.status, "exchanging");
+        assert!(session.pkce_verifier.is_none());
+        assert_eq!(claim_exchange(&state, "claim").unwrap_err().status(), StatusCode::CONFLICT);
     }
 
     #[test]
