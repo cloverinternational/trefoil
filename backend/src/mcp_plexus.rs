@@ -199,7 +199,10 @@ async fn call_tool(
         | ("plexus_key", "disable") => {
             return key_operation(state, id, operation, args).await;
         }
-        ("plexus_usage", "list") | ("plexus_usage", "summary") => {
+        ("plexus_usage", "list")
+        | ("plexus_usage", "summary")
+        | ("plexus_usage", "delete")
+        | ("plexus_usage", "delete_all") => {
             return usage_operation(state, id, operation, args).await;
         }
         ("plexus_mcp_gateway", "servers_list")
@@ -1054,9 +1057,21 @@ async fn usage_operation(
     use tower::ServiceExt;
 
     let args = args.cloned().unwrap_or_else(|| json!({}));
+    if matches!(operation, "delete" | "delete_all")
+        && args.get("destructive").and_then(Value::as_str) != Some("acknowledged")
+    {
+        return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
+    }
     let mut path = match operation {
         "list" => "/v0/management/usage".to_string(),
         "summary" => "/v0/management/usage/summary".to_string(),
+        "delete_all" => "/v0/management/usage".to_string(),
+        "delete" => {
+            let Some(request_id) = args.get("id").and_then(Value::as_str) else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            format!("/v0/management/usage/{}", request_id.replace('/', "%2F"))
+        }
         _ => unreachable!(),
     };
     if let Some(query) = args.get("query") {
@@ -1086,7 +1101,11 @@ async fn usage_operation(
         }
     }
     let request = Request::builder()
-        .method("GET")
+        .method(if matches!(operation, "delete" | "delete_all") {
+            "DELETE"
+        } else {
+            "GET"
+        })
         .uri(path)
         .header(
             "x-admin-key",
