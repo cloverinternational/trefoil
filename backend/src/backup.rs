@@ -111,6 +111,10 @@ async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     };
     match result {
         Ok(value) => axum::Json(value).into_response(),
+        Err(error) if error == "missing data" => restore_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "undefined is not an object (evaluating 'data.data.providers')",
+        ),
         Err(error) => restore_error(StatusCode::BAD_REQUEST, &format!("Invalid backup: {error}")),
     }
 }
