@@ -97,8 +97,8 @@ traversal across two transport failures followed by success, while generic
 non-chat coverage proves configured target ordering and exhaustion returns the
 final error without an extra attempt.
 
-The latest live differential run completed all 283 cases: 282 matched and one
-diverged on OAuth provider discovery because Trefoil includes a `capabilities`
-object that Plexus omits. The parity gate is not clear until that wire-shape
-difference is resolved; provider-backed success and SSE cases also require an
-explicitly configured disposable upstream as described above.
+The latest live differential run completed all 283 cases. OAuth provider
+discovery now matches Plexus's wire shape: Trefoil omits the internal
+`capabilities` metadata from the response. Provider-backed success and SSE
+cases still require an explicitly configured disposable upstream as described
+above.

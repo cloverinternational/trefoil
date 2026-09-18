@@ -329,9 +329,9 @@ Missing pages (each needs its own API adapter + component + tests):
 
 ## 12. Differential harness — 🟡 partial
 
-`parity/differential.ts` currently has 283 named cases. The latest full live
-run executed all 283 against Plexus and Trefoil: 282 matched and one diverged
-on OAuth provider discovery (Trefoil includes `capabilities`, Plexus omits it).
+`parity/differential.ts` currently has 283 named cases. OAuth provider
+discovery now matches Plexus's response shape: Trefoil omits its internal
+`capabilities` metadata while preserving the provider descriptors.
 
 - [x] Add a documented one-shot script that boots Plexus + Trefoil + Postgres,
       provisions fixtures, and runs `bun run parity/differential.ts`, failing
@@ -368,9 +368,8 @@ and repeatable differential CI.
   attempt; provider-not-found and chat transport-failure fallback tests remain
   green.
 - **Differential harness:** 283 named cases are registered in
-  `parity/differential.ts`; the latest full live run executed all 283, with
-  282 matches and one OAuth provider-discovery divergence. Trefoil includes
-  `capabilities` metadata that Plexus omits.
+  `parity/differential.ts`; OAuth provider discovery matches the Plexus wire
+  shape and omits the internal `capabilities` metadata.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.
