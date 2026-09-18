@@ -49,9 +49,19 @@ async fn concurrency(
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    if params.mode.as_deref().unwrap_or("live") == "live" {
+    let mode = params.mode.as_deref().unwrap_or("live");
+    if mode == "live" {
         // Trefoil has no in-memory concurrency reservation tracker yet.
         return Json(serde_json::json!({"data":[]})).into_response();
+    }
+    if mode != "timeline" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("Invalid mode: {mode}. Must be one of: live, timeline")
+            })),
+        )
+            .into_response();
     }
     let Some(pool) = &state.inner.database else {
         return Json(serde_json::json!({"data":[]})).into_response();
@@ -150,6 +160,7 @@ mod tests {
     use super::*;
     use crate::state::KeyConfig;
     use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
     use std::collections::HashMap;
     use tower::ServiceExt;
     fn fixture() -> AppState {
@@ -176,6 +187,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_mode_before_timeline_dispatch() {
+        let response = router()
+            .with_state(fixture())
+            .oneshot(
+                Request::get("/v0/management/concurrency?mode=stream")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(
+            body["error"],
+            "Invalid mode: stream. Must be one of: live, timeline"
+        );
     }
     #[tokio::test]
     async fn rejects_non_admin() {
