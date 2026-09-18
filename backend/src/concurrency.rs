@@ -300,12 +300,15 @@ mod tests {
 #[cfg(test)]
 mod tracker_tests {
     use super::*;
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
     use crate::state::KeyConfig;
     use std::collections::HashMap;
 
     #[tokio::test]
     async fn active_snapshot_preserves_model_slashes_and_timestamp() {
-        let state=fixture();
+        let state=AppState::new(Some("admin".into()), Default::default());
         let _permit=acquire(&state,"provider","family/model");
         let response=router().with_state(state).oneshot(Request::get("/v0/management/concurrency").header("x-admin-key","admin").body(Body::empty()).unwrap()).await.unwrap();
         let body:serde_json::Value=serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
