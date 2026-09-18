@@ -193,8 +193,9 @@ async function fetchJson(
     body: rawBody ?? (body !== undefined ? JSON.stringify(body) : undefined),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  const json = await res.json().catch(() => null);
-  return { status: res.status, body: json, contentType: res.headers.get('content-type') };
+  const contentType = res.headers.get('content-type');
+  const body = contentType?.includes('text/plain') ? await res.text() : await res.json().catch(() => null);
+  return { status: res.status, body, contentType };
 }
 
 interface KeysCase {
@@ -223,6 +224,12 @@ const BACKUP_CASES: KeysCase[] = [
 // while still exercising live authentication, validation, and model routing.
 // Provider-backed success/streaming cases belong in a run with an explicitly
 // configured disposable upstream, not against production credentials.
+const OBSERVABILITY_CASES: KeysCase[] = [
+  { name: 'GET metrics returns text exposition for admin', method: 'GET', path: '/v0/management/metrics', adminHeader: ADMIN_KEY },
+  { name: 'GET metrics rejects limited key', method: 'GET', path: '/v0/management/metrics', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET metrics rejects missing credential', method: 'GET', path: '/v0/management/metrics' },
+];
+
 const INFERENCE_CASES: KeysCase[] = [
   {
     name: 'chat completions rejects missing credentials',
@@ -1406,7 +1413,7 @@ async function runCases(cases: KeysCase[]): Promise<number> {
 
     const statusMatch = plexus.status === trefoil.status;
     const contentTypeMatch =
-      (testCase.path.startsWith('/v0/management/backup') || testCase.path === '/v0/management/restore')
+      (testCase.path.startsWith('/v0/management/backup') || testCase.path === '/v0/management/restore' || testCase.path === '/v0/management/metrics')
       ? plexus.contentType === trefoil.contentType
       : true;
     const bodyMatch = deepEqual(
@@ -1485,6 +1492,7 @@ async function main() {
   failures += await runCases(CONFIG_SNAPSHOT_CASES);
   failures += await runCases(CONFIG_EXPORT_CASES);
   failures += await runCases(BACKUP_CASES);
+  failures += await runCases(OBSERVABILITY_CASES);
   failures += await runCases(CONCURRENCY_CASES);
   failures += await runCases(VISION_CACHE_CASES);
   failures += await runCases(OAUTH_PROVIDER_CASES);
@@ -1547,6 +1555,7 @@ async function main() {
     CONFIG_SNAPSHOT_CASES.length +
     CONFIG_EXPORT_CASES.length +
     BACKUP_CASES.length +
+    OBSERVABILITY_CASES.length +
     CONCURRENCY_CASES.length +
     VISION_CACHE_CASES.length +
     OAUTH_PROVIDER_CASES.length +

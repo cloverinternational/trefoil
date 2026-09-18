@@ -5,6 +5,8 @@ import {
   getAliases,
   getConfigStatus,
   getMetrics,
+  getBackup,
+  restoreBackup,
   getOAuthSession,
   getOAuthProviders,
   getOAuthCredentialStatus,
@@ -136,6 +138,26 @@ describe('frontend management API wire contracts', () => {
     await expect(getMetrics()).rejects.toThrow('Administrator access required');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     await expect(verifyAdminKey('bad')).resolves.toBeNull();
+  });
+
+  it('keeps backup modes, restore content types, auth, and response/error shapes in parity', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'admin-key') });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{"plexus_backup":true}'))
+      .mockResolvedValueOnce(new Response(new Blob(['archive'], { type: 'application/gzip' })))
+      .mockResolvedValueOnce(response({ success: true, config: true }))
+      .mockResolvedValueOnce(response({ error: 'Invalid backup JSON' }, 400));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getBackup()).resolves.toBeInstanceOf(Blob);
+    await expect(getBackup(true)).resolves.toBeInstanceOf(Blob);
+    await expect(restoreBackup('{"plexus_backup":true}')).resolves.toEqual({ success: true, config: true });
+    await expect(restoreBackup('{')).rejects.toThrow('Invalid backup JSON');
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init])).toEqual([
+      ['/v0/management/backup', { headers: { 'x-admin-key': 'admin-key' } }],
+      ['/v0/management/backup?full=true', { headers: { 'x-admin-key': 'admin-key' } }],
+      ['/v0/management/restore', { method: 'POST', headers: { 'x-admin-key': 'admin-key', 'content-type': 'application/json' }, body: '{"plexus_backup":true}' }],
+      ['/v0/management/restore', { method: 'POST', headers: { 'x-admin-key': 'admin-key', 'content-type': 'application/json' }, body: '{' }],
+    ]);
   });
 
   it('normalizes usage list responses and requests recent and summary data', async () => {

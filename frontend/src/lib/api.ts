@@ -120,6 +120,20 @@ export async function getMetrics(): Promise<string> {
   return response.text();
 }
 
+export async function getBackup(full = false): Promise<Blob> {
+  const response = await fetch(`/v0/management/backup${full ? '?full=true' : ''}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error(response.status === 403 ? 'Administrator access required' : 'Unable to download backup');
+  return response.blob();
+}
+
+export async function restoreBackup(backup: BodyInit, contentType = 'application/json'): Promise<Record<string, unknown>> {
+  const response = await fetch('/v0/management/restore', { method: 'POST', headers: { ...authHeaders(), 'content-type': contentType }, body: backup });
+  const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+  if (!response.ok) throw new Error(typeof body?.error === 'string' ? body.error : 'Unable to restore backup');
+  if (!body || Array.isArray(body)) throw new Error('Invalid restore response');
+  return body;
+}
+
 export interface UsageRecord {
   requestId: string;
   date: string;
