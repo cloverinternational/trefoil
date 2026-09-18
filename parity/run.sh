@@ -7,8 +7,10 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 REFERENCE_DIR=${REFERENCE_DIR:-"$ROOT/.reference/plexus"}
 PLEXUS_PORT=${PLEXUS_PORT:-4100}
 TREFOIL_PORT=${TREFOIL_PORT:-8080}
+POSTGRES_PORT=${POSTGRES_PORT:-5432}
+COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-trefoil-parity-${RANDOM}${RANDOM}}
 ADMIN_KEY=${ADMIN_KEY:-correct-admin-key}
-DATABASE_URL=${DATABASE_URL:-postgres://trefoil:trefoil@127.0.0.1:5432/trefoil}
+DATABASE_URL=${DATABASE_URL:-postgres://trefoil:trefoil@127.0.0.1:${POSTGRES_PORT}/trefoil}
 SKIP_REFERENCE_BUILD=${SKIP_REFERENCE_BUILD:-0}
 SKIP_TREFOIL_BUILD=${SKIP_TREFOIL_BUILD:-0}
 
@@ -24,7 +26,7 @@ cleanup() {
   [[ -n "$trefoil_pid" ]] && kill "$trefoil_pid" 2>/dev/null
   [[ -n "$plexus_pid" ]] && wait "$plexus_pid" 2>/dev/null
   [[ -n "$trefoil_pid" ]] && wait "$trefoil_pid" 2>/dev/null
-  docker compose -f "$ROOT/docker-compose.yml" down -v >/dev/null 2>&1
+  docker compose -p "$COMPOSE_PROJECT_NAME" -f "$ROOT/docker-compose.yml" down -v >/dev/null 2>&1
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT INT TERM
@@ -39,10 +41,11 @@ command -v docker >/dev/null || die "docker is required"
 echo "Starting PostgreSQL..."
 # The parity database is disposable; remove the named volume so every run
 # starts from the same migration state.
-docker compose -f "$ROOT/docker-compose.yml" down -v >/dev/null 2>&1
-docker compose -f "$ROOT/docker-compose.yml" up -d postgres >/dev/null
+docker compose -p "$COMPOSE_PROJECT_NAME" -f "$ROOT/docker-compose.yml" down -v >/dev/null 2>&1
+postgres_id=$(docker compose -p "$COMPOSE_PROJECT_NAME" -f "$ROOT/docker-compose.yml" run -d --service-ports -p "$POSTGRES_PORT:5432" postgres)
+
 for attempt in {1..60}; do
-  if docker compose -f "$ROOT/docker-compose.yml" exec -T postgres pg_isready -U trefoil -d trefoil >/dev/null 2>&1; then break; fi
+  if docker exec "$postgres_id" pg_isready -U trefoil -d trefoil >/dev/null 2>&1; then break; fi
   [[ "$attempt" == 60 ]] && die "PostgreSQL did not become ready"
   sleep 1
 done
@@ -64,7 +67,7 @@ echo "Starting Plexus and Trefoil..."
 ) >"$plexus_log" 2>&1 & plexus_pid=$!
 (
   cd "$ROOT"
-  DATABASE_URL="$DATABASE_URL" ADMIN_KEY="$ADMIN_KEY" \
+  DATABASE_URL="$DATABASE_URL" ADMIN_KEY="$ADMIN_KEY" PORT="$TREFOIL_PORT" \
     ./target/debug/trefoil-backend
 ) >"$trefoil_log" 2>&1 & trefoil_pid=$!
 

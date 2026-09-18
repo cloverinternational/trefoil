@@ -24,7 +24,7 @@ const TREFOIL_BASE_URL = process.env.TREFOIL_BASE_URL ?? 'http://127.0.0.1:8080'
 const ADMIN_KEY = 'correct-admin-key';
 const LIMITED_KEY_SECRET = 'sk-test-secret';
 const REQUEST_TIMEOUT_MS = 15_000;
-const EXPECTED_CASE_COUNT = 313;
+const EXPECTED_CASE_COUNT = 407;
 const REPORT_PATH = process.env.PARITY_REPORT ?? 'target/differential-report.json';
 
 type CaseStatus = 'pass' | 'fail' | 'error';
@@ -141,6 +141,7 @@ function registeredCaseGroups(): Case[][] {
     QUOTA_CLEAR_CASES,
     CUSTOM_CHECKER_CASES,
     MCP_CASES,
+    MCP_TOOL_CASES,
     DEBUG_LOG_CASES,
     MCP_LOG_CASES,
     INFERENCE_CASES,
@@ -1327,17 +1328,43 @@ const CUSTOM_CHECKER_CASES: KeysCase[] = [
 
 const MCP_SERVER_NAME = `parity-mcp-${runId}`;
 const MCP_CASES: KeysCase[] = [
+  { name: 'GET MCP server list returns a collection', method: 'GET', path: '/v0/management/mcp-servers', adminHeader: ADMIN_KEY },
   { name: 'PUT MCP server creates fixture', method: 'PUT', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY, body: { upstream_url: 'https://example.invalid/mcp', enabled: true, mode: 'remote_http', auth_scheme: 'bearer' } },
   { name: 'GET MCP server returns persisted configuration', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY },
   { name: 'PATCH MCP server preserves omitted fields', method: 'PATCH', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY, body: { enabled: false } },
   { name: 'POST MCP key creates access key', method: 'POST', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/keys`, adminHeader: ADMIN_KEY, body: { key: `parity-mcp-key-${runId}`, is_active: true } },
   { name: 'GET MCP keys lists persisted access key', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/keys`, adminHeader: ADMIN_KEY },
+  { name: 'DELETE MCP missing key returns 404', method: 'DELETE', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/keys/999999`, adminHeader: ADMIN_KEY },
+  { name: 'POST MCP missing key clear cooldown returns 404', method: 'POST', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/keys/999999/clear-cooldown`, adminHeader: ADMIN_KEY },
   { name: 'PUT MCP server rejects invalid mode', method: 'PUT', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}-bad`, adminHeader: ADMIN_KEY, body: { upstream_url: 'https://example.invalid/mcp', mode: 'invalid' } },
   { name: 'GET missing MCP server returns 404', method: 'GET', path: '/v0/management/mcp-servers/parity-missing-server', adminHeader: ADMIN_KEY },
   { name: 'GET MCP server rejects limited key', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET MCP server status returns lifecycle state', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/status`, adminHeader: ADMIN_KEY },
+  { name: 'GET MCP server process logs returns a page', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/process-logs`, adminHeader: ADMIN_KEY },
+  { name: 'POST MCP server start validates remote mode', method: 'POST', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/start`, adminHeader: ADMIN_KEY },
+  { name: 'POST MCP server stop validates remote mode', method: 'POST', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/stop`, adminHeader: ADMIN_KEY },
+  { name: 'POST MCP server restart validates remote mode', method: 'POST', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/restart`, adminHeader: ADMIN_KEY },
   { name: 'DELETE MCP server removes fixture', method: 'DELETE', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY },
   { name: 'GET deleted MCP server returns 404', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY },
 ];
+
+const MCP_TOOL_OPERATIONS: Array<[string, string]> = [
+  ['plexus_config','status'],['plexus_config','get'],['plexus_config','timeout'],['plexus_config','mcp_enabled'],['plexus_config','compaction'],['plexus_config','exploration_rate'],['plexus_config','failover'],['plexus_config','cooldown'],['plexus_config','capture_trace_on_error'],['plexus_config','stall'],['plexus_config','vision_fallthrough'],['plexus_config','background_exploration'],['plexus_config','trusted_proxies'],['plexus_config','export'],
+  ['plexus_provider','list'],['plexus_provider','get'],['plexus_provider','put'],['plexus_provider','create'],['plexus_provider','update'],['plexus_provider','delete'],['plexus_provider','fetch_models'],
+  ['plexus_model_alias','list'],['plexus_model_alias','get'],['plexus_model_alias','put'],['plexus_model_alias','create'],['plexus_model_alias','update'],['plexus_model_alias','delete'],['plexus_model_alias','delete_all'],
+  ['plexus_key','list'],['plexus_key','get'],['plexus_key','put'],['plexus_key','create'],['plexus_key','update'],['plexus_key','delete'],['plexus_key','disable'],
+  ['plexus_usage','list'],['plexus_usage','summary'],['plexus_usage','delete'],['plexus_usage','delete_all'],
+  ['plexus_mcp_gateway','servers_list'],['plexus_mcp_gateway','list'],['plexus_mcp_gateway','get'],['plexus_mcp_gateway','status'],['plexus_mcp_gateway','process_logs'],['plexus_mcp_gateway','start'],['plexus_mcp_gateway','stop'],['plexus_mcp_gateway','restart'],['plexus_mcp_gateway','put'],['plexus_mcp_gateway','create'],['plexus_mcp_gateway','update'],['plexus_mcp_gateway','delete'],
+  ['plexus_settings','get'],['plexus_system_logs','recent'],['plexus_system_logs','level'],['plexus_system_logs','set_level'],['plexus_system_logs','reset_level'],['plexus_system_logs','modules'],['plexus_system_logs','set_modules'],['plexus_system_logs','reset_modules'],
+  ['plexus_debug','state'],['plexus_debug','update'],['plexus_debug','logs'],['plexus_debug','get_log'],['plexus_debug','delete_log'],['plexus_debug','delete_all_logs'],
+  ['plexus_quota','list'],['plexus_quota','get'],['plexus_quota','put'],['plexus_quota','update'],['plexus_quota','delete'],['plexus_quota','status'],['plexus_quota','clear'],['plexus_quota','recompute'],
+  ['plexus_quota_checker','types'],['plexus_quota_checker','list'],['plexus_quota_checker','get'],['plexus_quota_checker','put'],['plexus_quota_checker','update'],['plexus_quota_checker','delete'],
+  ['plexus_operations','backup'],['plexus_operations','restore'],['plexus_operations','restart'],['plexus_operations','list_cooldowns'],['plexus_operations','clear_cooldowns'],['plexus_operations','reset_logs'],['plexus_operations','refresh_metadata'],
+];
+const MCP_TOOL_CASES: KeysCase[] = MCP_TOOL_OPERATIONS.map(([tool, operation]) => ({
+  name: `MCP tools/call ${tool}/${operation}`, method: 'POST', path: '/mcp/plexus', adminHeader: ADMIN_KEY,
+  body: { jsonrpc: '2.0', id: `${tool}-${operation}`, method: 'tools/call', params: { name: tool, arguments: { operation } } },
+}));
 
 const DEBUG_LOG_CASES: KeysCase[] = [
   { name: 'GET debug/logs returns scoped page', method: 'GET', path: '/v0/management/debug/logs?limit=5&offset=0', adminHeader: ADMIN_KEY },
@@ -1665,6 +1692,7 @@ async function main() {
   failures += await runCases(QUOTA_CLEAR_CASES);
   failures += await runCases(CUSTOM_CHECKER_CASES);
   failures += await runCases(MCP_CASES);
+  failures += await runCases(MCP_TOOL_CASES);
   failures += await runCases(DEBUG_LOG_CASES);
   failures += await runCases(MCP_LOG_CASES);
   failures += await runCases(INFERENCE_CASES);
