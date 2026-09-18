@@ -27,6 +27,38 @@ import {
   getMcpKeys,
   addMcpKey,
   deleteMcpKey,
+  getLoggingLevel,
+  setLoggingLevel,
+  resetLoggingLevel,
+  getModuleFilter,
+  setModuleFilter,
+  clearModuleFilter,
+  getDebugState,
+  patchDebugState,
+  getDebugLogs,
+  getDebugLog,
+  deleteDebugLog,
+  deleteDebugLogs,
+  getErrors,
+  deleteError,
+  deleteErrors,
+  getKeys,
+  disableKey,
+  getSelfKey,
+  getSelfQuota,
+  updateSelfComment,
+  toggleSelfDebug,
+  rotateSelfKey,
+  getQuotas,
+  saveQuota,
+  deleteQuota,
+  getQuotaStatus,
+  resetQuota,
+  recomputeQuota,
+  getCustomQuotaCheckers,
+  saveCustomQuotaChecker,
+  deleteCustomQuotaChecker,
+  testCustomQuotaChecker,
 } from './api';
 
 const response = (body: unknown, status = 200, headers?: HeadersInit) =>
@@ -237,5 +269,85 @@ describe('frontend management API wire contracts', () => {
     await expect(getMcpServers()).rejects.toThrow('Unable to load MCP servers');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ error: 'invalid launcher' }, 400)));
     await expect(saveMcpServer('server/one', {}, false)).rejects.toThrow('invalid launcher');
+  });
+
+  it('covers logging, debug, and inference-error management contracts', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'ops-key') });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ level: 'info', startupLevel: 'warn', supportedLevels: ['info', 'warn'] }))
+      .mockResolvedValueOnce(response({ level: 'debug', startupLevel: 'warn', supportedLevels: ['debug', 'info', 'warn'] }))
+      .mockResolvedValueOnce(response({ level: 'info', startupLevel: 'warn', supportedLevels: ['info', 'warn'] }))
+      .mockResolvedValueOnce(response({ modules: ['backend::api'] }))
+      .mockResolvedValueOnce(response({ modules: ['backend::api', 'backend::db'] }))
+      .mockResolvedValueOnce(response({ modules: [] }))
+      .mockResolvedValueOnce(response({ enabled: true, enabledGlobal: false, providers: null, keys: [], aliases: [] }))
+      .mockResolvedValueOnce(response({ enabled: false, enabledGlobal: false, providers: ['openai'], keys: ['k'], aliases: [] }))
+      .mockResolvedValueOnce(response({ data: [{ requestId: 'req/1' }], total: 1 }))
+      .mockResolvedValueOnce(response({ requestId: 'req/1', responseStatus: 500 }))
+      .mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(response(null));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getLoggingLevel()).resolves.toMatchObject({ level: 'info' });
+    await expect(setLoggingLevel('debug')).resolves.toMatchObject({ level: 'debug' });
+    await expect(resetLoggingLevel()).resolves.toMatchObject({ level: 'info' });
+    await expect(getModuleFilter()).resolves.toEqual({ modules: ['backend::api'] });
+    await expect(setModuleFilter(['backend::api', 'backend::db'])).resolves.toEqual({ modules: ['backend::api', 'backend::db'] });
+    await expect(clearModuleFilter()).resolves.toEqual({ modules: [] });
+    await expect(getDebugState()).resolves.toMatchObject({ enabled: true });
+    await expect(patchDebugState({ enabled: false, providers: ['openai'], keys: ['k'], aliases: [] })).resolves.toMatchObject({ enabled: false });
+    await expect(getDebugLogs(4, 2)).resolves.toEqual({ data: [{ requestId: 'req/1' }], total: 1 });
+    await expect(getDebugLog('req/1')).resolves.toMatchObject({ requestId: 'req/1' });
+    await expect(deleteDebugLog('req/1')).resolves.toBeUndefined();
+    await expect(deleteDebugLogs()).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls.slice(0, 6)).toEqual([
+      ['/v0/management/logging/level', { headers: { 'x-admin-key': 'ops-key' } }],
+      ['/v0/management/logging/level', { method: 'PUT', headers: { 'x-admin-key': 'ops-key', 'content-type': 'application/json' }, body: '{"level":"debug"}' }],
+      ['/v0/management/logging/level', { method: 'DELETE', headers: { 'x-admin-key': 'ops-key' } }],
+      ['/v0/management/logging/modules', { headers: { 'x-admin-key': 'ops-key' } }],
+      ['/v0/management/logging/modules', { method: 'PUT', headers: { 'x-admin-key': 'ops-key', 'content-type': 'application/json' }, body: '{"modules":["backend::api","backend::db"]}' }],
+      ['/v0/management/logging/modules', { method: 'DELETE', headers: { 'x-admin-key': 'ops-key' } }],
+    ]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ error: 'Administrator access required' }, 403)));
+    await expect(getErrors()).rejects.toThrow('Unable to load inference errors');
+  });
+
+  it('covers key, self-service, quota, and custom-checker management requests', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'management-key') });
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === '/v0/management/keys') return Promise.resolve(response({ key: { comment: 'ok' } }));
+      if (url.includes('/self/me')) return Promise.resolve(response({ role: 'limited', keyName: 'key' }));
+      if (url.includes('/self/quota')) return Promise.resolve(response({ key: 'key', allowed: true }));
+      if (url === '/v0/management/custom-checkers') return Promise.resolve(response([]));
+      if (url.includes('/custom-checkers/') && url.endsWith('/test')) return Promise.resolve(response({ success: true, meters: [] }));
+      if (url.includes('/custom-checkers/')) return Promise.resolve(response({ id: 'checker/1', displayName: 'Checker', code: 'return []', enabled: true }));
+      if (url === '/v0/management/user-quotas') return Promise.resolve(response({ 'quota/1': { type: 'daily', limitType: 'requests', limit: 10 } }));
+      if (url.includes('/quota/status/')) return Promise.resolve(response({ key: 'key', quotas: [] }));
+      if (url.includes('/self/debug/toggle')) return Promise.resolve(response({ enabled: true, enabledGlobal: false }));
+      if (url.includes('/self/rotate')) return Promise.resolve(response({ secret: 'new-secret', message: 'rotated' }));
+      return Promise.resolve(response(null));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getKeys()).resolves.toEqual({ key: { comment: 'ok' } });
+    await expect(disableKey('key/1')).resolves.toBeUndefined();
+    await expect(getSelfKey()).resolves.toMatchObject({ keyName: 'key' });
+    await expect(getSelfQuota()).resolves.toMatchObject({ allowed: true });
+    await expect(updateSelfComment('updated')).resolves.toBeUndefined();
+    await expect(toggleSelfDebug(true)).resolves.toMatchObject({ enabled: true });
+    await expect(rotateSelfKey()).resolves.toMatchObject({ secret: 'new-secret' });
+    await expect(getQuotas()).resolves.toHaveProperty('quota/1');
+    await expect(saveQuota('quota/1', { type: 'daily', limitType: 'requests', limit: 10 }, true)).resolves.toBeUndefined();
+    await expect(deleteQuota('quota/1')).resolves.toBeUndefined();
+    await expect(getQuotaStatus('key/1')).resolves.toEqual({ key: 'key', quotas: [] });
+    await expect(resetQuota('key/1', 'quota/1')).resolves.toBeUndefined();
+    await expect(recomputeQuota('key/1', 'quota/1')).resolves.toBeUndefined();
+    await expect(getCustomQuotaCheckers()).resolves.toEqual([]);
+    await expect(saveCustomQuotaChecker('checker/1', { displayName: 'Checker', code: 'return []', enabled: true })).resolves.toMatchObject({ id: 'checker/1' });
+    await expect(deleteCustomQuotaChecker('checker/1')).resolves.toBeUndefined();
+    await expect(testCustomQuotaChecker('checker/1', 'openai', { window: 60 })).resolves.toEqual({ success: true, meters: [] });
+    expect(fetchMock.mock.calls.some(([url]) => url === '/v0/management/keys/key%2F1/disable')).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => url === '/v0/management/quota/clear')).toBe(true);
   });
 });
