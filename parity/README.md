@@ -189,7 +189,7 @@ Since that live run, the MCP admin shim has added configuration operations for
 MCP enablement, timeout, compaction, exploration/failover/cooldown, tracing,
 stall, vision fallthrough, background exploration, and trusted proxies, plus
 system-log level and module operations. These milestones are verified by the
-Rust unit suite at revision `af9de44` (`cargo test --all-targets`: 257 passed),
+Rust unit suite is current at 260 passing tests,
 but are not yet represented by a newer live differential-run claim.
 
 Media failover has deterministic backend evidence in

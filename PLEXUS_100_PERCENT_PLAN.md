@@ -363,7 +363,7 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** `cargo test --all-targets` passes 259 tests, including
+- **Backend tests:** `cargo test --all-targets` passes 260 tests, including
   OAuth cancellation cleanup and late-callback rejection, image-generation,
   image-edit, speech, and transcription failover ordering, terminal failure
   behavior, and disabled-failover limits.
