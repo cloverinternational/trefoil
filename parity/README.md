@@ -5,6 +5,21 @@ ported endpoints, byte-for-byte on status code and structural JSON equality.
 
 ## Usage
 
+### Unified parity verification
+
+From the repository root, run the complete validation gate:
+
+```sh
+./verify-parity.sh
+```
+
+It runs, in order, `cargo test --all-targets`, the frontend Vitest suite,
+frontend typechecking, the frontend production build, and `parity/run.sh`.
+The command is fail-fast: the first failing lane determines the non-zero exit
+status, and each successful lane is labelled in the output. It does not install
+dependencies; run `npm ci` in `frontend` and install Bun/Cargo/Docker first.
+All environment overrides documented below are passed through to the harness.
+
 ### One-shot runner (recommended)
 
 With Docker, Bun, and Cargo installed, run the complete check from the
