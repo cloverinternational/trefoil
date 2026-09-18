@@ -61,9 +61,16 @@ async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     ) {
         Some(Principal::Admin) => {}
         Some(Principal::Limited { .. }) => {
-            return restore_error(StatusCode::FORBIDDEN, "Admin privileges required")
+            return restore_auth_error(
+                StatusCode::FORBIDDEN,
+                "Admin privileges required",
+                "forbidden",
+                403,
+            )
         }
-        None => return restore_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
+        None => {
+            return restore_auth_error(StatusCode::UNAUTHORIZED, "Unauthorized", "auth_error", 401)
+        }
     }
     if body.len() > MAX_BACKUP_BYTES {
         return restore_error(StatusCode::PAYLOAD_TOO_LARGE, "Backup is too large");
@@ -100,6 +107,16 @@ async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
 
 fn restore_error(status: StatusCode, message: &str) -> Response {
     (status, axum::Json(serde_json::json!({"error": message}))).into_response()
+}
+
+fn restore_auth_error(status: StatusCode, message: &str, error_type: &str, code: u16) -> Response {
+    (
+        status,
+        axum::Json(serde_json::json!({
+            "error": { "message": message, "type": error_type, "code": code }
+        })),
+    )
+        .into_response()
 }
 
 async fn restore_archive(
@@ -290,15 +307,23 @@ async fn export(
         headers.get("x-admin-key").and_then(|v| v.to_str().ok()),
     ) {
         Some(Principal::Admin) => {}
-        Some(Principal::Limited { .. }) => return axum::Json(serde_json::json!({
-            "error": { "message": "Admin privileges required", "type": "forbidden", "code": 403 }
-        }))
-        .into_response(),
+        Some(Principal::Limited { .. }) => {
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": { "message": "Admin privileges required", "type": "forbidden", "code": 403 }
+                })),
+            )
+                .into_response()
+        }
         None => {
-            return axum::Json(serde_json::json!({
-                "error": { "message": "Unauthorized", "type": "auth_error", "code": 401 }
-            }))
-            .into_response()
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": { "message": "Unauthorized", "type": "auth_error", "code": 401 }
+                })),
+            )
+                .into_response()
         }
     }
     let Some(pool) = &state.inner.database else {

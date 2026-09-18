@@ -28,7 +28,7 @@ pub struct KeyConfig {
     pub excluded_providers: Vec<String>,
     #[serde(rename = "excludedModels", skip_serializing_if = "Vec::is_empty")]
     pub excluded_models: Vec<String>,
-    #[serde(rename = "allowRawPassthrough")]
+    #[serde(rename = "allowRawPassthrough", skip_serializing_if = "is_false")]
     pub allow_raw_passthrough: bool,
     #[serde(rename = "allowedIps", skip_serializing_if = "Vec::is_empty")]
     pub allowed_ips: Vec<String>,
@@ -36,6 +36,10 @@ pub struct KeyConfig {
     pub expires_at: Option<i64>,
     #[serde(rename = "disabledAt", skip_serializing_if = "Option::is_none")]
     pub disabled_at: Option<i64>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl KeyConfig {
