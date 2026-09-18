@@ -184,6 +184,9 @@ async fn call_tool(
         ("plexus_config", "capture_trace_on_error") => {
             return config_capture_trace_on_error_operation(state, id, args).await;
         }
+        ("plexus_config", "stall") => {
+            return config_stall_operation(state, id, args).await;
+        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
             // HashMap iteration order is intentionally unstable.  MCP clients
@@ -565,6 +568,35 @@ async fn config_capture_trace_on_error_operation(
                 "capture_trace_on_error",
                 "GET",
                 "/v0/management/config/capture-trace-on-error",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_stall_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "stall",
+                "PATCH",
+                "/v0/management/config/stall",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "stall",
+                "GET",
+                "/v0/management/config/stall",
                 None,
             )
             .await
@@ -1755,6 +1787,65 @@ mod tests {
         );
         let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"exploration_rate","body":{"performanceExplorationRate":2}}}})).await).await;
         assert_eq!(invalid["result"]["structuredContent"]["ok"], false);
+    }
+
+    #[tokio::test]
+    async fn config_stall_supports_read_patch_and_validation() {
+        let state = state();
+        let read = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id":31, "method":"tools/call",
+                    "params":{"name":"plexus_config","arguments":{"operation":"stall"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(read["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            read["result"]["structuredContent"]["data"]["ttfbBytes"],
+            100
+        );
+        let patched = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id":32, "method":"tools/call",
+                    "params":{"name":"plexus_config","arguments":{"operation":"stall","body":{
+                        "ttfbSeconds":"12.5", "ttfbBytes":"250", "stallCooldown":true
+                    }}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(patched["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            patched["result"]["structuredContent"]["data"]["ttfbSeconds"],
+            12.5
+        );
+        assert_eq!(
+            patched["result"]["structuredContent"]["data"]["ttfbBytes"],
+            250
+        );
+        assert_eq!(
+            patched["result"]["structuredContent"]["data"]["stallCooldown"],
+            true
+        );
+        let invalid = body(
+            dispatch(
+                &state,
+                json!({
+                    "jsonrpc":"2.0", "id":33, "method":"tools/call",
+                    "params":{"name":"plexus_config","arguments":{"operation":"stall","body":[]}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(invalid["error"]["code"], -32602);
     }
 
     #[tokio::test]
