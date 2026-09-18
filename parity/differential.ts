@@ -81,6 +81,27 @@ function normalize(body: unknown): unknown {
 
 function normalizeForCase(path: string, body: unknown): unknown {
   const normalized = normalize(body);
+  if ((path.includes('/custom-checkers/') || path === '/v0/management/custom-checkers') && normalized && typeof normalized === 'object') {
+    const scrub = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(scrub);
+      if (!value || typeof value !== 'object') return value;
+      const object = { ...(value as Record<string, unknown>) };
+      delete object.createdAt;
+      delete object.updatedAt;
+      return object;
+    };
+    return scrub(normalized);
+  }
+  if (path.includes('/mcp-servers/') && path.includes('/keys') && normalized && typeof normalized === 'object') {
+    const scrub = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(scrub);
+      if (!value || typeof value !== 'object') return value;
+      const object = { ...(value as Record<string, unknown>) };
+      if (typeof object.id === 'number') object.id = '<integer>';
+      return object;
+    };
+    return scrub(normalized);
+  }
   if (
     path === '/v0/management/config' &&
     normalized &&
@@ -1139,6 +1160,34 @@ const QUOTA_CLEAR_CASES: KeysCase[] = [
   { name: 'POST quota/clear rejects limited key', method: 'POST', path: '/v0/management/quota/clear', adminHeader: LIMITED_KEY_SECRET, body: { key: 'x' } },
 ];
 
+const CUSTOM_CHECKER_ID = `parity-checker-${runId}`;
+const CUSTOM_CHECKER_CODE = "return [{ key: provider, used: options.used, status: 'ok' }];";
+const CUSTOM_CHECKER_CASES: KeysCase[] = [
+  { name: 'PUT custom checker creates fixture', method: 'PUT', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY, body: { displayName: 'Parity checker', code: CUSTOM_CHECKER_CODE, enabled: true } },
+  { name: 'GET custom checker returns persisted definition', method: 'GET', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY },
+  { name: 'PATCH custom checker preserves omitted fields', method: 'PATCH', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY, body: { enabled: false } },
+  { name: 'POST custom checker test returns meters', method: 'POST', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY, body: { provider: 'parity-provider', options: { used: 42 }, code: CUSTOM_CHECKER_CODE } },
+  { name: 'POST custom checker check rejects disabled fixture', method: 'POST', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}/check`, adminHeader: ADMIN_KEY, body: { provider: 'parity-provider', options: { used: 42 } } },
+  { name: 'PUT custom checker rejects malformed code', method: 'PUT', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}-bad`, adminHeader: ADMIN_KEY, body: { displayName: 'Bad', code: "return require('fs');" } },
+  { name: 'GET custom checker rejects limited key', method: 'GET', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: LIMITED_KEY_SECRET },
+  { name: 'DELETE custom checker removes fixture', method: 'DELETE', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY },
+  { name: 'GET deleted custom checker returns 404', method: 'GET', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY },
+];
+
+const MCP_SERVER_NAME = `parity-mcp-${runId}`;
+const MCP_CASES: KeysCase[] = [
+  { name: 'PUT MCP server creates fixture', method: 'PUT', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY, body: { upstream_url: 'https://example.invalid/mcp', enabled: true, mode: 'remote_http', auth_scheme: 'bearer' } },
+  { name: 'GET MCP server returns persisted configuration', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY },
+  { name: 'PATCH MCP server preserves omitted fields', method: 'PATCH', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY, body: { enabled: false } },
+  { name: 'POST MCP key creates access key', method: 'POST', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/keys`, adminHeader: ADMIN_KEY, body: { key: `parity-mcp-key-${runId}`, is_active: true } },
+  { name: 'GET MCP keys lists persisted access key', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}/keys`, adminHeader: ADMIN_KEY },
+  { name: 'PUT MCP server rejects invalid mode', method: 'PUT', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}-bad`, adminHeader: ADMIN_KEY, body: { upstream_url: 'https://example.invalid/mcp', mode: 'invalid' } },
+  { name: 'GET missing MCP server returns 404', method: 'GET', path: '/v0/management/mcp-servers/parity-missing-server', adminHeader: ADMIN_KEY },
+  { name: 'GET MCP server rejects limited key', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: LIMITED_KEY_SECRET },
+  { name: 'DELETE MCP server removes fixture', method: 'DELETE', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY },
+  { name: 'GET deleted MCP server returns 404', method: 'GET', path: `/v0/management/mcp-servers/${MCP_SERVER_NAME}`, adminHeader: ADMIN_KEY },
+];
+
 const DEBUG_LOG_CASES: KeysCase[] = [
   { name: 'GET debug/logs returns scoped page', method: 'GET', path: '/v0/management/debug/logs?limit=5&offset=0', adminHeader: ADMIN_KEY },
   { name: 'GET missing debug log returns 404', method: 'GET', path: '/v0/management/debug/logs/parity-missing-log', adminHeader: ADMIN_KEY },
@@ -1423,6 +1472,8 @@ async function main() {
   failures += await runCases(COMPACTION_CASES);
   failures += await runCases(QUOTA_DISCOVERY_CASES);
   failures += await runCases(QUOTA_CLEAR_CASES);
+  failures += await runCases(CUSTOM_CHECKER_CASES);
+  failures += await runCases(MCP_CASES);
   failures += await runCases(DEBUG_LOG_CASES);
   failures += await runCases(MCP_LOG_CASES);
   failures += await runCases(INFERENCE_CASES);
@@ -1482,6 +1533,8 @@ async function main() {
     COMPACTION_CASES.length +
     QUOTA_DISCOVERY_CASES.length +
     QUOTA_CLEAR_CASES.length +
+    CUSTOM_CHECKER_CASES.length +
+    MCP_CASES.length +
     DEBUG_LOG_CASES.length +
     MCP_LOG_CASES.length +
     INFERENCE_CASES.length +
