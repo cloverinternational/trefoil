@@ -41,6 +41,38 @@ def git_revision(root: pathlib.Path) -> str:
     return result.stdout.strip()
 
 
+def differential_case_count(source: str) -> int:
+    """Count case objects, excluding nested request fixtures."""
+    total = 0
+    for match in re.finditer(r"const\s+(?:CASES|\w+_CASES)\b[^=]*=\s*\[", source):
+        start = match.end()
+        end = source.find("\n];", start)
+        if end < 0:
+            raise RuntimeError("unterminated differential case array")
+        depth = 0
+        quote = None
+        escaped = False
+        for char in source[start:end]:
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+                continue
+            if char in "'\"`":
+                quote = char
+            elif char == "{" and depth == 0:
+                total += 1
+                depth += 1
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+    return total
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parent.parent)
@@ -60,11 +92,7 @@ def main() -> int:
             raise RuntimeError(f"OpenAPI paths is not an object: {openapi_path}")
         differential = required(root / "parity" / "differential.ts").read_text()
         counts = {
-            # Case objects are often kept inline with their surrounding
-            # array entry, so line anchoring silently undercounts them.
-            # `name: 'g'` also appears inside four nested alias target-group
-            # fixtures; those are fields, not differential case objects.
-            "differential_named_cases": len(re.findall(r"\bname:\s*(['\"])", differential)) - len(re.findall(r"\bname:\s*['\"]g['\"]", differential)),
+            "differential_named_cases": differential_case_count(differential),
             "trefoil_router_declarations": rust_text.count(".route("),
             "plexus_openapi_paths": len(openapi["paths"]),
             "plexus_openapi_operations": sum(
