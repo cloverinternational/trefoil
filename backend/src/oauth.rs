@@ -20,7 +20,7 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SUPPORTED_PROVIDERS: &[&str] = &[
     "anthropic",
@@ -259,6 +259,11 @@ async fn start_device_session(state: AppState, account: String, provider: String
     session_response(session)
 }
 
+async fn start_codex_device_session(state:AppState,account:String)->Response {
+ let Some(pool)=state.inner.database.as_ref() else{return(StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"PostgreSQL is required for device login"}))).into_response()};
+ if crate::credential_crypto::CredentialKey::from_env().is_err(){return(StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"OAuth credential encryption is not configured"}))).into_response()};
+ let device=match crate::codex_oauth::start().await{Ok(device)=>device,Err(error)=>return(StatusCode::BAD_GATEWAY,Json(serde_json::json!({"error":error}))).into_response()};let now=now_ms();let id=session_id();let session=OAuthSession{id:id.clone(),provider_id:"openai-codex".into(),account_id:account,status:"waiting".into(),auth_info:Some(serde_json::json!({"url":"https://auth.openai.com/codex/device","userCode":device.code,"instructions":format!("Enter code {} at the verification URL.",device.code)})),prompt:None,progress:vec![],error:None,created_at:now,updated_at:now,expires_at:now+900000,pkce_verifier:None};if crate::database::upsert_oauth_session(pool,&session).await.is_err(){return(StatusCode::INTERNAL_SERVER_ERROR,Json(serde_json::json!({"error":"Unable to persist device session"}))).into_response()};state.inner.oauth_sessions.write().unwrap().insert(id.clone(),session.clone());let account_id=session.account_id.clone();tokio::spawn(async move{let mut interval=device.interval;loop{if !state.inner.oauth_sessions.read().unwrap().get(&id).is_some_and(|s|s.status=="waiting"&&s.expires_at>now_ms()){break}tokio::time::sleep(interval).await;match crate::codex_oauth::poll(&device).await{Ok(crate::codex_oauth::Poll::Pending)=>{},Ok(crate::codex_oauth::Poll::SlowDown)=>interval=interval.saturating_add(Duration::from_secs(5)),Ok(crate::codex_oauth::Poll::Complete{code,verifier})=>{let Some(pool)=state.inner.database.as_ref()else{break};if !matches!(crate::database::claim_oauth_exchange(pool,&id).await,Ok(true)){break}if let Some(s)=state.inner.oauth_sessions.write().unwrap().get_mut(&id){s.status="exchanging".into()}let transport=crate::oauth_transport::ReqwestTransport;match crate::oauth_transport::exchange(&transport,"openai-codex",&code,&verifier,"https://auth.openai.com/deviceauth/callback").await{Ok(token)=>{let expires=now_ms()+token.expires_in*1000;let _=crate::database::complete_oauth_exchange(pool,&id,"openai-codex",&account_id,&token.access_token,&token.refresh_token,expires).await;let _=update_session(&state,&id,"manual-code",Some("complete".into())).await;}Err(_)=>{let _=oauth_failed(&state,&id,"Codex device exchange failed",StatusCode::BAD_GATEWAY).await;}}break},Err(error)=>{let _=oauth_failed(&state,&id,&error,StatusCode::BAD_GATEWAY).await;break}}}});session_response(session)}
+
 async fn create_session(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -281,6 +286,7 @@ async fn create_session(
         )
             .into_response();
     }
+    if body.provider_id == "openai-codex" {return start_codex_device_session(state,body.account_id).await;}
     if matches!(body.provider_id.as_str(), "github-copilot" | "kimi-coding" | "xai") { return start_device_session(state,body.account_id,body.provider_id).await; }
     let now = now_ms();
     let id = session_id();

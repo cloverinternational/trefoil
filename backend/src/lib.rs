@@ -3,6 +3,7 @@ pub mod anthropic_masking;
 pub mod auth;
 pub mod backup;
 pub mod codex_masking;
+pub mod codex_oauth;
 pub mod concurrency;
 pub mod copilot_oauth;
 pub mod config_routes;
