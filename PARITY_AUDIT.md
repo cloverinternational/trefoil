@@ -1,5 +1,17 @@
 # Trefoil/Plexus Parity Audit (granular re-audit)
 
+> **Current evidence.** Regenerate the source-traceable inventory with
+> `python3 parity/counts.py --reference-dir .reference/plexus` (see
+> `parity/README.md#reproducible-evidence-counts`). The command records the
+> exact Trefoil/reference revisions and input hashes; it fails closed when the
+> reference checkout is missing or malformed.
+
+The counts below are historical claims unless they are reproduced by that
+command. In particular, route counts from earlier audits are not mechanically
+comparable to the current `.route(...)` declaration count: Axum combines
+methods and mounts nested routers, while the reference inventory uses OpenAPI
+operations.
+
 Re-audited directly against `.reference/plexus` source (not the prior
 estimate). Route inventory extracted mechanically from both codebases and
 diffed; feature depth verified by reading handler bodies.
@@ -109,10 +121,30 @@ one call per verb. Not an actual gap.
 
 ## Verified this pass
 
-- [x] 173/173 Rust unit tests pass (`cargo test --release`, <1s).
-- [x] 156 route entries confirmed live in `lib.rs`/module routers.
+The current checkout's reproducible count output is the authority for numeric
+claims. It must be generated at audit time because the reference checkout is
+external and both repositories continue to change. A successful command emits
+`target/parity-counts.json` when redirected as shown above; its `inputs` hashes
+provide source-to-count traceability.
+
+At this revision (`dd975f1`, reference `31b09ce`), the command produced:
+
+| Input-derived measure | Count |
+|---|---:|
+| Named differential cases | 135 |
+| Trefoil `.route(...)` declarations | 128 |
+| Plexus OpenAPI paths | 123 |
+| Plexus OpenAPI operations | 177 |
+| Trefoil SQL migrations | 86 |
+
+These are inventory measures, not a claim that every route or case is
+behaviorally complete. The JSON output is the fixture for this table and
+includes hashes and revisions needed to detect drift.
+
+- [historical] 173/173 Rust unit tests pass (`cargo test --release`, <1s).
+- [historical] 156 route entries confirmed live in `lib.rs`/module routers.
 - [x] Backup table list is an exact 13-table match to Plexus.
-- [x] Migration count is 84 (Trefoil) vs 83 (Plexus), consistent history.
+- [historical] Migration count was 84 (Trefoil) vs 83 (Plexus), consistent history.
 - [x] OAuth (MCP-client) authorization-code + PKCE + refresh rotation is
       real, DB-backed, and more complete than previously scored.
 - [x] Provider OAuth discovery reports callback/manual-code capabilities for
