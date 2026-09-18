@@ -177,6 +177,7 @@ async fn call_tool(
             }
         }
         ("plexus_provider", "put")
+        | ("plexus_provider", "create")
         | ("plexus_provider", "update")
         | ("plexus_provider", "delete")
         | ("plexus_provider", "fetch_models") => {
@@ -185,6 +186,7 @@ async fn call_tool(
         ("plexus_model_alias", "list")
         | ("plexus_model_alias", "get")
         | ("plexus_model_alias", "put")
+        | ("plexus_model_alias", "create")
         | ("plexus_model_alias", "update")
         | ("plexus_model_alias", "delete")
         | ("plexus_model_alias", "delete_all") => {
@@ -206,6 +208,7 @@ async fn call_tool(
             return usage_operation(state, id, operation, args).await;
         }
         ("plexus_mcp_gateway", "servers_list")
+        | ("plexus_mcp_gateway", "list")
         | ("plexus_mcp_gateway", "get")
         | ("plexus_mcp_gateway", "status")
         | ("plexus_mcp_gateway", "process_logs")
@@ -213,6 +216,7 @@ async fn call_tool(
         | ("plexus_mcp_gateway", "stop")
         | ("plexus_mcp_gateway", "restart")
         | ("plexus_mcp_gateway", "put")
+        | ("plexus_mcp_gateway", "create")
         | ("plexus_mcp_gateway", "update")
         | ("plexus_mcp_gateway", "delete") => {
             return mcp_gateway_operation(state, id, operation, args).await;
@@ -388,7 +392,11 @@ async fn quota_checker_operation(
                     return rpc_error(id, -32602, "body is required");
                 };
                 (
-                    if operation == "put" { "PUT" } else { "PATCH" },
+                    if matches!(operation, "put" | "create") {
+                        "PUT"
+                    } else {
+                        "PATCH"
+                    },
                     format!("/v0/management/custom-checkers/{checker_id}"),
                     Some(body.clone()),
                 )
@@ -810,7 +818,7 @@ async fn model_alias_operation(
             };
             ("GET", format!("/v0/management/aliases/{slug}"), None)
         }
-        "put" | "update" => {
+        "put" | "create" | "update" => {
             let Some(slug) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
@@ -818,7 +826,11 @@ async fn model_alias_operation(
                 return rpc_error(id, -32602, "body is required");
             };
             (
-                if operation == "put" { "PUT" } else { "PATCH" },
+                if matches!(operation, "put" | "create") {
+                    "PUT"
+                } else {
+                    "PATCH"
+                },
                 format!("/v0/management/aliases/{slug}"),
                 Some(body.clone()),
             )
@@ -1004,14 +1016,14 @@ async fn mcp_gateway_operation(
 
     let args = args.cloned().unwrap_or_else(|| json!({}));
     let (method, path, body) = match operation {
-        "servers_list" => ("GET", "/v0/management/mcp-servers".to_string(), None),
+        "servers_list" | "list" => ("GET", "/v0/management/mcp-servers".to_string(), None),
         "get" => {
             let Some(name) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
             ("GET", format!("/v0/management/mcp-servers/{name}"), None)
         }
-        "put" | "update" => {
+        "put" | "create" | "update" => {
             let Some(name) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
@@ -1019,7 +1031,11 @@ async fn mcp_gateway_operation(
                 return rpc_error(id, -32602, "body is required");
             };
             (
-                if operation == "put" { "PUT" } else { "PATCH" },
+                if matches!(operation, "put" | "create") {
+                    "PUT"
+                } else {
+                    "PATCH"
+                },
                 format!("/v0/management/mcp-servers/{name}"),
                 Some(body.clone()),
             )
@@ -1200,12 +1216,16 @@ async fn provider_operation(
         return rpc_error(id, -32602, "id is required");
     };
     let (method, path, body) = match operation {
-        "put" | "update" => {
+        "put" | "create" | "update" => {
             let Some(body) = args.get("body") else {
                 return rpc_error(id, -32602, "body is required");
             };
             (
-                if operation == "put" { "PUT" } else { "PATCH" },
+                if matches!(operation, "put" | "create") {
+                    "PUT"
+                } else {
+                    "PATCH"
+                },
                 format!("/v0/management/providers/{provider_id}"),
                 Some(body.clone()),
             )
