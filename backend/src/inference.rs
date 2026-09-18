@@ -1694,17 +1694,11 @@ async fn metadata_search(
             "invalid_request_error",
         );
     };
-    let q = query.q.unwrap_or_default().to_lowercase();
-    let results = state
-        .inner
-        .aliases
-        .read()
-        .unwrap()
-        .keys()
-        .filter(|id| q.is_empty() || id.to_lowercase().contains(&q))
-        .take(query.limit.unwrap_or(50).min(200))
-        .map(|id| serde_json::json!({"id":id,"source":source}))
-        .collect::<Vec<_>>();
+    if !crate::metadata::initialized(source) {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":format!("Metadata source '{source}' is not yet loaded or failed to load")}))).into_response();
+    }
+    let q = query.q.unwrap_or_default();
+    let results = crate::metadata::search(source, &q, query.limit.unwrap_or(50)).into_iter().map(|model|json!({"id":model.id,"name":model.name})).collect::<Vec<_>>();
     Json(serde_json::json!({"data":results,"count":results.len()})).into_response()
 }
 #[derive(serde::Deserialize)]
@@ -1722,29 +1716,21 @@ async fn metadata_lookup(
     if authenticate(&state, &headers).is_err() {
         return auth_error(axum::http::StatusCode::UNAUTHORIZED, "Unauthorized");
     }
-    if query
-        .source
-        .as_deref()
-        .is_none_or(|source| !["openrouter", "models.dev", "catwalk"].contains(&source))
-        || query.source_path.is_none()
-    {
-        return error_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            "Missing or invalid metadata parameters",
-            "invalid_request_error",
-        );
+    let Some(source)=query.source.as_deref().filter(|source| ["openrouter","models.dev","catwalk"].contains(source)) else {
+        return (axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":"Missing or invalid 'source' parameter. Must be one of: openrouter, models.dev, catwalk"}))).into_response();
+    };
+    let Some(path)=query.source_path.filter(|path|!path.is_empty()) else {
+        return (axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":"Missing 'source_path' parameter"}))).into_response();
+    };
+    if !crate::metadata::initialized(source) {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":format!("Metadata source '{source}' is not yet loaded or failed to load")}))).into_response();
     }
-    let path = query.source_path.unwrap();
-    if state.inner.aliases.read().unwrap().contains_key(&path) {
-        Json(serde_json::json!({"data":{"id":path}})).into_response()
-    } else {
-        error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            "No metadata found",
-            "not_found_error",
-        )
+    match crate::metadata::lookup(source,&path) {
+        Some(metadata)=>Json(json!({"data":metadata})).into_response(),
+        None=>(axum::http::StatusCode::NOT_FOUND,Json(json!({"error":format!("No metadata found for '{path}' in source '{source}'")}))).into_response()
     }
 }
+
 async fn openrouter_models(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -312,6 +312,16 @@ pub async fn refresh(urls: SourceUrls, trigger: &str) -> RefreshReport {
     }
 }
 
+pub fn initialized(source: &str) -> bool {
+    !search(source, "", 1).is_empty()
+}
+
+pub fn lookup(source: &str, id: &str) -> Option<ModelMetadata> {
+    let guard=catalogs().read().unwrap();
+    let map=match source {"openrouter"=>&guard.openrouter,"models.dev"=>&guard.models_dev,"catwalk"=>&guard.catwalk,_=>return None};
+    map.get(id).cloned()
+}
+
 pub fn search(source: &str, query: &str, limit: usize) -> Vec<ModelMetadata> {
     let guard = catalogs().read().unwrap();
     let map = match source {
@@ -366,5 +376,26 @@ mod upstream_tests {
         assert_eq!(catalog.len(), 2);
         assert!(catalog.contains_key("chat") && catalog.contains_key("embed"));
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod consumer_tests {
+    use super::*;
+    use axum::{body::Body,http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn metadata_routes_read_refreshed_catalog_not_aliases() {
+        let model=ModelMetadata{id:"fixture/vision".into(),name:"Fixture vision".into(),description:None,context_length:Some(64000),architecture:None,pricing:None,supported_parameters:None};
+        catalogs().write().unwrap().openrouter.insert(model.id.clone(),model);
+        let state=crate::AppState::new(Some("admin".into()),Default::default());
+        for (path,lookup) in [("/v1/metadata/search?source=openrouter&q=fixture/vision",false),("/v1/metadata/lookup?source=openrouter&source_path=fixture/vision",true)] {
+            let response=crate::app(state.clone()).oneshot(Request::get(path).header("x-api-key","admin").body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(),axum::http::StatusCode::OK);
+            let payload:serde_json::Value=serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+            if lookup {assert_eq!(payload["data"]["context_length"],64000);} else {assert_eq!(payload["data"][0]["name"],"Fixture vision");}
+        }
+        catalogs().write().unwrap().openrouter.remove("fixture/vision");
     }
 }
