@@ -16,6 +16,7 @@ use axum::{
 use futures_util::{Stream, StreamExt};
 use serde_json::Value;
 use sqlx::Row;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -47,7 +48,7 @@ struct StreamAccounting {
 }
 
 impl StreamAccounting {
-    async fn finalize(&mut self, success: bool) {
+    async fn finalize(&mut self, outcome: &str) {
         if self.finalized {
             return;
         }
@@ -56,7 +57,7 @@ impl StreamAccounting {
             let id = now_ms();
             let _ = sender.send(crate::usage::UsageEvent {
                 kind: "completed".into(), id, api_key: self.key_name.clone(),
-                data: serde_json::json!({"requestId": self.request_id, "apiKey": self.key_name, "provider": self.provider, "responseStatus": if success { "success" } else { "error" }, "durationMs": id.saturating_sub(self.start_time)}),
+                data: serde_json::json!({"requestId": self.request_id, "apiKey": self.key_name, "provider": self.provider, "responseStatus": outcome, "durationMs": id.saturating_sub(self.start_time)}),
             });
         }
         let Some(pool) = &self.pool else { return };
@@ -67,7 +68,7 @@ impl StreamAccounting {
             Some(&self.provider),
             Some(&self.model),
             &self.api_type,
-            if success { "success" } else { "error" },
+            outcome,
             true,
             self.start_time,
         )
@@ -134,17 +135,41 @@ impl StreamAccounting {
     }
 }
 
+struct AccountingGuard {
+    state: Arc<tokio::sync::Mutex<StreamAccounting>>,
+    finished: Arc<AtomicBool>,
+}
+
+impl Drop for AccountingGuard {
+    fn drop(&mut self) {
+        if self.finished.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let state = self.state.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                state.lock().await.finalize("cancelled").await;
+            });
+        }
+    }
+}
+
 fn accounted_sse_body<S>(stream: S, accounting: StreamAccounting) -> Body
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
 {
     let state = Arc::new(tokio::sync::Mutex::new(accounting));
+    let guard = Arc::new(AccountingGuard {
+        state: state.clone(),
+        finished: Arc::new(AtomicBool::new(false)),
+    });
+    let stream_guard = guard.clone();
     let output = stream.scan(String::new(), move |buffer, item| {
         let state = state.clone();
+        let guard = stream_guard.clone();
         let (bytes, mut terminal, error) = match item {
             Ok(bytes) => {
                 buffer.push_str(&String::from_utf8_lossy(&bytes));
-                let terminal: Option<bool> = None;
                 let mut events = Vec::new();
                 while let Some(index) = buffer.find('\n') {
                     let line = buffer[..index].trim_end_matches('\r').to_owned();
@@ -153,7 +178,7 @@ where
                         events.push(data.trim().to_owned());
                     }
                 }
-                (Some((bytes, events)), terminal, None)
+                (Some((bytes, events)), None, None)
             }
             Err(error) => (None, None, Some(error)),
         };
@@ -166,16 +191,23 @@ where
                     }
                 }
                 if let Some(success) = terminal {
-                    accounting.finalize(success).await;
+                    guard.finished.store(true, Ordering::Release);
+                    accounting
+                        .finalize(if success { "success" } else { "error" })
+                        .await;
                 }
                 Some(Ok(bytes))
             } else {
-                state.lock().await.finalize(false).await;
+                guard.finished.store(true, Ordering::Release);
+                state.lock().await.finalize("error").await;
                 Some(Err(error.expect("stream error")))
             }
         })
     });
-    Body::from_stream(output)
+    Body::from_stream(output.map(move |item| {
+        let _keep_guard = &guard;
+        item
+    }))
 }
 
 pub fn router() -> Router<AppState> {
@@ -2862,6 +2894,13 @@ mod tests {
         );
         assert_eq!(accounting.input_tokens, Some(17));
         assert_eq!(accounting.output_tokens, Some(5));
+    }
+
+    #[test]
+    fn stream_accounting_finalization_is_idempotent() {
+        let mut accounting = test_stream_accounting();
+        accounting.finalized = true;
+        assert_eq!(accounting.observe("[DONE]"), Some(true));
     }
 
     #[test]
