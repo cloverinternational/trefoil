@@ -91,4 +91,7 @@ OpenAI-compatible inference boundary. These cases intentionally cover
 authentication, required fields, streaming-request validation, and unknown
 model/provider errors without contacting a real model provider. Provider-backed
 success and SSE cases require an explicitly configured disposable upstream and
-must not use production credentials.
+must not use production credentials. The Rust unit suite provides deterministic
+disposable-upstream evidence for chat failover: it proves ordered traversal
+across two transport failures followed by success, exhaustion, and independent
+provider-not-found fallback behavior.

@@ -77,7 +77,7 @@ one call per verb. Not an actual gap.
 | Custom quota checkers | Implemented, depth partial | Migration, CRUD, check/test routes, validation, and polling are present in `custom_checkers.rs`; sandbox/runtime and exact built-in upstream checker behavior still need parity audit. |
 | Quota checker results | Partial | `/v0/management/quotas` and `/quota/status/:key` exist (real DB-backed `quota_state` reads) but the per-checker `/quotas/:checkerId`, `/history`, `/check` routes are absent — no scheduled provider-quota polling (`QuotaScheduler`) exists. |
 | Provider OAuth login flow | Routes and session state implemented; provider exchanges partial | **Partial** | `oauth.rs` implements session lifecycle, PKCE callback/manual-code capability reporting, credential persistence, and model discovery. Provider-specific exchanges and request masking remain incomplete; `backend/src/oauth.rs` tests assert every advertised provider exposes exactly one supported login flow. |
-| Inference dispatch/failover | Route-complete | Partial | `resolve_target` picks the *first* eligible alias target per group rather than iterating the full ordered target list with retry-on-failure across all candidates (Plexus's `dispatcher.ts`/`router.ts`). Each inference handler (`chat_completions`, `completions`, `embeddings`, `messages`) hand-rolls its own single-hop "fallback" branch instead of sharing one dispatch service — duplicated retry/failover/usage-recording logic across ~4 call sites in `inference.rs` (3190 lines, monolithic) vs Plexus's dedicated `services/dispatch/` package (dispatcher, media-dispatcher, standard-attempt-request, request-manager, image-model-bridge — ~4000 lines across focused modules). |
+| Inference dispatch/failover | Route-complete | Partial | Chat now snapshots eligible ordered targets and advances through every candidate after transport failures; deterministic Rust evidence covers two transport failures followed by success, exhaustion, and provider-not-found fallback traversal (`backend/src/inference.rs` failover tests). The handlers still hand-roll route-specific dispatch/retry/usage-recording logic rather than sharing Plexus's dedicated `services/dispatch/` package, so cross-route behavior remains only partially aligned. |
 | Quota enforcement | Functional, documented gap | `enforce_request_quotas` only reports the single most-constrained quota in `blocking_quotas`; Plexus aggregates all simultaneously-blocking quotas. Comment in code acknowledges this. |
 | Observability/metrics | Implemented, depth partial | Prometheus metrics, usage SSE, and system-log SSE routes are present; metric dimensions and stream edge cases still need reference comparison. |
 | Vision descriptor | Stub | `/cache/vision-descriptor/clear` is a truthful no-op (feature doesn't exist upstream in Trefoil), matches Plexus route but not Plexus behavior (Plexus actually generates/caches descriptors). |
@@ -99,8 +99,8 @@ one call per verb. Not an actual gap.
    and API adapters for newer route surfaces (metrics, events stream, custom
    MCP admin UI, playground, and the distinct logs viewer) remain.
 2. **Shared dispatch/failover service** — inference handlers duplicate
-   retry/fallback logic per-route and only try one fallback target instead of
-   iterating a full ordered candidate list; no dedicated `dispatch` module.
+   retry/fallback logic per-route; chat now iterates its full ordered candidate
+   list, but there is no dedicated `dispatch` module.
 3. **Custom quota checkers** — entire feature (schema, CRUD, sandboxed
    execution, scheduler) absent.
 4. **Provider OAuth login flow** — interactive session-based OAuth
