@@ -97,8 +97,10 @@ traversal across two transport failures followed by success, while generic
 non-chat coverage proves configured target ordering and exhaustion returns the
 final error without an extra attempt.
 
-The latest live differential run (Trefoil `91c1925`, Plexus `31b09ce`)
-completed with all 308 cases matching. OAuth provider discovery matches
+The latest live differential run (Trefoil `b0ab6fe`, Plexus `31b09ce`)
+completed with 302/302 executed MCP and custom-checker cases matching, including
+the cases added in the final differential pass. The inventory contains 308 named
+cases; the remaining six require the full service environment. OAuth provider discovery matches
 Plexus's wire shape: Trefoil omits the internal `capabilities` metadata from
 the response. Provider-backed success and SSE cases still require an
 explicitly configured disposable upstream as described above.
