@@ -52,6 +52,14 @@ fn scope_allows(scopes: Option<&str>, required: &str) -> bool {
     granted.contains(required) || (required == "mcp:read" && granted.contains("mcp:write"))
 }
 
+fn resource_matches(resource: &str, name: &str) -> bool {
+    let expected = format!("/mcp/{name}");
+    resource == expected
+        || url::Url::parse(resource)
+            .ok()
+            .is_some_and(|url| url.path() == expected)
+}
+
 fn required_scope(method: Option<&str>) -> &'static str {
     if method == Some("tools/call") {
         "mcp:write"
@@ -306,12 +314,7 @@ async fn authenticate(
         {
             let stored: String = row.try_get("access_token").unwrap_or_default();
             let resource: String = row.try_get("resource").unwrap_or_default();
-            let expected = format!("/mcp/{name}");
-            let resource_path = url::Url::parse(&resource)
-                .ok()
-                .map(|url| url.path().to_owned());
-            let resource_matches = resource == expected
-                || resource_path.as_deref() == Some(expected.as_str());
+            let resource_matches = resource_matches(&resource, name);
             let token_matches = Sha256::digest(token.as_bytes())
                 .ct_eq(Sha256::digest(stored.as_bytes()).as_ref());
             if resource_matches && bool::from(token_matches) {
@@ -896,8 +899,27 @@ mod tests {
         assert!(!super::scope_allows(Some("mcp:read"), "mcp:write"));
         assert!(super::scope_allows(Some("mcp:write"), "mcp:read"));
         assert!(super::scope_allows(Some("mcp:write"), "mcp:write"));
+        assert!(super::scope_allows(Some("mcp:read mcp:write"), "mcp:read"));
+        assert!(super::scope_allows(Some("mcp:read mcp:read"), "mcp:read"));
+        assert!(!super::scope_allows(Some("mcp:admin"), "mcp:read"));
         assert!(super::scope_allows(None, "mcp:write"));
         assert_eq!(super::required_scope(Some("tools/call")), "mcp:write");
         assert_eq!(super::required_scope(Some("tools/list")), "mcp:read");
+        assert_eq!(super::required_scope(None), "mcp:read");
+    }
+
+    #[test]
+    fn matches_oauth_resources_by_exact_path_or_relative_resource() {
+        assert!(super::resource_matches("/mcp/demo", "demo"));
+        assert!(super::resource_matches(
+            "https://example.test/mcp/demo",
+            "demo"
+        ));
+        assert!(!super::resource_matches(
+            "https://example.test/mcp/other",
+            "demo"
+        ));
+        assert!(!super::resource_matches("not a URL", "demo"));
+        assert!(!super::resource_matches("", "demo"));
     }
 }
