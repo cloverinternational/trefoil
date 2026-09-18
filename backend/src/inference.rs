@@ -370,6 +370,10 @@ async fn dispatch_transcription(state: AppState, principal: Principal, mut multi
             attempted = Some("No provider configured for model".to_owned());
             continue;
         };
+        let provider = match resolve_provider_credentials(&state, provider).await {
+            Ok(provider) => provider,
+            Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
+        };
         let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
             let reason = "Provider API base URL is invalid";
             record_attempt(
@@ -984,6 +988,10 @@ async fn dispatch_json(state: &AppState, principal: Principal, mut body: Value, 
             attempted = Some("No provider configured for model".to_owned());
             continue;
         };
+        let provider = match resolve_provider_credentials(&state, provider).await {
+            Ok(provider) => provider,
+            Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
+        };
         let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
             let reason = "Provider API base URL is invalid";
             record_attempt(
@@ -1348,6 +1356,10 @@ async fn dispatch_responses(state: AppState, principal: Principal, mut body: Val
             .cloned()
         else {
             continue;
+        };
+        let provider = match resolve_provider_credentials(&state, provider).await {
+            Ok(provider) => provider,
+            Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
         };
         let base = match dispatch_provider_url(&provider.api_base_url) {
             Ok(base) => base,
@@ -1933,6 +1945,10 @@ async fn dispatch_chat(state: AppState, principal: Principal, mut body: Value) -
             "upstream_error",
         );
     }
+    let provider = match resolve_provider_credentials(&state, provider).await {
+        Ok(provider) => provider,
+        Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
+    };
     let Ok(provider_url) = dispatch_provider_url(&provider.api_base_url) else {
         return error_response(
             axum::http::StatusCode::BAD_GATEWAY,
@@ -2156,6 +2172,10 @@ async fn chat_status_failover(
             .cloned()
         else {
             continue;
+        };
+        let provider = match resolve_provider_credentials(&state, provider).await {
+            Ok(provider) => provider,
+            Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
         };
         let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
             continue;
@@ -2515,6 +2535,20 @@ async fn record_attempt(
     .await;
 }
 
+/// Resolve permanent OpenRouter OAuth keys without mutating shared provider
+/// configuration. Other subscription transports require their native adapters.
+async fn resolve_provider_credentials(state: &AppState, mut provider: crate::state::ProviderConfig) -> Result<crate::state::ProviderConfig, &'static str> {
+    if provider.oauth_provider.as_deref() != Some("openrouter") { return Ok(provider); }
+    let pool = state.inner.database.as_ref().ok_or("OAuth credentials require PostgreSQL")?;
+    let account = provider.oauth_account.as_deref().unwrap_or("default");
+    let credentials = crate::database::load_oauth_credentials(pool).await.map_err(|_| "Unable to load OAuth credentials")?;
+    let (_,_,access,_,expires) = credentials.into_iter().find(|(p,a,_,_,_)|p == "openrouter" && a == account).ok_or("OAuth credentials not found")?;
+    if expires <= now_ms() { return Err("OAuth credentials expired"); }
+    provider.api_key = Some(access);
+    if crate::state::ProviderConfig::is_oauth_placeholder_url(&provider.api_base_url) { provider.api_base_url = "https://openrouter.ai/api/v1".into(); }
+    Ok(provider)
+}
+
 fn dispatch_provider_url(value: &str) -> Result<url::Url, ()> {
     let parsed = url::Url::parse(value).map_err(|_| ())?;
     if matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some() {
@@ -2593,7 +2627,11 @@ async fn apply_vision_fallthrough(
                 }
                 let provider = state.inner.providers.read().unwrap().get(slug).cloned();
                 let Some(provider) = provider else { continue };
-                let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+                let provider = match resolve_provider_credentials(&state, provider).await {
+            Ok(provider) => provider,
+            Err(_) => continue,
+        };
+        let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
                     continue;
                 };
                 let endpoint = format!("{}/chat/completions", base.as_str().trim_end_matches('/'));
