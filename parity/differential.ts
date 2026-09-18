@@ -28,7 +28,7 @@ const EXPECTED_CASE_COUNT = 313;
 const REPORT_PATH = process.env.PARITY_REPORT ?? 'target/differential-report.json';
 
 type CaseStatus = 'pass' | 'fail' | 'error';
-interface CaseResult {
+export interface CaseResult {
   name: string;
   status: CaseStatus;
   plexus_status?: number;
@@ -37,27 +37,37 @@ interface CaseResult {
 }
 const caseResults: CaseResult[] = [];
 
-function recordCase(result: CaseResult) {
-  if (caseResults.some((existing) => existing.name === result.name)) {
+export function recordCase(result: CaseResult, results: CaseResult[] = caseResults) {
+  if (results.some((existing) => existing.name === result.name)) {
     throw new Error(`duplicate differential case name: ${result.name}`);
   }
-  caseResults.push(result);
+  results.push(result);
+}
+
+export function buildReport(results: CaseResult[], status: 'complete' | 'incomplete', expectedCases = EXPECTED_CASE_COUNT) {
+  const names = new Set(results.map((result) => result.name));
+  return {
+    schema_version: 1,
+    status,
+    expected_cases: expectedCases,
+    observed_cases: results.length,
+    missing_cases: Math.max(0, expectedCases - names.size),
+    duplicate_cases: results.length - names.size,
+    counts: Object.fromEntries((['pass', 'fail', 'error'] as const).map((key) => [
+      key, results.filter((result) => result.status === key).length,
+    ])),
+    cases: [...results].sort((a, b) => a.name.localeCompare(b.name)),
+  };
+}
+
+export function reconcileCaseCount(observed: number, expected = EXPECTED_CASE_COUNT) {
+  if (observed !== expected) {
+    throw new Error(`inventory reconciliation failed: expected ${expected}, observed ${observed}`);
+  }
 }
 
 async function writeReport(status: 'complete' | 'incomplete') {
-  const names = new Set(caseResults.map((result) => result.name));
-  const report = {
-    schema_version: 1,
-    status,
-    expected_cases: EXPECTED_CASE_COUNT,
-    observed_cases: caseResults.length,
-    missing_cases: Math.max(0, EXPECTED_CASE_COUNT - names.size),
-    duplicate_cases: caseResults.length - names.size,
-    counts: Object.fromEntries((['pass', 'fail', 'error'] as const).map((key) => [
-      key, caseResults.filter((result) => result.status === key).length,
-    ])),
-    cases: [...caseResults].sort((a, b) => a.name.localeCompare(b.name)),
-  };
+  const report = buildReport(caseResults, status);
   const destination = Bun.file(REPORT_PATH);
   await Bun.write(destination, JSON.stringify(report, null, 2) + '\n');
 }
@@ -1638,9 +1648,7 @@ async function main() {
   }
   failures += await runCases(selfRestCases);
 
-  if (caseResults.length !== EXPECTED_CASE_COUNT) {
-    throw new Error(`inventory reconciliation failed: expected ${EXPECTED_CASE_COUNT}, observed ${caseResults.length}`);
-  }
+  reconcileCaseCount(caseResults.length);
   if (failures > 0) {
     console.error(`\n${failures}/${total} case(s) diverged.`);
     await writeReport('complete');
@@ -1655,4 +1663,4 @@ async function main() {
   }
 }
 
-main();
+if (import.meta.main) main();
