@@ -45,11 +45,11 @@ pub fn router() -> Router<AppState> {
         .route("/v0/management/custom-checkers", axum::routing::get(list))
         .route(
             "/v0/management/custom-checkers/:id",
-            axum::routing::get(get)
-                .put(put)
-                .patch(patch)
-                .delete(delete)
-                .post(test),
+            axum::routing::get(get).put(put).patch(patch).delete(delete),
+        )
+        .route(
+            "/v0/management/custom-checkers/:id/test",
+            axum::routing::post(test),
         )
         .route(
             "/v0/management/custom-checkers/:id/check",
@@ -370,9 +370,9 @@ async fn test(
     match run_checker(&code, &input).await {
         Ok(meters) => Json(serde_json::json!({
             "success": true,
+            "checkerId": id,
             "provider": provider,
             "meters": meters,
-            "codeValid": true,
         }))
         .into_response(),
         Err(message) => Json(serde_json::json!({

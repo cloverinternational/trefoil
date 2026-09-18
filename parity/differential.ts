@@ -1166,7 +1166,7 @@ const CUSTOM_CHECKER_CASES: KeysCase[] = [
   { name: 'PUT custom checker creates fixture', method: 'PUT', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY, body: { displayName: 'Parity checker', code: CUSTOM_CHECKER_CODE, enabled: true } },
   { name: 'GET custom checker returns persisted definition', method: 'GET', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY },
   { name: 'PATCH custom checker preserves omitted fields', method: 'PATCH', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY, body: { enabled: false } },
-  { name: 'POST custom checker test returns meters', method: 'POST', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: ADMIN_KEY, body: { provider: 'parity-provider', options: { used: 42 }, code: CUSTOM_CHECKER_CODE } },
+  { name: 'POST custom checker test returns meters', method: 'POST', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}/test`, adminHeader: ADMIN_KEY, body: { provider: 'parity-provider', options: { used: 42 }, code: CUSTOM_CHECKER_CODE } },
   { name: 'POST custom checker check rejects disabled fixture', method: 'POST', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}/check`, adminHeader: ADMIN_KEY, body: { provider: 'parity-provider', options: { used: 42 } } },
   { name: 'PUT custom checker rejects malformed code', method: 'PUT', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}-bad`, adminHeader: ADMIN_KEY, body: { displayName: 'Bad', code: "return require('fs');" } },
   { name: 'GET custom checker rejects limited key', method: 'GET', path: `/v0/management/custom-checkers/${CUSTOM_CHECKER_ID}`, adminHeader: LIMITED_KEY_SECRET },
