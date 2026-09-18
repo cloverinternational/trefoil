@@ -837,6 +837,10 @@ async fn forward_json_api(
     if let Err(response) = enforce_request_quotas(state, &principal).await {
         return response;
     }
+    // Validate image parts before dispatch. This keeps malformed multimodal
+    // payloads on the normal text path and avoids unsafe assumptions in
+    // provider transforms; descriptor generation is opt-in via configuration.
+    let _image_urls = crate::vision::image_urls(&body);
     apply_native_compaction(&mut body, state);
     apply_headroom_compaction(&mut body, state);
     if let Some(config) = key_config {
