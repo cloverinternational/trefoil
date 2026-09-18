@@ -198,6 +198,7 @@ export async function deleteProvider(name: string): Promise<void> {
 
 export interface OAuthProviderInfo { id: string; name: string; usesCallbackServer?: boolean; }
 export interface OAuthCredentialStatus { ready: boolean; }
+export interface OAuthSession { id: string; providerId: string; accountId: string; status: string; authInfo?: { url?: string; instructions?: string }; prompt?: { message: string; placeholder?: string; allowEmpty?: boolean }; progress: Array<Record<string, unknown>>; error?: string; }
 export async function getOAuthProviders(): Promise<OAuthProviderInfo[]> {
   const response = await fetch('/v0/management/oauth/providers', { headers: authHeaders() });
   if (!response.ok) throw new Error(response.status === 403 ? 'Administrator access required' : 'Unable to load OAuth providers');
@@ -214,6 +215,19 @@ export async function deleteOAuthCredentials(providerId: string, accountId: stri
   const response = await fetch('/v0/management/oauth/credentials', { method: 'DELETE', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ providerId, accountId }) });
   if (!response.ok) { const body = await response.json().catch(() => null) as { error?: string } | null; throw new Error(body?.error || 'Unable to disconnect OAuth account'); }
 }
+
+async function oauthSessionRequest(path: string, init?: RequestInit): Promise<OAuthSession> {
+  const response = await fetch(path, { ...init, headers: { ...authHeaders(), ...(init?.headers ?? {}) } });
+  const body = await response.json().catch(() => null) as { data?: OAuthSession; error?: string } | null;
+  if (!response.ok) throw new Error(body?.error || 'Unable to update OAuth login session');
+  if (!body?.data) throw new Error('Invalid OAuth login session response');
+  return body.data;
+}
+export function startOAuthSession(providerId: string, accountId: string): Promise<OAuthSession> { return oauthSessionRequest('/v0/management/oauth/sessions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ providerId, accountId }) }); }
+export function getOAuthSession(id: string): Promise<OAuthSession> { return oauthSessionRequest(`/v0/management/oauth/sessions/${encodeURIComponent(id)}`); }
+export function cancelOAuthSession(id: string): Promise<OAuthSession> { return oauthSessionRequest(`/v0/management/oauth/sessions/${encodeURIComponent(id)}/cancel`, { method: 'POST' }); }
+export function submitOAuthPrompt(id: string, value?: string): Promise<OAuthSession> { return oauthSessionRequest(`/v0/management/oauth/sessions/${encodeURIComponent(id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: value ?? '' }) }); }
+export function submitOAuthManualCode(id: string, value?: string): Promise<OAuthSession> { return oauthSessionRequest(`/v0/management/oauth/sessions/${encodeURIComponent(id)}/manual-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: value ?? '' }) }); }
 
 export interface McpServerConfig { upstreamUrl: string; enabled: boolean; mode: string; authScheme?: string | null; launcher?: string | null; packageName?: string | null; args?: string | null; env?: string | null; startupTimeoutMs?: number | null; }
 export interface McpKey { id: number; key: string; isActive: boolean; }
