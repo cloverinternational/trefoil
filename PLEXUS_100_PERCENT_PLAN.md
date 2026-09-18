@@ -368,8 +368,10 @@ and repeatable differential CI.
   attempt; provider-not-found and chat transport-failure fallback tests remain
   green.
 - **Differential harness:** 283 named cases are registered in
-  `parity/differential.ts`; OAuth provider discovery matches the Plexus wire
-  shape and omits the internal `capabilities` metadata.
+  `parity/differential.ts`; the live run at Trefoil `91c1925` against Plexus
+  `31b09ce` completed with all 283 cases matching. OAuth provider discovery
+  omits the internal `capabilities` metadata and matches the Plexus wire
+  shape.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.

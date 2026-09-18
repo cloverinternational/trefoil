@@ -127,7 +127,7 @@ external and both repositories continue to change. A successful command emits
 `target/parity-counts.json` when redirected as shown above; its `inputs` hashes
 provide source-to-count traceability.
 
-At this revision (`dd975f1`, reference `31b09ce`), the command produced:
+At this revision (`91c1925`, reference `31b09ce`), the command produced:
 
 | Input-derived measure | Count |
 |---|---:|
@@ -167,7 +167,8 @@ includes hashes and revisions needed to detect drift.
       `capabilities` metadata that Plexus omits, preserving provider ordering
       and `usesCallbackServer` fields.
 - [x] Differential harness run end-to-end against live Plexus + Trefoil; all
-      283 cases are covered, including the resolved OAuth provider shape.
+      283 cases matched (verified by `REFERENCE_DIR=.reference/plexus
+      parity/run.sh`), including the resolved OAuth provider shape.
 - [ ] MCP admin-shim tool-by-tool coverage — not enumerated.
 - [ ] Compaction execution path (vs config-only) — not confirmed.
 
