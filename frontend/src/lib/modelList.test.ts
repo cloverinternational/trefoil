@@ -19,3 +19,10 @@ describe('model list parity helpers', () => {
     expect(visibleModelTargets({})).toEqual([]);
   });
 });
+
+
+  it('handles missing catalogs and target fields without throwing', () => {
+    expect(filterAndSortModels({}, 'anything')).toEqual([]);
+    expect(modelSearchText('bare', {})).toBe('bare');
+    expect(visibleModelTargets({ target_groups: [{ name: 'empty', selector: 'fallback', targets: [{ provider: '', model: '', alias: '' }] }] })).toEqual([]);
+  });

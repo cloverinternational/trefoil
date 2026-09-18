@@ -20,6 +20,16 @@ describe('currency helpers', () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline')); await expect(fetchRates()).resolves.toMatchObject({ date: '2026-07-31' });
   });
   it('returns null without cache when fetching fails', async () => { vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline')); await expect(fetchRates()).resolves.toBeNull(); });
+  it('rejects malformed payloads and preserves a valid stale cache', async () => {
+    const now = 1_700_000_000_000; vi.spyOn(Date, 'now').mockReturnValue(now);
+    testStorage.setItem(CURRENCY_RATES_STORAGE_KEY, JSON.stringify({ date: '2026-07-31', fetchedAt: now - CURRENCY_RATE_CACHE_MAX_AGE_MS - 1, rates: { EUR: 0.9 } }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ rates: {} }) } as Response);
+    await expect(fetchRates()).resolves.toEqual({ base: DEFAULT_CURRENCY, date: '2026-07-31', rates: { EUR: 0.9, USD: 1 } });
+  });
+  it('ignores storage failures and falls back to USD', () => {
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } });
+    expect(getSelectedCurrency()).toBe(DEFAULT_CURRENCY); expect(() => setSelectedCurrency('EUR')).not.toThrow();
+  });
   it('persists supported selections and falls back for unknown values', () => {
     expect(getSelectedCurrency()).toBe(DEFAULT_CURRENCY); setSelectedCurrency('EUR'); expect(testStorage.getItem(DISPLAY_CURRENCY_STORAGE_KEY)).toBe('EUR'); expect(getSelectedCurrency()).toBe('EUR');
     testStorage.setItem(DISPLAY_CURRENCY_STORAGE_KEY, 'nope'); expect(getSelectedCurrency()).toBe(DEFAULT_CURRENCY); expect(getCurrency('EUR')).toEqual({ code: 'EUR', symbol: '€', label: 'Euro' }); expect(getCurrency('nope')).toEqual(SUPPORTED_CURRENCIES[0]);
