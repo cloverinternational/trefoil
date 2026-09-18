@@ -300,9 +300,8 @@ async fn audio_transcriptions(
     let request_id = new_request_id();
     let start_time = now_ms();
     let mut attempted = None;
-    for (attempt, (provider_slug, upstream_model)) in
-        inference_targets(&state, &model, key_config).enumerate()
-    {
+    let targets: Vec<_> = inference_targets(&state, &model, key_config).collect();
+    for (attempt, (provider_slug, upstream_model)) in targets.into_iter().enumerate() {
         let attempt_index = (attempt + 1) as i32;
         if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
             return error_response(
@@ -319,13 +318,11 @@ async fn audio_transcriptions(
             .get(&provider_slug)
             .cloned()
         else {
-            return error_response(
-                axum::http::StatusCode::NOT_FOUND,
-                "No provider configured for model",
-                "model_not_found",
-            );
+            attempted = Some("No provider configured for model".to_owned());
+            continue;
         };
         let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+            let reason = "Provider API base URL is invalid";
             record_attempt(
                 &state,
                 &request_id,
@@ -334,17 +331,14 @@ async fn audio_transcriptions(
                 &upstream_model,
                 "audio_transcriptions",
                 "failed",
-                Some("Provider API base URL is invalid"),
+                Some(reason),
                 None,
                 true,
                 start_time,
             )
             .await;
-            return error_response(
-                axum::http::StatusCode::BAD_GATEWAY,
-                "Provider API base URL is invalid",
-                "upstream_error",
-            );
+            attempted = Some(reason.to_owned());
+            continue;
         };
         let mut form = reqwest::multipart::Form::new().text("model", upstream_model.clone());
         for (name, file_name, content_type, bytes) in &fields {
@@ -940,8 +934,10 @@ async fn forward_json_api(
     let request_id = new_request_id();
     let start_time = now_ms();
     let mut attempted = None;
-    let targets = inference_targets(state, &model, key_config);
-    for (attempt, (provider_slug, upstream_model)) in targets.enumerate() {
+    // Snapshot candidates before dispatch: failed candidates enter cooldown,
+    // so re-evaluating the selector while iterating would skip later targets.
+    let targets: Vec<_> = inference_targets(state, &model, key_config).collect();
+    for (attempt, (provider_slug, upstream_model)) in targets.into_iter().enumerate() {
         if !failover && attempt > 0 {
             break;
         }
@@ -960,18 +956,27 @@ async fn forward_json_api(
             .get(&provider_slug)
             .cloned()
         else {
-            return error_response(
-                axum::http::StatusCode::NOT_FOUND,
-                "No provider configured for model",
-                "model_not_found",
-            );
+            attempted = Some("No provider configured for model".to_owned());
+            continue;
         };
         let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
-            return error_response(
-                axum::http::StatusCode::BAD_GATEWAY,
-                "Provider API base URL is invalid",
-                "upstream_error",
-            );
+            let reason = "Provider API base URL is invalid";
+            record_attempt(
+                state,
+                &request_id,
+                (attempt + 1) as i32,
+                &provider_slug,
+                &upstream_model,
+                path,
+                "failed",
+                Some(reason),
+                None,
+                true,
+                start_time,
+            )
+            .await;
+            attempted = Some(reason.to_owned());
+            continue;
         };
         let mut request_body = original_body.clone();
         request_body["model"] = Value::String(upstream_model.clone());
@@ -1177,11 +1182,8 @@ async fn forward_json_api(
                         start_time,
                     )
                     .await;
-                    return error_response(
-                        axum::http::StatusCode::BAD_GATEWAY,
-                        &error.to_string(),
-                        "upstream_error",
-                    );
+                    attempted = Some(error.to_string());
+                    continue;
                 }
                 record_attempt(
                     state,
