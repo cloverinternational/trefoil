@@ -39,6 +39,24 @@ pub fn image_urls(body: &Value) -> Vec<String> {
                         }
                     }
                 }
+                if object.get("type").and_then(Value::as_str) == Some("image") {
+                    if let Some(source) = object.get("source") {
+                        if let Some(data) = source.get("data").and_then(Value::as_str) {
+                            let media = source
+                                .get("media_type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("image/png");
+                            let url = format!("data:{media};base64,{data}");
+                            if valid_image_url(&url) {
+                                urls.push(url);
+                            }
+                        } else if let Some(url) = source.get("url").and_then(Value::as_str) {
+                            if valid_image_url(url) {
+                                urls.push(url.to_owned());
+                            }
+                        }
+                    }
+                }
                 object.values().for_each(|value| visit(value, urls));
             }
             _ => {}
@@ -182,5 +200,79 @@ mod tests {
     fn malformed_input_is_empty_not_a_panic() {
         assert!(image_urls(&serde_json::json!({"messages": null})).is_empty());
         assert!(image_urls(&serde_json::json!("not a request")).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod upstream_tests {
+    use super::*;
+    use axum::{routing::post, Json, Router};
+
+    #[test]
+    fn anthropic_images_support_inline_and_url_sources() {
+        let body = serde_json::json!({"messages":[{"content":[
+            {"type":"image", "source":{"type":"base64", "media_type":"image/jpeg", "data":"YWJj"}},
+            {"type":"image", "source":{"type":"url", "url":"https://example.test/image.png"}},
+            {"type":"image", "source":{"url":"file:///private"}}
+        ]}]});
+        assert_eq!(
+            image_urls(&body),
+            vec![
+                "data:image/jpeg;base64,YWJj",
+                "https://example.test/image.png"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn descriptor_uses_configured_upstream_auth_and_image_content() {
+        let app = Router::new().route(
+            "/chat/completions",
+            post(
+                |headers: axum::http::HeaderMap, Json(body): Json<Value>| async move {
+                    assert_eq!(headers["authorization"], "Bearer test-only");
+                    assert_eq!(body["model"], "vision-model");
+                    assert_eq!(
+                        body["messages"][0]["content"][1]["image_url"]["url"],
+                        "data:image/png;base64,YWJj"
+                    );
+                    Json(serde_json::json!({"choices":[{"message":{"content":" A red square. "}}]}))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = generate_descriptor(
+            &reqwest::Client::new(),
+            &format!("http://{addr}/chat/completions"),
+            Some("test-only"),
+            "vision-model",
+            "data:image/png;base64,YWJj",
+        )
+        .await;
+        server.abort();
+        assert_eq!(result.unwrap(), "A red square.");
+    }
+
+    #[tokio::test]
+    async fn empty_descriptor_is_an_error_not_a_cached_success() {
+        let app = Router::new().route(
+            "/chat/completions",
+            post(|| async { Json(serde_json::json!({"choices":[]})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = generate_descriptor(
+            &reqwest::Client::new(),
+            &format!("http://{addr}/chat/completions"),
+            None,
+            "vision",
+            "https://example.test/a.png",
+        )
+        .await;
+        server.abort();
+        assert!(matches!(result, Err(VisionDescriptorError::EmptyResponse)));
     }
 }
