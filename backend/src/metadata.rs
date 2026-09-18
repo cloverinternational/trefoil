@@ -233,10 +233,25 @@ async fn fetch(url: &str) -> Result<serde_json::Value, String> {
         .map_err(|e| e.to_string())
 }
 
+async fn fetch_openrouter(source: &str) -> Result<BTreeMap<String, ModelMetadata>, String> {
+    let mut catalog = openrouter(fetch(source).await?, "models")?;
+    if let Ok(mut url) = url::Url::parse(source) {
+        if let Some(prefix) = url.path().strip_suffix("/models").map(str::to_owned) {
+            for kind in ["embeddings", "videos"] {
+                url.set_path(&format!("{prefix}/{kind}/models"));
+                if let Ok(raw) = fetch(url.as_str()).await {
+                    if let Ok(auxiliary) = openrouter(raw, kind) { catalog.extend(auxiliary); }
+                }
+            }
+        }
+    }
+    Ok(catalog)
+}
+
 pub async fn refresh(urls: SourceUrls, trigger: &str) -> RefreshReport {
     let start = Instant::now();
     let (or, md, cw) = tokio::join!(
-        fetch(&urls.openrouter),
+        fetch_openrouter(&urls.openrouter),
         fetch(&urls.models_dev),
         fetch(&urls.catwalk)
     );
@@ -244,7 +259,7 @@ pub async fn refresh(urls: SourceUrls, trigger: &str) -> RefreshReport {
     let mut errors = false;
     let mut guard = catalogs().write().unwrap();
     for (source, result) in [
-        (Source::Openrouter, or.map(|v| openrouter(v, "models"))),
+        (Source::Openrouter, Ok(or)),
         (Source::ModelsDev, md.map(models_dev)),
         (Source::Catwalk, cw.map(catwalk)),
     ] {
@@ -331,5 +346,25 @@ mod tests {
         .unwrap();
         assert_eq!(m["x"].name, "x");
         assert_eq!(m["x"].context_length, None);
+    }
+}
+
+#[cfg(test)]
+mod upstream_tests {
+    use super::*;
+    use axum::{routing::get, Json, Router};
+    #[tokio::test]
+    async fn loads_auxiliary_catalogs_and_retains_primary_on_auxiliary_failure() {
+        let router = Router::new()
+            .route("/models", get(|| async { Json(serde_json::json!({"data":[{"id":"chat"}]})) }))
+            .route("/embeddings/models", get(|| async { Json(serde_json::json!({"data":[{"id":"embed"}]})) }))
+            .route("/videos/models", get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let catalog = fetch_openrouter(&format!("http://{addr}/models")).await.unwrap();
+        assert_eq!(catalog.len(), 2);
+        assert!(catalog.contains_key("chat") && catalog.contains_key("embed"));
+        server.abort();
     }
 }

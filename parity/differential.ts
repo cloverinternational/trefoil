@@ -214,6 +214,17 @@ export function normalizeForCase(path: string, body: unknown): unknown {
   if (path === '/mcp/plexus' && normalized && typeof normalized === 'object') {
     const envelope = structuredClone(normalized) as any;
     const structured = envelope.result?.structuredContent;
+    if (structured?.operation === 'refresh_metadata' && structured?.ok === true) {
+      const report = structured.data;
+      if (!Number.isFinite(Date.parse(report?.refreshedAt)) || !Number.isFinite(report?.durationMs) || report.durationMs < 0) throw new Error('Invalid metadata refresh timing');
+      for (const item of envelope.result.content ?? []) {
+        if (item.type === 'text' && !deepEqual(JSON.parse(item.text), (normalized as any).result.structuredContent)) throw new Error('MCP text disagrees with structured content');
+      }
+      report.refreshedAt = '<timestamp>';
+      report.durationMs = '<duration-ms>';
+      for (const item of envelope.result.content ?? []) if (item.type === 'text') item.text = JSON.stringify(structured);
+      return envelope;
+    }
     if (structured?.operation === 'backup' && structured?.ok === true && structured.data?.full === false) {
       const backup = structured.data.backup;
       if (!backup || !Number.isFinite(Date.parse(backup.created_at)) || !['sqlite', 'postgres'].includes(backup.dialect)) throw new Error('Invalid MCP backup metadata');

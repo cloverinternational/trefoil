@@ -103,3 +103,12 @@ test('audit normalization validates nondeterminism without hiding identities or 
   expect(result.data[0].request_id).toBe('<uuid>');
   expect(() => normalizeForCase('/v0/management/mcp-logs', { ...input, data: [{ ...input.data[0], request_id: 'bad' }] })).toThrow('Invalid MCP audit UUID');
 });
+
+test('metadata timing normalization preserves success and exact source counts', async () => {
+  const { normalizeForCase } = await import('./differential');
+  const structuredContent = { ok: true, operation: 'refresh_metadata', data: { refreshedAt: '2026-09-18T00:00:00Z', durationMs: 5, sources: { openrouter: { count: 12, initialized: true } }, hadErrors: false } };
+  const result = normalizeForCase('/mcp/plexus', { result: { structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] } }) as any;
+  expect(result.result.structuredContent.data.sources.openrouter.count).toBe(12);
+  expect(result.result.structuredContent.data.durationMs).toBe('<duration-ms>');
+  expect(JSON.parse(result.result.content[0].text)).toEqual(result.result.structuredContent);
+});
