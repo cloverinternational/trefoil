@@ -372,8 +372,8 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 306 unit + 4 integration tests pass |
-| OAuth storage / dispatch / checker integration | 11 disposable PostgreSQL tests pass |
+| `cargo test --all-targets` | 308 unit + 4 integration tests pass |
+| OAuth storage / dispatch / checker integration | 12 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
@@ -683,3 +683,20 @@ Latest full gate: seven of eight lanes pass; live comparison 406/407. Backend
 coverage after the final endpoint test is 306 unit + 4 stdio integration;
 11 executed PostgreSQL tests, 45 frontend, 3 browser and 12 harness tests pass.
 Other provider flows and remaining dispatch semantics are still incomplete.
+
+## Latest Kimi device-flow pass
+
+Kimi Code device authorization now uses the pinned RFC 8628 endpoints and
+form-encoded contracts, validates both verification URLs, handles pending/
+slow-down/denial/expiry, and persists encrypted access/refresh credentials using
+the shared transactional completion path. Device/response mocks test default
+interval/expiry, hostile URLs, status-error pending and successful token parsing.
+Inference resolves the selected encrypted Kimi account and maps its OAuth
+placeholder to the Kimi coding API; PostgreSQL + HTTP integration verifies the
+bearer token reaches the provider. Kimi refresh is still not provider-specific
+(the generic endpoint differs) and therefore remains incomplete.
+
+Full gate before the final Kimi-inference integration: seven lanes pass, live
+406/407. Backend 308 unit + 4 stdio, 12 executed PostgreSQL, 45 frontend, 3
+browser and 12 harness tests pass. Provider flows and full dispatch parity remain
+open.
