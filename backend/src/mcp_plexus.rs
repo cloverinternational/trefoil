@@ -228,6 +228,13 @@ async fn call_tool(
         ("plexus_debug", "delete_all_logs") => {
             return debug_logs_operation(state, id, operation, args).await
         }
+        ("plexus_quota", "list")
+        | ("plexus_quota", "get")
+        | ("plexus_quota", "put")
+        | ("plexus_quota", "update")
+        | ("plexus_quota", "delete") => {
+            return user_quota_operation(state, id, operation, args).await;
+        }
         ("plexus_quota", "status") | ("plexus_quota", "clear") | ("plexus_quota", "recompute") => {
             return quota_operation(state, id, operation, args).await;
         }
@@ -704,6 +711,46 @@ async fn quota_operation(
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
     )
+}
+
+async fn user_quota_operation(
+    state: &AppState,
+    id: Value,
+    operation: &str,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    let (method, path, body) = match operation {
+        "list" => ("GET", "/v0/management/user-quotas".to_owned(), None),
+        "get" | "put" | "update" | "delete" => {
+            let Some(name) = args.get("id").and_then(Value::as_str) else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            if operation == "delete"
+                && args.get("destructive").and_then(Value::as_str) != Some("acknowledged")
+            {
+                return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
+            }
+            let body = if matches!(operation, "put" | "update") {
+                let Some(body) = args.get("body") else {
+                    return rpc_error(id, -32602, "body is required");
+                };
+                Some(body.clone())
+            } else {
+                None
+            };
+            let method = match operation {
+                "get" => "GET",
+                "put" => "PUT",
+                "update" => "PATCH",
+                "delete" => "DELETE",
+                _ => unreachable!(),
+            };
+            (method, format!("/v0/management/user-quotas/{name}"), body)
+        }
+        _ => unreachable!(),
+    };
+    forwarded_operation(state, id, operation, method, &path, body).await
 }
 
 async fn model_alias_operation(
