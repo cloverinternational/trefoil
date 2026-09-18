@@ -5,7 +5,7 @@
 //! preserving every column (including columns added by later migrations).
 
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -89,7 +89,17 @@ async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     {
         let value: serde_json::Value = match serde_json::from_slice(&body) {
             Ok(v) => v,
-            Err(_) => return restore_error(StatusCode::BAD_REQUEST, "Invalid backup JSON"),
+            Err(_) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    serde_json::json!({
+                        "error": {
+                            "message": "Body is not valid JSON but content-type is set to 'application/json'",
+                            "type": "api_error"
+                        }
+                    }),
+                )
+            }
         };
         restore_config(pool, &state, &value)
             .await
@@ -106,17 +116,26 @@ async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
 }
 
 fn restore_error(status: StatusCode, message: &str) -> Response {
-    (status, axum::Json(serde_json::json!({"error": message}))).into_response()
+    json_response(status, serde_json::json!({"error": message}))
 }
 
 fn restore_auth_error(status: StatusCode, message: &str, error_type: &str, code: u16) -> Response {
-    (
+    json_response(
         status,
-        axum::Json(serde_json::json!({
+        serde_json::json!({
             "error": { "message": message, "type": error_type, "code": code }
-        })),
+        }),
     )
-        .into_response()
+}
+
+fn json_response(status: StatusCode, value: serde_json::Value) -> Response {
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json; charset=utf-8")
+        .body(Body::from(
+            serde_json::to_vec(&value).expect("JSON value is serializable"),
+        ))
+        .expect("valid JSON response")
 }
 
 async fn restore_archive(
@@ -308,22 +327,15 @@ async fn export(
     ) {
         Some(Principal::Admin) => {}
         Some(Principal::Limited { .. }) => {
-            return (
+            return restore_auth_error(
                 StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({
-                    "error": { "message": "Admin privileges required", "type": "forbidden", "code": 403 }
-                })),
+                "Admin privileges required",
+                "forbidden",
+                403,
             )
-                .into_response()
         }
         None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                axum::Json(serde_json::json!({
-                    "error": { "message": "Unauthorized", "type": "auth_error", "code": 401 }
-                })),
-            )
-                .into_response()
+            return restore_auth_error(StatusCode::UNAUTHORIZED, "Unauthorized", "auth_error", 401)
         }
     }
     let Some(pool) = &state.inner.database else {
@@ -343,11 +355,13 @@ async fn export(
         "oauth_credentials": [],
     });
     if !query.full.unwrap_or(false) {
-        return axum::Json(serde_json::json!({
-            "plexus_backup": true, "version": 1,
-            "created_at": chrono::Utc::now().to_rfc3339(), "dialect": "postgres", "data": config
-        }))
-        .into_response();
+        return json_response(
+            StatusCode::OK,
+            serde_json::json!({
+                "plexus_backup": true, "version": 1,
+                "created_at": chrono::Utc::now().to_rfc3339(), "dialect": "postgres", "data": config
+            }),
+        );
     }
     match build_archive(pool, config).await {
         Ok(bytes) => (
@@ -497,7 +511,10 @@ mod tests {
     fn restore_errors_use_reference_json_envelope() {
         let response = super::restore_error(StatusCode::BAD_REQUEST, "bad backup");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(response.headers()["content-type"], "application/json");
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/json; charset=utf-8"
+        );
     }
 
     #[tokio::test]
