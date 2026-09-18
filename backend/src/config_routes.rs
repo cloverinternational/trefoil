@@ -1350,6 +1350,7 @@ async fn patch_capture_trace_on_error(
         .write()
         .unwrap()
         .insert("debug.captureOnError".into(), serde_json::json!(enabled));
+    crate::system_logs::event(&state,"warn",format!("Debug capture-on-error {}",if enabled {"enabled"} else {"disabled"}),[("module".into(),serde_json::json!("debug-manager")),("functionName".into(),serde_json::json!("setCaptureOnError"))]);
     Json(serde_json::json!({ "enabled": enabled })).into_response()
 }
 
