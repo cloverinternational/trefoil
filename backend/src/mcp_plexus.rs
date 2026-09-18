@@ -243,7 +243,10 @@ async fn call_tool(
         }
         ("plexus_quota_checker", "types")
         | ("plexus_quota_checker", "list")
-        | ("plexus_quota_checker", "get") => {
+        | ("plexus_quota_checker", "get")
+        | ("plexus_quota_checker", "put")
+        | ("plexus_quota_checker", "update")
+        | ("plexus_quota_checker", "delete") => {
             return quota_checker_operation(state, id, operation, args).await;
         }
         ("plexus_config", "export") => {
@@ -352,16 +355,44 @@ async fn quota_checker_operation(
     args: Option<&Value>,
 ) -> Response {
     let args = args.cloned().unwrap_or_else(|| json!({}));
-    let path = match operation {
-        "types" => "/v0/management/quota-checker-types".to_string(),
-        "list" => "/v0/management/quota-checkers".to_string(),
+    let (method, path, body) = match operation {
+        "types" => (
+            "GET",
+            "/v0/management/quota-checker-types".to_string(),
+            None,
+        ),
+        "list" => ("GET", "/v0/management/quota-checkers".to_string(), None),
         "get" => match args.get("id").and_then(Value::as_str) {
-            Some(id) => format!("/v0/management/quota-checkers/{id}"),
+            Some(id) => ("GET", format!("/v0/management/quota-checkers/{id}"), None),
             None => return rpc_error(id, -32602, "id is required"),
         },
+        "put" | "update" | "delete" => {
+            let Some(checker_id) = args.get("id").and_then(Value::as_str) else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            if operation == "delete" {
+                if args.get("destructive").and_then(Value::as_str) != Some("acknowledged") {
+                    return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
+                }
+                (
+                    "DELETE",
+                    format!("/v0/management/custom-checkers/{checker_id}"),
+                    None,
+                )
+            } else {
+                let Some(body) = args.get("body") else {
+                    return rpc_error(id, -32602, "body is required");
+                };
+                (
+                    if operation == "put" { "PUT" } else { "PATCH" },
+                    format!("/v0/management/custom-checkers/{checker_id}"),
+                    Some(body.clone()),
+                )
+            }
+        }
         _ => unreachable!(),
     };
-    forwarded_operation(state, id, operation, "GET", &path, None).await
+    forwarded_operation(state, id, operation, method, &path, body).await
 }
 
 async fn operations_operation(
@@ -1455,6 +1486,54 @@ mod tests {
         assert_ne!(
             structured["error"]["message"],
             "Operation is not implemented yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_checker_mutations_require_id_body_and_confirmation() {
+        let missing_id = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 9, "method":"tools/call",
+                    "params":{"name":"plexus_quota_checker","arguments":{"operation":"put"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(missing_id["error"]["code"], -32602);
+        assert_eq!(missing_id["error"]["message"], "id is required");
+
+        let missing_body = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 10, "method":"tools/call",
+                    "params":{"name":"plexus_quota_checker","arguments":{"operation":"update","id":"checker"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(missing_body["error"]["code"], -32602);
+        assert_eq!(missing_body["error"]["message"], "body is required");
+
+        let missing_confirmation = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 11, "method":"tools/call",
+                    "params":{"name":"plexus_quota_checker","arguments":{"operation":"delete","id":"checker"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(missing_confirmation["error"]["code"], -32602);
+        assert_eq!(
+            missing_confirmation["error"]["message"],
+            "destructive: \"acknowledged\" is required"
         );
     }
 
