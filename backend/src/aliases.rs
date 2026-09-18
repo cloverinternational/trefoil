@@ -483,7 +483,8 @@ async fn put_alias(
         let aliases = state.inner.aliases.read().unwrap();
         let mut candidate = aliases.clone();
         candidate.insert(slug.clone(), config.clone());
-        if let Err(_message) = assert_no_alias_ref_cycles(&candidate) {
+        if let Err(message) = assert_no_alias_ref_cycles(&candidate) {
+            crate::system_logs::event(&state,"error",format!("Failed to save model alias '{slug}' {message}"),[("module".into(),serde_json::json!("config"))]);
             return ApiError::Simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal server error".to_string(),
@@ -543,7 +544,8 @@ async fn patch_alias(
         let aliases = state.inner.aliases.read().unwrap();
         let mut candidate = aliases.clone();
         candidate.insert(slug.clone(), merged.clone());
-        if let Err(_message) = assert_no_alias_ref_cycles(&candidate) {
+        if let Err(message) = assert_no_alias_ref_cycles(&candidate) {
+            crate::system_logs::event(&state,"error",format!("Failed to save model alias '{slug}' {message}"),[("module".into(),serde_json::json!("config"))]);
             return ApiError::Simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal server error".to_string(),
