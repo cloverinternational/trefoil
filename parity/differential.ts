@@ -81,6 +81,11 @@ function normalize(body: unknown): unknown {
 
 function normalizeForCase(path: string, body: unknown): unknown {
   const normalized = normalize(body);
+  if (path.startsWith('/v0/management/backup') && normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
+    const object = { ...(normalized as Record<string, unknown>) };
+    delete object.created_at;
+    return object;
+  }
   if ((path.includes('/custom-checkers/') || path === '/v0/management/custom-checkers') && normalized && typeof normalized === 'object') {
     const scrub = (value: unknown): unknown => {
       if (Array.isArray(value)) return value.map(scrub);
@@ -175,20 +180,21 @@ async function fetchJson(
   path: string,
   adminHeader: string | undefined,
   body?: unknown,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string>,
+  rawBody?: string
 ) {
   const headers: Record<string, string> = {};
   if (extraHeaders !== undefined) Object.assign(headers, extraHeaders);
   if (adminHeader !== undefined) headers['x-admin-key'] = adminHeader;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (body !== undefined || rawBody !== undefined) headers['Content-Type'] ??= 'application/json';
   const res = await fetch(`${baseUrl}${path}`, {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: rawBody ?? (body !== undefined ? JSON.stringify(body) : undefined),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const json = await res.json().catch(() => null);
-  return { status: res.status, body: json };
+  return { status: res.status, body: json, contentType: res.headers.get('content-type') };
 }
 
 interface KeysCase {
@@ -198,7 +204,19 @@ interface KeysCase {
   adminHeader?: string;
   headers?: Record<string, string>;
   body?: unknown;
+  rawBody?: string;
 }
+
+const BACKUP_CASES: KeysCase[] = [
+  { name: 'GET config backup returns envelope for admin', method: 'GET', path: '/v0/management/backup', adminHeader: ADMIN_KEY },
+  { name: 'GET config backup rejects limited key', method: 'GET', path: '/v0/management/backup', adminHeader: LIMITED_KEY_SECRET },
+  { name: 'GET config backup rejects missing credential', method: 'GET', path: '/v0/management/backup' },
+  { name: 'GET full backup returns archive for admin', method: 'GET', path: '/v0/management/backup?full=true', adminHeader: ADMIN_KEY },
+  { name: 'POST restore rejects missing credential', method: 'POST', path: '/v0/management/restore', rawBody: '{}', headers: { 'Content-Type': 'application/json' } },
+  { name: 'POST restore rejects limited key', method: 'POST', path: '/v0/management/restore', adminHeader: LIMITED_KEY_SECRET, rawBody: '{}', headers: { 'Content-Type': 'application/json' } },
+  { name: 'POST restore rejects malformed JSON', method: 'POST', path: '/v0/management/restore', adminHeader: ADMIN_KEY, rawBody: '{', headers: { 'Content-Type': 'application/json' } },
+  { name: 'POST restore rejects config without data', method: 'POST', path: '/v0/management/restore', adminHeader: ADMIN_KEY, body: { plexus_backup: true, version: 1 } },
+];
 
 // These cases deliberately stop before an upstream provider call.  They make
 // the public inference boundary testable in a clean disposable environment
@@ -1382,16 +1400,19 @@ async function runCases(cases: KeysCase[]): Promise<number> {
   let failures = 0;
   for (const testCase of cases) {
     const [plexus, trefoil] = await Promise.all([
-      fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers),
-      fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers),
+      fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers, testCase.rawBody),
+      fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers, testCase.rawBody),
     ]);
 
     const statusMatch = plexus.status === trefoil.status;
+    const contentTypeMatch = testCase.path.startsWith('/v0/management/backup')
+      ? plexus.contentType === trefoil.contentType
+      : true;
     const bodyMatch = deepEqual(
       normalizeForCase(testCase.path, plexus.body),
       normalizeForCase(testCase.path, trefoil.body)
     );
-    const pass = statusMatch && bodyMatch;
+    const pass = statusMatch && bodyMatch && contentTypeMatch;
     if (!pass) failures += 1;
 
     console.log(`${pass ? 'PASS' : 'FAIL'} ${testCase.name}`);
@@ -1462,6 +1483,7 @@ async function main() {
   failures += await runCases(PERFORMANCE_CASES);
   failures += await runCases(CONFIG_SNAPSHOT_CASES);
   failures += await runCases(CONFIG_EXPORT_CASES);
+  failures += await runCases(BACKUP_CASES);
   failures += await runCases(CONCURRENCY_CASES);
   failures += await runCases(VISION_CACHE_CASES);
   failures += await runCases(OAUTH_PROVIDER_CASES);
@@ -1523,6 +1545,7 @@ async function main() {
     PERFORMANCE_CASES.length +
     CONFIG_SNAPSHOT_CASES.length +
     CONFIG_EXPORT_CASES.length +
+    BACKUP_CASES.length +
     CONCURRENCY_CASES.length +
     VISION_CACHE_CASES.length +
     OAUTH_PROVIDER_CASES.length +
