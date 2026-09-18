@@ -64,9 +64,10 @@ providers are unaffected.
 `inference.rs` is a single 3190-line file; each handler
 (`chat_completions`, `completions`, `embeddings`, `messages`, `responses`,
 `images`, `gemini`) reimplements its own request/retry/fallback/usage-record
-logic instead of calling one shared service. `resolve_target` only returns
-the **first** eligible alias target per group — no iteration through the
-full ordered candidate list on failure.
+logic instead of calling one shared service. A shared `RetryableFailoverPolicy`
+now owns ordered candidate iteration and single-target behavior when failover
+is disabled for generic JSON and chat status-failover paths; the common
+dispatch entry point and uniform per-route semantics remain open.
 
 Plexus reference: `services/dispatch/` — `dispatcher.ts` (1086 lines),
 `dispatcher-auto-compat.ts` (1320 lines), `media-dispatcher.ts` (1312 lines),
@@ -82,6 +83,9 @@ To port:
       target in an alias's target group (not just the first), with
       per-attempt retry-policy from `FailoverPolicySchema`
       (`retryableStatusCodes`, `retryableErrors`).
+- [x] Share ordered retry/failover iteration through
+      `RetryableFailoverPolicy` across generic JSON dispatch and chat status
+      failover, including disabled-failover attempt limits.
 - [ ] Attempt-history recording across the *entire* candidate chain (not
       just success + one fallback), matching Plexus's per-attempt audit
       trail.
@@ -95,10 +99,11 @@ To port:
       ordered, direct-provider, missing-model, and provider-policy cases;
       HTTP-path parity and the extracted dispatch entry point remain open.
 
-**Impact if skipped:** works fine for the common case (one healthy fallback);
-degrades ungracefully with multiple simultaneous provider outages, and the
-duplicated logic is a maintenance/bug-parity risk (a failover fix has to be
-applied 4 times).
+**Impact if skipped:** works fine for the common case (one healthy fallback),
+but route-specific request and usage behavior can still drift across API
+types. Multiple simultaneous provider outages are covered by shared target
+iteration, while cancellation, attempt-history, and the common dispatch
+entry-point remain parity risks.
 
 ---
 
@@ -352,7 +357,7 @@ Using the 12 plan areas with equal weight, and scoring partial areas by
 checked capability items rather than route count, the current estimate is
 **approximately 82%**. This is a progress metric, not a claim of drop-in
 compatibility. Remaining risk is concentrated in provider-specific OAuth
-exchanges, complete dispatch cancellation/attempt-history semantics,
+exchanges, complete dispatch extraction/cancellation/attempt-history semantics,
 custom-checker runtime parity, MCP edge cases, frontend browser coverage,
 and repeatable differential CI.
 
@@ -369,7 +374,9 @@ and repeatable differential CI.
 - **Generic failover:** non-chat inference preserves configured candidate order
   and returns the last upstream error after all candidates fail, with no extra
   attempt; provider-not-found and chat transport-failure fallback tests remain
-  green.
+  green. Generic JSON and chat status-failover paths share
+  `RetryableFailoverPolicy`; request construction, cancellation, and usage
+  recording remain route-specific.
 - **Differential harness:** 302 named cases are registered in
   `parity/differential.ts`; the latest executed MCP/custom-checker lane at
   Trefoil `a5bc1a6` against Plexus `31b09ce` completed with all 302 cases

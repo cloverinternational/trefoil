@@ -77,7 +77,7 @@ one call per verb. Not an actual gap.
 | Custom quota checkers | Implemented, depth partial | Migration, CRUD, check/test routes, validation, and polling are present in `custom_checkers.rs`; sandbox/runtime and exact built-in upstream checker behavior still need parity audit. |
 | Quota checker results | Implemented, built-in depth partial | Checker CRUD, sandboxed execution, history, scheduler, and scoped result routes exist; built-in OAuth-backed provider checker behavior remains open. |
 | Provider OAuth login flow | Routes and session state implemented; provider exchanges partial | **Partial** | `oauth.rs` implements session lifecycle, PKCE callback/manual-code capability reporting, credential persistence, and model discovery. Provider-specific exchanges and request masking remain incomplete; `backend/src/oauth.rs` tests assert every advertised provider exposes exactly one supported login flow. |
-| Inference dispatch/failover | Route-complete | Partial | Chat now snapshots eligible ordered targets and advances through every candidate after transport failures; generic non-chat evidence covers configured ordering, exhaustion without an extra attempt, and provider-not-found fallback traversal (`backend/src/inference.rs` failover tests). The handlers still hand-roll route-specific dispatch/retry/usage-recording logic rather than sharing Plexus's dedicated `services/dispatch/` package, so cross-route behavior remains only partially aligned. |
+| Inference dispatch/failover | Route-complete | Partial | Chat now snapshots eligible ordered targets and advances through every candidate after transport failures; generic non-chat evidence covers configured ordering, exhaustion without an extra attempt, and provider-not-found fallback traversal (`backend/src/inference.rs` failover tests). The shared `RetryableFailoverPolicy` now owns ordered target iteration and disabled-failover attempt limits across generic JSON and chat status-failover paths. Handlers still hand-roll route-specific request, retry-delay, transformation, and usage-recording logic rather than sharing Plexus's dedicated `services/dispatch/` package, so cross-route behavior remains only partially aligned. |
 | Quota enforcement | Functional, documented gap | `enforce_request_quotas` only reports the single most-constrained quota in `blocking_quotas`; Plexus aggregates all simultaneously-blocking quotas. Comment in code acknowledges this. |
 | Observability/metrics | Implemented, depth partial | Prometheus metrics, usage SSE, and system-log SSE routes are present; metric dimensions and stream edge cases still need reference comparison. |
 | Vision descriptor | Implemented, depth partial | Descriptor extraction/generation, cache, and clear behavior exist; exact provider-backed descriptor semantics remain open. |
@@ -98,9 +98,11 @@ one call per verb. Not an actual gap.
 1. **Frontend** — biggest raw gap by volume. Remaining pages, browser tests,
    and API adapters for newer route surfaces (metrics, events stream, custom
    MCP admin UI, playground, and the distinct logs viewer) remain.
-2. **Shared dispatch/failover service** — inference handlers duplicate
-   retry/fallback logic per-route; chat now iterates its full ordered candidate
-   list, but there is no dedicated `dispatch` module.
+2. **Shared dispatch/failover service** — a shared retry/failover policy now
+   centralizes ordered candidate iteration for generic JSON and chat
+   status-failover paths, but handlers still duplicate route-specific request,
+   transformation, and usage-recording logic; there is no dedicated `dispatch`
+   module or common dispatch entry point.
 3. **Custom quota checkers** — entire feature (schema, CRUD, sandboxed
    execution, scheduler) absent.
 4. **Provider OAuth login flow** — provider-specific exchanges and request
@@ -177,6 +179,9 @@ includes hashes and revisions needed to detect drift.
 - [x] Generic failover coverage verifies non-chat requests preserve configured
       target order and return the final upstream error after exhausting targets
       without an extra attempt (`backend/src/inference.rs`).
+- [x] Generic JSON and chat status-failover paths share
+      `RetryableFailoverPolicy` for ordered target iteration and disabled-
+      failover attempt limits; route-specific dispatch behavior remains open.
 - [x] Unified verification gate — backend/frontend lanes pass, and OAuth
       provider discovery matches the reference wire shape.
 - [x] OAuth provider discovery shape — Trefoil omits the internal
