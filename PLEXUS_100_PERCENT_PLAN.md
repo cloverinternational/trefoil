@@ -730,9 +730,19 @@ OpenRouter, Anthropic callback, GitHub Copilot device, Kimi Code device, xAI
 device, and OpenAI Codex device paths now have provider-specific request helpers
 or flows. Codex uses its device authorization-code/verifier handoff; explicit
 provider base URLs are preserved while OAuth placeholders resolve canonical
-subscription bases. A regression test caught and fixed placeholder resolution
+subscription bases. Stored encrypted OAuth credentials are resolved for either
+placeholder or explicit bases when no direct API key is configured. A regression test caught and fixed placeholder resolution
 wrongly overriding explicit Codex test/provider URLs. The final post-Codex full
 gate has seven passing lanes and 406/407 live cases; backend 313 unit + 4 stdio
 and 12 PostgreSQL integration tests pass. Device mocks are not proof of live
 subscription acceptance, and provider browser callback/enterprise/policy
 features remain unfinished.
+
+### OAuth dispatch regression correction
+
+After Codex credential wiring, a condition incorrectly skipped stored OAuth
+credentials for explicit provider bases. The condition now skips resolution only
+when a direct API key is already present. The complete disposable PostgreSQL
+suite (11 tests) again verifies encrypted OpenRouter/Copilot inference dispatch,
+provider account persistence, checker storage and quota behavior. Full gate is
+again seven pass / one live-log difference.
