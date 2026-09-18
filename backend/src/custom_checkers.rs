@@ -72,20 +72,25 @@ pub fn start_poller(state: AppState) {
                     continue;
                 };
                 delay = delay.min(Duration::from_secs(quota.interval.max(1)));
-                let Some(pool) = &state.inner.database else {
-                    continue;
+                let result = if builtin(&checker_id) {
+                    run_builtin_checker(&state, &checker_id, &provider, &quota.options).await
+                } else {
+                    let Some(pool) = &state.inner.database else {
+                        continue;
+                    };
+                    let Ok(Some(code)) = sqlx::query_scalar::<_, String>(
+                        "SELECT code FROM custom_checkers WHERE id=$1 AND enabled=true",
+                    )
+                    .bind(&checker_id)
+                    .fetch_optional(pool)
+                    .await
+                    else {
+                        continue;
+                    };
+                    let input = serde_json::json!({"provider": provider, "options": quota.options});
+                    run_checker(&code, &input).await
                 };
-                let Ok(Some(code)) = sqlx::query_scalar::<_, String>(
-                    "SELECT code FROM custom_checkers WHERE id=$1 AND enabled=true",
-                )
-                .bind(&checker_id)
-                .fetch_optional(pool)
-                .await
-                else {
-                    continue;
-                };
-                let input = serde_json::json!({"provider": provider, "options": quota.options});
-                match run_checker(&code, &input).await {
+                match result {
                     Ok(meters) => {
                         persist_result(&state, &checker_id, &provider, &meters, None).await
                     }
@@ -433,6 +438,18 @@ async fn check(
         return error(StatusCode::BAD_REQUEST, "provider is required");
     };
     let options = body.options.unwrap_or(Value::Null);
+    if builtin(&id) {
+        return match run_builtin_checker(&state, &id, provider, &options).await {
+            Ok(meters) => {
+                persist_result(&state, &id, provider, &meters, None).await;
+                Json(serde_json::json!({"success":true,"checkerId":id,"provider":provider,"meters":meters})).into_response()
+            }
+            Err(message) => {
+                persist_result(&state, &id, provider, &Value::Array(vec![]), Some(&message)).await;
+                Json(serde_json::json!({"success":false,"checkerId":id,"provider":provider,"meters":[],"error":message})).into_response()
+            }
+        };
+    }
     let code = if let Some(code) = body.code {
         code
     } else {
@@ -486,10 +503,10 @@ async fn check(
 async fn run_builtin_checker(
     state: &AppState,
     id: &str,
-    _provider: &str,
-    options: &Value,
+    provider: &str,
+    _options: &Value,
 ) -> Result<Value, String> {
-    let (default_endpoint, oauth_provider) = match id {
+    let (endpoint, oauth_provider) = match id {
         "claude-code" => ("https://api.anthropic.com/api/oauth/usage", "anthropic"),
         "openai-codex" => ("https://chatgpt.com/backend-api/wham/usage", "openai-codex"),
         _ => {
@@ -498,29 +515,34 @@ async fn run_builtin_checker(
             ))
         }
     };
-    let endpoint = options
-        .get("endpoint")
-        .and_then(Value::as_str)
-        .unwrap_or(default_endpoint);
-    let account = options
-        .get("oauthAccountId")
-        .and_then(Value::as_str)
-        .or_else(|| options.get("accountId").and_then(Value::as_str))
-        .unwrap_or("default");
-    let token = if let Some(key) = options
-        .get("apiKey")
-        .and_then(Value::as_str)
-        .filter(|v| !v.trim().is_empty())
-    {
-        key.to_string()
-    } else {
-        let pool = state
-            .inner
-            .database
-            .as_ref()
-            .ok_or("PostgreSQL is required for OAuth quota checks")?;
-        sqlx::query_scalar::<_,String>("SELECT access_token FROM oauth_credentials WHERE oauth_provider_type=$1 AND account_id=$2").bind(oauth_provider).bind(account).fetch_optional(pool).await.map_err(|e|e.to_string())?.ok_or_else(|| format!("OAuth credentials not found for {oauth_provider}/{account}"))?
-    };
+    let config = state
+        .inner
+        .providers
+        .read()
+        .unwrap()
+        .get(provider)
+        .cloned()
+        .ok_or_else(|| format!("provider '{provider}' is not defined"))?;
+    if config.oauth_provider.as_deref().unwrap_or(oauth_provider) != oauth_provider {
+        return Err(format!(
+            "provider '{provider}' is not configured for {oauth_provider}"
+        ));
+    }
+    let account = config.oauth_account.as_deref().unwrap_or("default");
+    let pool = state
+        .inner
+        .database
+        .as_ref()
+        .ok_or("PostgreSQL is required for OAuth quota checks")?;
+    let token = sqlx::query_scalar::<_, String>(
+        "SELECT access_token FROM oauth_credentials WHERE oauth_provider_type=$1 AND account_id=$2",
+    )
+    .bind(oauth_provider)
+    .bind(account)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| "failed to load OAuth credentials".to_string())?
+    .ok_or_else(|| format!("OAuth credentials not found for {oauth_provider}/{account}"))?;
     let mut request = Client::new().get(endpoint).bearer_auth(token);
     if id == "claude-code" {
         request = request.header("anthropic-beta", "oauth-2025-04-20");
@@ -538,8 +560,9 @@ async fn run_builtin_checker(
             ("weekly", "Weekly quota", "seven_day"),
         ] {
             if let Some(w) = payload.get(field) {
-                if let Some(used) = w.get("utilization").and_then(Value::as_f64) {
-                    meters.push(serde_json::json!({"key":key,"label":label,"unit":"percentage","used":used,"remaining":(100.0-used).max(0.0),"periodCycle":"rolling","resetsAt":w.get("resets_at")}));
+                if let Some(raw) = w.get("utilization").and_then(Value::as_f64) {
+                    let used = raw.clamp(0.0, 100.0);
+                    meters.push(serde_json::json!({"key":key,"label":label,"unit":"percentage","used":used,"remaining":100.0-used,"utilizationPercent":used,"status":meter_status(used),"periodCycle":"rolling","resetsAt":w.get("resets_at")}));
                 }
             }
         }
@@ -549,13 +572,26 @@ async fn run_builtin_checker(
             ("secondary", "Secondary rate limit"),
         ] {
             if let Some(w) = rate.get(format!("{key}_window")) {
-                if let Some(used) = w.get("used_percent").and_then(Value::as_f64) {
-                    meters.push(serde_json::json!({"key":key,"label":label,"unit":"percentage","used":used.clamp(0.0,100.0),"remaining":(100.0-used).clamp(0.0,100.0),"periodCycle":"rolling"}));
+                if let Some(raw) = w.get("used_percent").and_then(Value::as_f64) {
+                    let used = raw.clamp(0.0, 100.0);
+                    meters.push(serde_json::json!({"key":key,"label":label,"unit":"percentage","used":used,"remaining":100.0-used,"utilizationPercent":used,"status":meter_status(used),"periodCycle":"rolling"}));
                 }
             }
         }
     }
     Ok(Value::Array(meters))
+}
+
+fn meter_status(percent: f64) -> &'static str {
+    if percent >= 100.0 {
+        "exhausted"
+    } else if percent >= 90.0 {
+        "critical"
+    } else if percent >= 75.0 {
+        "warning"
+    } else {
+        "ok"
+    }
 }
 
 async fn persist_result(
