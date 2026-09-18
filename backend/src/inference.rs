@@ -4878,4 +4878,109 @@ data: [DONE]
             "image-edit-b"
         );
     }
+
+    #[tokio::test]
+    async fn media_failover_disabled_does_not_try_fallback_target() {
+        let cases = [
+            (
+                "/v1/audio/speech",
+                "speech",
+                r#"{"model":"speech","input":"hello"}"#,
+            ),
+            (
+                "/v1/images/generations",
+                "image",
+                r#"{"model":"image","prompt":"a tree"}"#,
+            ),
+            (
+                "/v1/images/edits",
+                "image-edit",
+                r#"{"model":"image-edit","prompt":"remove the tree"}"#,
+            ),
+        ];
+
+        for (path, alias, request_body) in cases {
+            let (first, first_request) = inference_mock_with_capture(
+                "404 Not Found",
+                "application/json",
+                r#"{"error":{"message":"primary unavailable"}}"#,
+            );
+            let (second, second_request) = inference_mock_with_capture(
+                "200 OK",
+                "application/json",
+                r#"{"audio":"unexpected fallback"}"#,
+            );
+            let aliases = HashMap::from([(
+                alias.to_owned(),
+                crate::state::ModelConfig {
+                    target_groups: vec![crate::state::ModelTargetGroup {
+                        name: "fallback".into(),
+                        selector: "sequential".into(),
+                        targets: vec![
+                            crate::state::ModelTarget {
+                                provider: Some("first".into()),
+                                model: Some("primary-model".into()),
+                                alias: None,
+                                enabled: true,
+                            },
+                            crate::state::ModelTarget {
+                                provider: Some("second".into()),
+                                model: Some("fallback-model".into()),
+                                alias: None,
+                                enabled: true,
+                            },
+                        ],
+                    }],
+                    ..Default::default()
+                },
+            )]);
+            let state = AppState::new(Some("admin".into()), HashMap::new());
+            *state.inner.aliases.write().unwrap() = aliases;
+            state
+                .inner
+                .settings
+                .write()
+                .unwrap()
+                .insert("failover.enabled".into(), serde_json::json!(false));
+            state.inner.providers.write().unwrap().extend([
+                (
+                    "first".into(),
+                    crate::state::ProviderConfig {
+                        api_base_url: first,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "second".into(),
+                    crate::state::ProviderConfig {
+                        api_base_url: second,
+                        ..Default::default()
+                    },
+                ),
+            ]);
+
+            let response = router()
+                .with_state(state)
+                .oneshot(
+                    Request::post(path)
+                        .header("x-api-key", "admin")
+                        .header("content-type", "application/json")
+                        .body(Body::from(request_body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::NOT_FOUND,
+                "{path}"
+            );
+            assert!(first_request.lock().unwrap().is_some(), "{path}");
+            assert!(
+                second_request.lock().unwrap().is_none(),
+                "disabled failover must not call fallback for {path}"
+            );
+        }
+    }
 }
