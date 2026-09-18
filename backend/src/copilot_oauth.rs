@@ -103,3 +103,15 @@ mod tests {
         assert_eq!(access,"copilot-token");assert!(expiry>chrono::Utc::now().timestamp_millis());server.abort();
     }
 }
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+    #[test]
+    fn token_proxy_host_is_restricted_to_copilot_domain() {
+        assert_eq!(api_base("tid=x;proxy-ep=proxy.business.githubcopilot.com;exp=1"),"https://api.business.githubcopilot.com");
+        for token in ["proxy-ep=proxy.attacker.test","proxy-ep=proxy.x.githubcopilot.com@attacker.test","proxy-ep=proxy.x.githubcopilot.com/path"] {
+            assert_eq!(api_base(token),"https://api.individual.githubcopilot.com");
+        }
+    }
+}
