@@ -266,7 +266,7 @@ async fn call_tool(
         | ("plexus_mcp_gateway", "delete") => {
             return mcp_gateway_operation(state, id, operation, args).await;
         }
-        ("plexus_settings", "get") => return settings_operation(state, id).await,
+        ("plexus_settings", "get") => return settings_operation(state, id, args).await,
         ("plexus_system_logs", "recent")
         | ("plexus_system_logs", "level")
         | ("plexus_system_logs", "set_level")
@@ -912,15 +912,61 @@ async fn operations_operation(
     }
 }
 
-async fn settings_operation(state: &AppState, id: Value) -> Response {
-    let settings = state.inner.settings.read().unwrap();
-    let data = Value::Object(
-        settings
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-    );
-    let result = json!({"ok":true,"operation":"get","data":data});
+async fn settings_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
+    use http_body_util::BodyExt;
+    // Keep settings category semantics aligned with the reference shim.  A
+    // category is a named config endpoint, while `all` returns the same
+    // stable aggregate shape clients use for inspection.
+    let category = args
+        .and_then(|value| value.get("category"))
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    let categories = [
+        ("failover", "/v0/management/config/failover"),
+        ("cooldown", "/v0/management/config/cooldown"),
+        ("timeout", "/v0/management/config/timeout"),
+        ("stall", "/v0/management/config/stall"),
+        ("trusted_proxies", "/v0/management/config/trusted-proxies"),
+        (
+            "vision_fallthrough",
+            "/v0/management/config/vision-fallthrough",
+        ),
+        (
+            "background_exploration",
+            "/v0/management/config/background-exploration",
+        ),
+        ("exploration", "/v0/management/config/exploration-rate"),
+    ];
+    if category != "all" {
+        let Some((_, path)) = categories.iter().find(|(name, _)| *name == category) else {
+            return rpc_result(
+                id,
+                json!({"structuredContent":{"ok":false,"operation":"get","error":{"message":format!("settings category '{category}' was not found."),"type":"not_found","code":404}},"content":[{"type":"text","text":format!("settings category '{category}' was not found.")}],"isError":true}),
+            );
+        };
+        return forwarded_operation(state, id, "get", "GET", path, None).await;
+    }
+
+    let mut data = serde_json::Map::new();
+    for (name, path) in categories {
+        let response = forwarded_request(state, id.clone(), "get", "GET", path, None).await;
+        let payload = response.into_body().collect().await;
+        let Ok(payload) = payload else {
+            return rpc_error(id, -32603, "Failed to read settings response");
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&payload.to_bytes()) else {
+            return rpc_error(id, -32603, "Invalid settings response");
+        };
+        let Some(value) = value
+            .get("result")
+            .and_then(|result| result.get("structuredContent"))
+            .and_then(|content| content.get("data"))
+        else {
+            return rpc_result(id, value);
+        };
+        data.insert(name.to_string(), value.clone());
+    }
+    let result = json!({"ok":true,"operation":"get","data":Value::Object(data)});
     rpc_result(
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":false}),
