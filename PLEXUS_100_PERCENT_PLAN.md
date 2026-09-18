@@ -372,7 +372,7 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 310 unit + 4 integration tests pass |
+| `cargo test --all-targets` | 312 unit + 4 integration tests pass |
 | OAuth storage / dispatch / checker integration | 12 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
@@ -714,3 +714,12 @@ Backend coverage after these tests is 310 unit + 4 stdio integration; the
 full gate has not been rerun after this focused implementation. Previous full
 result remains 406/407 live; all documented provider acceptance limitations and
 unimplemented flows still mean the completion goal is unmet.
+
+## Latest Codex device-flow pass
+
+OpenAI Codex now supports its device user-code request and polling endpoint,
+including 403/404 pending semantics, slow-down and authorization-code/verifier
+handoff into the standard encrypted OAuth exchange. Unit HTTP tests validate
+JSON payloads and interval parsing. The implementation retains a fixed 15-minute
+expiry and reference device redirect URI. Browser callback login and all live
+provider acceptance remain unverified; the plan remains incomplete.
