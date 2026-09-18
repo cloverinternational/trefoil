@@ -31,7 +31,7 @@ fn endpoint(provider: &str) -> Option<&'static str> {
 }
 
 async fn refresh_one(state: &AppState, provider: String, account: String, refresh_token: String) {
-    let Some(url) = endpoint(&provider) else {
+    let Some(_url) = endpoint(&provider) else {
         return;
     };
     if refresh_token.is_empty() {
