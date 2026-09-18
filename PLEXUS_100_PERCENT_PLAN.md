@@ -347,11 +347,11 @@ fixtures per `parity/README.md`, not wired into CI).
 
 ---
 
-## Current parity estimate (recalculated 2026-09-17)
+## Current parity estimate (recalculated from HEAD 2026-09-17)
 
 Using the 12 plan areas with equal weight, and scoring partial areas by
 checked capability items rather than route count, the current estimate is
-**approximately 90%**. This is a progress metric, not a claim of drop-in
+**approximately 80%**. This is a progress metric, not a claim of drop-in
 compatibility. Remaining risk is concentrated in provider-specific OAuth
 exchanges, complete dispatch cancellation/attempt-history semantics,
 custom-checker runtime parity, MCP edge cases, frontend browser coverage,
@@ -360,7 +360,7 @@ and repeatable differential CI.
 ## Current verified status
 
 - **Backend tests:** 206 passing (`cargo test --all-targets`).
-- **Frontend:** typecheck, build, and 26 Vitest tests pass, including OAuth
+- **Frontend:** typecheck, build, and 23 Vitest tests pass across 5 files, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
@@ -380,25 +380,13 @@ an end-to-end pass until the live runner is executed.
 
 ## Latest progress
 
-The completed work is recorded above; unchecked items remain intentionally open until directly verified by tests or source comparison. The current strongest remaining work items are manual probe, provider OAuth-specific flows/masking, custom built-in checkers, MCP shim edge cases, frontend depth/tests, and differential CI.
+The completed work is recorded above; unchecked items remain intentionally open until directly verified by tests or source comparison. The current strongest remaining work items are provider-specific OAuth/masking, shared dispatch extraction/cancellation semantics, built-in custom checkers, MCP shim edge cases, frontend browser tests, and differential CI.
 
 ## Suggested order of attack
 
-1. **Provider-specific OAuth/masking (#1)** — the largest remaining backend capability gap.
-2. **Compaction and vision execution (#9/#10)** — currently config/route-level or no-op behavior.
-3. **Exact MCP shim edge cases and checker-specific operations (#4/#5).
-4. **Frontend test coverage and remaining pages/depth (#11).
-5. **Differential CI and inference-focused differential cases (#12).
-6. **Provider OAuth login flow (#1)** — largest single effort (~1800+ lines
-   of reference logic across 6+ provider-specific flows), but unlocks
-   custom quota checkers (#4) and is the only item that blocks a class of
-   providers entirely.
-7. **Custom quota checkers (#4)** — after #1.
-8. **Compaction verification (#10)** — quick to check, unknown effort to fix
-   if actually missing.
-9. **Frontend (#11)** — largest total surface area; can proceed in parallel
-   with backend work since most pages are independent, but several (Debug,
-   Mcp UI, SystemLogs, Playground, CustomQuotaCheckers) are gated on the
-   backend items above landing first.
-10. **Differential CI gate (#12)** — should be tightened continuously
-    alongside every item above, not deferred to the end.
+1. **Provider-specific OAuth/masking (#1)** — largest remaining backend capability gap.
+2. **Shared dispatch extraction and cancellation (#2)** — route-specific loops remain.
+3. **Built-in checker behavior and MCP edge cases (#4/#5).**
+4. **Frontend browser/e2e coverage and remaining depth (#11).**
+5. **Differential CI and broader live inference/MCP cases (#12).**
+
