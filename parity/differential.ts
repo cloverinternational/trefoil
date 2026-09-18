@@ -62,6 +62,50 @@ async function writeReport(status: 'complete' | 'incomplete') {
   await Bun.write(destination, JSON.stringify(report, null, 2) + '\n');
 }
 
+function registeredCaseCount(): number {
+  return CASES.length +
+    KEYS_CASES.length +
+    PROVIDERS_CASES.length +
+    ALIASES_CASES.length +
+    USER_QUOTAS_CASES.length +
+    SYSTEM_SETTINGS_CASES.length +
+    COOLDOWNS_CASES.length +
+    DEBUG_CASES.length +
+    CONFIG_STATUS_CASES.length +
+    TIMEOUT_CONFIG_CASES.length +
+    MCP_ENABLED_CASES.length +
+    EXPLORATION_RATE_CASES.length +
+    FAILOVER_COOLDOWN_CASES.length +
+    CAPTURE_TRACE_CASES.length +
+    STALL_CONFIG_CASES.length +
+    VISION_FALLTHROUGH_CASES.length +
+    LOGGING_CASES.length +
+    BACKGROUND_EXPLORATION_CASES.length +
+    TRUSTED_PROXIES_CASES.length +
+    ERRORS_CASES.length +
+    PERFORMANCE_CASES.length +
+    CONFIG_SNAPSHOT_CASES.length +
+    CONFIG_EXPORT_CASES.length +
+    BACKUP_CASES.length +
+    OBSERVABILITY_CASES.length +
+    CONCURRENCY_CASES.length +
+    VISION_CACHE_CASES.length +
+    OAUTH_PROVIDER_CASES.length +
+    QUOTA_CHECKER_TYPE_CASES.length +
+    PI_PROVIDER_CASES.length +
+    OAUTH_STATUS_CASES.length +
+    OAUTH_DELETE_CASES.length +
+    COMPACTION_CASES.length +
+    QUOTA_DISCOVERY_CASES.length +
+    QUOTA_CLEAR_CASES.length +
+    CUSTOM_CHECKER_CASES.length +
+    MCP_CASES.length +
+    DEBUG_LOG_CASES.length +
+    MCP_LOG_CASES.length +
+    INFERENCE_CASES.length +
+    SELF_CASES.length;
+}
+
 interface Case {
   name: string;
   header?: string;
@@ -1484,6 +1528,10 @@ async function runCases(cases: KeysCase[]): Promise<number> {
 async function main() {
   let failures = 0;
   try {
+    const total = registeredCaseCount();
+    if (total !== EXPECTED_CASE_COUNT) {
+      throw new Error(`registered differential inventory drifted: expected ${EXPECTED_CASE_COUNT}, observed ${total}`);
+    }
     await Promise.all([ensureFixture(PLEXUS_BASE_URL), ensureFixture(TREFOIL_BASE_URL)]);
 
   // Plexus rebuilds its in-memory key cache asynchronously after management
@@ -1502,10 +1550,18 @@ async function main() {
   }
 
   for (const testCase of CASES) {
-    const [plexus, trefoil] = await Promise.all([
-      fetchVerify(PLEXUS_BASE_URL, testCase.header),
-      fetchVerify(TREFOIL_BASE_URL, testCase.header),
-    ]);
+    let plexus, trefoil;
+    try {
+      [plexus, trefoil] = await Promise.all([
+        fetchVerify(PLEXUS_BASE_URL, testCase.header),
+        fetchVerify(TREFOIL_BASE_URL, testCase.header),
+      ]);
+    } catch (error) {
+      recordCase({ name: testCase.name, status: 'error', error: String(error) });
+      failures += 1;
+      console.log(`ERROR ${testCase.name}: ${String(error)}`);
+      continue;
+    }
 
     const statusMatch = plexus.status === trefoil.status;
     const bodyMatch = deepEqual(normalize(plexus.body), normalize(trefoil.body));
@@ -1577,52 +1633,11 @@ async function main() {
       headers: { 'x-admin-key': SELF_TARGET_SECRET },
     });
     if (res.status === 200) break;
+    if (attempt === 19) throw new Error(`Self-service fixture did not become visible at ${PLEXUS_BASE_URL}`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   failures += await runCases(selfRestCases);
 
-  const total =
-    CASES.length +
-    KEYS_CASES.length +
-    PROVIDERS_CASES.length +
-    ALIASES_CASES.length +
-    USER_QUOTAS_CASES.length +
-    SYSTEM_SETTINGS_CASES.length +
-    COOLDOWNS_CASES.length +
-    DEBUG_CASES.length +
-    CONFIG_STATUS_CASES.length +
-    TIMEOUT_CONFIG_CASES.length +
-    MCP_ENABLED_CASES.length +
-    EXPLORATION_RATE_CASES.length +
-    FAILOVER_COOLDOWN_CASES.length +
-    CAPTURE_TRACE_CASES.length +
-    STALL_CONFIG_CASES.length +
-    VISION_FALLTHROUGH_CASES.length +
-    LOGGING_CASES.length +
-    BACKGROUND_EXPLORATION_CASES.length +
-    TRUSTED_PROXIES_CASES.length +
-    ERRORS_CASES.length +
-    PERFORMANCE_CASES.length +
-    CONFIG_SNAPSHOT_CASES.length +
-    CONFIG_EXPORT_CASES.length +
-    BACKUP_CASES.length +
-    OBSERVABILITY_CASES.length +
-    CONCURRENCY_CASES.length +
-    VISION_CACHE_CASES.length +
-    OAUTH_PROVIDER_CASES.length +
-    QUOTA_CHECKER_TYPE_CASES.length +
-    PI_PROVIDER_CASES.length +
-    OAUTH_STATUS_CASES.length +
-    OAUTH_DELETE_CASES.length +
-    COMPACTION_CASES.length +
-    QUOTA_DISCOVERY_CASES.length +
-    QUOTA_CLEAR_CASES.length +
-    CUSTOM_CHECKER_CASES.length +
-    MCP_CASES.length +
-    DEBUG_LOG_CASES.length +
-    MCP_LOG_CASES.length +
-    INFERENCE_CASES.length +
-    SELF_CASES.length;
   if (caseResults.length !== EXPECTED_CASE_COUNT) {
     throw new Error(`inventory reconciliation failed: expected ${EXPECTED_CASE_COUNT}, observed ${caseResults.length}`);
   }
