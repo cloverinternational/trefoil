@@ -170,9 +170,9 @@ async fn call_tool(
         "plexus_model_alias" => &["list", "get", "put", "create", "update", "delete", "delete_all"],
         "plexus_key" => &["list", "get", "put", "create", "update", "delete", "disable"],
         "plexus_quota" => &["list", "get", "put", "create", "update", "delete", "status", "clear", "recompute"],
-        "plexus_quota_checker" => &["list", "get", "types"],
+        "plexus_quota_checker" => &["types", "list", "get"],
         "plexus_system_logs" => &["recent", "level", "set_level", "reset_level"],
-        "plexus_mcp_gateway" => &["servers_list", "list", "get", "put", "create", "update", "delete", "status", "logs", "start", "stop", "restart"],
+        "plexus_mcp_gateway" => &["servers_list", "list", "get", "put", "create", "update", "delete", "status", "start", "stop", "restart", "logs"],
         _ => &[],
     };
     if !allowed.is_empty() && !allowed.contains(&operation) {
@@ -185,6 +185,7 @@ async fn call_tool(
         ("plexus_quota", "get" | "put" | "create" | "update" | "delete") => Some("quota"),
         ("plexus_quota", "status") => Some("key"),
         ("plexus_quota_checker", "get") => Some("quota checker"),
+        ("plexus_debug", "get_log") => Some("debug get_log"),
         ("plexus_mcp_gateway", "get" | "put" | "create" | "update" | "delete" | "status" | "start" | "stop" | "restart" | "logs") => Some("mcp_gateway"),
         _ => None,
     };
@@ -425,353 +426,6 @@ async fn forwarded_request(
         id,
         json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!status.is_success()}),
     )
-}
-
-async fn config_timeout_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "timeout",
-                "PATCH",
-                "/v0/management/config/timeout",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "timeout",
-                "GET",
-                "/v0/management/config/timeout",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_mcp_enabled_operation(
-    state: &AppState,
-    id: Value,
-    args: Option<&Value>,
-) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "mcp_enabled",
-                "PATCH",
-                "/v0/management/config/mcp-enabled",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "mcp_enabled",
-                "GET",
-                "/v0/management/config/mcp-enabled",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_compaction_operation(
-    state: &AppState,
-    id: Value,
-    args: Option<&Value>,
-) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "compaction",
-                "PATCH",
-                "/v0/management/config/compaction",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "compaction",
-                "GET",
-                "/v0/management/config/compaction",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_exploration_rate_operation(
-    state: &AppState,
-    id: Value,
-    args: Option<&Value>,
-) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "exploration_rate",
-                "PATCH",
-                "/v0/management/config/exploration-rate",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "exploration_rate",
-                "GET",
-                "/v0/management/config/exploration-rate",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_failover_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "failover",
-                "PATCH",
-                "/v0/management/config/failover",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "failover",
-                "GET",
-                "/v0/management/config/failover",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_cooldown_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "cooldown",
-                "PATCH",
-                "/v0/management/config/cooldown",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "cooldown",
-                "GET",
-                "/v0/management/config/cooldown",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_capture_trace_on_error_operation(
-    state: &AppState,
-    id: Value,
-    args: Option<&Value>,
-) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "capture_trace_on_error",
-                "PATCH",
-                "/v0/management/config/capture-trace-on-error",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "capture_trace_on_error",
-                "GET",
-                "/v0/management/config/capture-trace-on-error",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_stall_operation(state: &AppState, id: Value, args: Option<&Value>) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "stall",
-                "PATCH",
-                "/v0/management/config/stall",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "stall",
-                "GET",
-                "/v0/management/config/stall",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_vision_fallthrough_operation(
-    state: &AppState,
-    id: Value,
-    args: Option<&Value>,
-) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "vision_fallthrough",
-                "PATCH",
-                "/v0/management/config/vision-fallthrough",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "vision_fallthrough",
-                "GET",
-                "/v0/management/config/vision-fallthrough",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_background_exploration_operation(
-    state: &AppState,
-    id: Value,
-    args: Option<&Value>,
-) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "background_exploration",
-                "PATCH",
-                "/v0/management/config/background-exploration",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "background_exploration",
-                "GET",
-                "/v0/management/config/background-exploration",
-                None,
-            )
-            .await
-        }
-    }
-}
-
-async fn config_trusted_proxies_operation(
-    state: &AppState,
-    id: Value,
-    args: Option<&Value>,
-) -> Response {
-    let args = args.cloned().unwrap_or_else(|| json!({}));
-    match args.get("body") {
-        Some(body) if body.is_object() => {
-            forwarded_operation(
-                state,
-                id,
-                "trusted_proxies",
-                "PATCH",
-                "/v0/management/config/trusted-proxies",
-                Some(body.clone()),
-            )
-            .await
-        }
-        Some(_) => rpc_error(id, -32602, "body must be an object"),
-        None => {
-            forwarded_operation(
-                state,
-                id,
-                "trusted_proxies",
-                "GET",
-                "/v0/management/config/trusted-proxies",
-                None,
-            )
-            .await
-        }
-    }
 }
 
 async fn quota_checker_operation(
@@ -1030,7 +684,7 @@ async fn system_logs_operation(
                 .or_else(|| args.get("body").and_then(|body| body.get("level")))
                 .and_then(Value::as_str)
             else {
-                return rpc_error(id, -32602, "level is required");
+                return tool_error(id, operation, "Missing level for set_level operation. Provide body.level or query.level.", "invalid_request", 400);
             };
             (
                 "PUT",
@@ -2012,8 +1666,8 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(missing["error"]["code"], -32602);
-        assert_eq!(missing["error"]["message"], "level is required");
+        assert_eq!(missing["result"]["structuredContent"]["error"]["code"], 400);
+        assert_eq!(missing["result"]["structuredContent"]["error"]["message"], "Missing level for set_level operation. Provide body.level or query.level.");
     }
 
     #[tokio::test]

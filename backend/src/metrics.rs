@@ -84,14 +84,19 @@ pub fn compute_active_time_ms(windows: &[(i64, i64)], gap_ms: i64) -> i64 {
     total + session_end - session_start
 }
 
+fn json_charset(mut response: Response) -> Response {
+    response.headers_mut().insert("content-type", "application/json; charset=utf-8".parse().unwrap());
+    response
+}
+
 async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response {
     match resolve_principal(
         &state,
         headers.get("x-admin-key").and_then(|v| v.to_str().ok()),
     ) {
         Some(Principal::Admin) => {}
-        Some(Principal::Limited { .. }) => return forbidden(),
-        None => return unauthorized(),
+        Some(Principal::Limited { .. }) => return json_charset(forbidden()),
+        None => return json_charset(unauthorized()),
     }
 
     let mut body = String::new();
