@@ -410,7 +410,7 @@ async fn start_server(
     if row.try_get::<String, _>("mode").unwrap_or_default() != "local_process" {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"MCP server is not local_process"})),
+            Json(serde_json::json!({"error":"MCP server is not local_http"})),
         )
             .into_response();
     }
@@ -492,18 +492,6 @@ async fn stop_server(
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
-    let Some(pool) = &state.inner.database else {
-        return not_found(&name);
-    };
-    match sqlx::query("SELECT 1 FROM mcp_servers WHERE name=$1")
-        .bind(&name)
-        .fetch_optional(pool)
-        .await
-    {
-        Ok(Some(_)) => {}
-        Ok(None) => return not_found(&name),
-        Err(_) => return internal_error(),
-    }
     let mut processes = state.inner.mcp_processes.lock().await;
     if let Some(transport) = processes.remove(&name) {
         let _ = transport.shutdown().await;
@@ -514,7 +502,7 @@ async fn stop_server(
         .lock()
         .await
         .insert(name.clone(), ("stopped".into(), None));
-    Json(serde_json::json!({"success":true,"name":name,"status":"stopped"})).into_response()
+    Json(serde_json::json!({"serverName":name,"status":"stopped","pid":null,"url":null,"lastError":null,"startedAt":null,"exitedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis,true)})).into_response()
 }
 
 async fn restart_server(
@@ -693,5 +681,26 @@ mod contract_tests {
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         assert_eq!(body, serde_json::json!({"data":["started"]}));
+    }
+}
+
+#[cfg(test)]
+mod stop_contract_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn stop_is_idempotent_and_reports_reference_runtime_shape() {
+        let state = AppState::new(Some("admin".into()), Default::default());
+        for _ in 0..2 {
+            let response = router().with_state(state.clone()).oneshot(Request::post("/v0/management/mcp-servers/absent/stop").header("x-admin-key","admin").body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+            assert_eq!(body["serverName"], "absent");
+            assert_eq!(body["status"], "stopped");
+            assert!(chrono::DateTime::parse_from_rfc3339(body["exitedAt"].as_str().unwrap()).is_ok());
+            assert_eq!(body.as_object().unwrap().len(), 7);
+        }
     }
 }

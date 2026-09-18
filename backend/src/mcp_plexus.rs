@@ -241,11 +241,15 @@ async fn call_tool(
                 }
             }
         }
+        ("plexus_provider", "fetch_models") => {
+            let body = args.and_then(|v| v.get("body")).cloned().unwrap_or_else(|| json!({}));
+            return forwarded_operation(state, id, operation, "POST", "/v0/management/providers/fetch-models", Some(body)).await;
+        }
         ("plexus_provider", "put")
         | ("plexus_provider", "create")
         | ("plexus_provider", "update")
         | ("plexus_provider", "delete")
-        | ("plexus_provider", "fetch_models") => {
+        => {
             return provider_operation(state, id, operation, args).await;
         }
         ("plexus_model_alias", "list")
@@ -421,7 +425,10 @@ async fn forwarded_request(
     let result = if status.is_success() {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
-        json!({"ok":false,"operation":operation,"error":payload})
+        let raw = payload.get("error").unwrap_or(&payload);
+        let message = raw.get("message").cloned().unwrap_or_else(|| if raw.is_string() { raw.clone() } else { json!("Management request failed") });
+        let kind = raw.get("type").cloned().unwrap_or_else(|| json!(if status == StatusCode::BAD_REQUEST {"invalid_request"} else if status == StatusCode::NOT_FOUND {"not_found"} else {"server_error"}));
+        json!({"ok":false,"operation":operation,"error":{"message":message,"type":kind,"code":raw.get("code").cloned().unwrap_or(json!(status.as_u16()))}})
     };
     rpc_result(
         id,
@@ -602,12 +609,6 @@ async fn settings_operation(state: &AppState, id: Value, args: Option<&Value>) -
         ("failover", "/v0/management/config/failover"),
         ("cooldown", "/v0/management/config/cooldown"),
         ("timeout", "/v0/management/config/timeout"),
-        ("mcp_enabled", "/v0/management/config/mcp-enabled"),
-        ("compaction", "/v0/management/config/compaction"),
-        (
-            "capture_trace_on_error",
-            "/v0/management/config/capture-trace-on-error",
-        ),
         ("stall", "/v0/management/config/stall"),
         ("trusted_proxies", "/v0/management/config/trusted-proxies"),
         (
@@ -1881,9 +1882,6 @@ mod tests {
         .await;
         let data = &all["result"]["structuredContent"]["data"];
         for category in [
-            "mcp_enabled",
-            "compaction",
-            "capture_trace_on_error",
             "failover",
             "cooldown",
             "timeout",
