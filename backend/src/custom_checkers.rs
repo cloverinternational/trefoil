@@ -73,6 +73,7 @@ pub fn start_poller(state: AppState) {
                 let Some(quota) = config.quota_checker.filter(|q| q.enabled) else {
                     continue;
                 };
+                let checker_type = quota.checker_type.clone().or_else(||quota.id.clone());
                 let Some(checker_id) = quota.id.or(quota.checker_type) else {
                     continue;
                 };
@@ -86,8 +87,9 @@ pub fn start_poller(state: AppState) {
                     continue;
                 }
                 last_checked.insert(schedule_key, now);
-                let result = if builtin(&checker_id) {
-                    run_builtin_checker(&state, &checker_id, &provider, &quota.options).await
+                let runtime_type = checker_type.as_deref().unwrap_or(&checker_id);
+                let result = if builtin(runtime_type) {
+                    run_builtin_checker(&state, runtime_type, &provider, &quota.options).await
                 } else {
                     let Some(pool) = &state.inner.database else {
                         continue;
@@ -695,16 +697,20 @@ async fn persist_result(
     let Some(pool) = &state.inner.database else {
         return;
     };
+    let checker_type = state.inner.providers.read().unwrap().get(provider)
+        .and_then(|provider|provider.quota_checker.as_ref())
+        .filter(|quota|quota.id.as_deref()==Some(checker_id))
+        .and_then(|quota|quota.checker_type.clone()).unwrap_or_else(||checker_id.into());
     let now = chrono::Utc::now().timestamp_millis();
     if let Some(message) = error {
-        let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,utilization_state,status,success,error_message,checked_at,created_at) VALUES ($1,$1,$2,'_error','unknown','unknown','error','unknown','error',false,$3,$4,$4)")
-            .bind(checker_id).bind(provider).bind(message).bind(now).execute(pool).await;
+        let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,utilization_state,status,success,error_message,checked_at,created_at) VALUES ($1,$5,$2,'_error','unknown','unknown','error','unknown','error',false,$3,$4,$4)")
+            .bind(checker_id).bind(provider).bind(message).bind(now).bind(&checker_type).execute(pool).await;
         return;
     }
     let values = meters.as_array().cloned().unwrap_or_default();
     if values.is_empty() {
-        let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,utilization_state,status,success,checked_at,created_at) VALUES ($1,$1,$2,'_empty','allowance','','No meters','not_applicable','ok',true,$3,$3)")
-            .bind(checker_id).bind(provider).bind(now).execute(pool).await;
+        let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,utilization_state,status,success,checked_at,created_at) VALUES ($1,$4,$2,'_empty','allowance','','No meters','not_applicable','ok',true,$3,$3)")
+            .bind(checker_id).bind(provider).bind(now).bind(&checker_type).execute(pool).await;
         return;
     }
     for meter in values {
@@ -715,7 +721,7 @@ async fn persist_result(
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         let label = meter.get("label").and_then(Value::as_str).unwrap_or(key);
-        let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,\"group\",scope,\"limit\",used,remaining,utilization_state,utilization_percent,status,period_value,period_unit,period_cycle,resets_at,success,error_message,checked_at,created_at) VALUES ($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,true,NULL,$19,$19)")
+        let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,\"group\",scope,\"limit\",used,remaining,utilization_state,utilization_percent,status,period_value,period_unit,period_cycle,resets_at,success,error_message,checked_at,created_at) VALUES ($1,$20,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,true,NULL,$19,$19)")
             .bind(checker_id).bind(provider).bind(key).bind(kind).bind(unit).bind(label)
             .bind(meter.get("group").and_then(Value::as_str))
             .bind(meter.get("scope").and_then(Value::as_str))
@@ -728,7 +734,7 @@ async fn persist_result(
             .bind(meter.get("periodValue").and_then(Value::as_i64).map(|v| v as i32))
             .bind(meter.get("periodUnit").and_then(Value::as_str))
             .bind(meter.get("periodCycle").and_then(Value::as_str))
-            .bind(meter.get("resetsAt").and_then(|value| value.as_i64().or_else(|| value.as_str().and_then(|s|chrono::DateTime::parse_from_rfc3339(s).ok()).map(|dt|dt.timestamp_millis())))).bind(now).execute(pool).await;
+            .bind(meter.get("resetsAt").and_then(|value| value.as_i64().or_else(|| value.as_str().and_then(|s|chrono::DateTime::parse_from_rfc3339(s).ok()).map(|dt|dt.timestamp_millis())))).bind(now).bind(&checker_type).execute(pool).await;
     }
 }
 

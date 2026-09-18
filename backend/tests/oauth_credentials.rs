@@ -153,7 +153,9 @@ async fn empty_checker_success_replaces_stale_quota_result() {
     let pool=database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
     database::migrate(&pool).await.unwrap();
     let state=trefoil_backend::AppState::new(Some("admin".into()),Default::default()).with_database(pool.clone());
-    state.inner.providers.write().unwrap().insert("empty-provider".into(),Default::default());
+    state.inner.providers.write().unwrap().insert("empty-provider".into(),trefoil_backend::state::ProviderConfig {
+        quota_checker:Some(serde_json::from_value(serde_json::json!({"id":"empty-checker","type":"custom-runtime","enabled":true,"intervalMinutes":30})).unwrap()),..Default::default()
+    });
     let response=trefoil_backend::app(state.clone()).oneshot(Request::post("/v0/management/custom-checkers/empty-checker/check").header("x-admin-key","admin").header("content-type","application/json").body(Body::from(r#"{"provider":"empty-provider","code":"return []"}"#)).unwrap()).await.unwrap();
     assert!(response.status().is_success());
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM meter_snapshots WHERE checker_id='empty-checker' AND meter_key='_empty' AND success=true").fetch_one(&pool).await.unwrap();
@@ -161,6 +163,7 @@ async fn empty_checker_success_replaces_stale_quota_result() {
     let response=trefoil_backend::app(state).oneshot(Request::get("/v0/management/quotas/empty-checker").header("x-admin-key","admin").body(Body::empty()).unwrap()).await.unwrap();
     let body:serde_json::Value=serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(body["success"],true);
+    assert_eq!(body["checkerType"],"custom-runtime");
     assert_eq!(body["meters"],serde_json::json!([]));
 }
 
