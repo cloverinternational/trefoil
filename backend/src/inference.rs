@@ -2894,16 +2894,6 @@ fn inference_targets(
     }
 }
 
-fn resolve_target(
-    state: &AppState,
-    model: &str,
-    key_config: Option<&crate::state::KeyConfig>,
-) -> (String, String) {
-    inference_targets(state, model, key_config)
-        .next()
-        .unwrap_or_else(|| (model.to_owned(), model.to_owned()))
-}
-
 fn provider_allowed(config: &crate::state::KeyConfig, provider: &str) -> bool {
     !config
         .excluded_providers
@@ -3423,8 +3413,8 @@ mod tests {
             },
         );
         assert_eq!(
-            resolve_target(&state, "model", None),
-            ("second".into(), "model-b".into())
+            inference_targets(&state, "model", None).next(),
+            Some(("second".into(), "model-b".into()))
         );
     }
 
@@ -3480,13 +3470,9 @@ mod tests {
                     .map(|(p, m)| (p.into(), m.into()))
                     .collect::<Vec<_>>()
             );
-            let direct = resolve_target(&state, model, key_config);
             assert_eq!(
-                direct,
-                shared
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| (model.into(), model.into()))
+                inference_targets(&state, model, key_config).next(),
+                shared.first().cloned()
             );
         }
 
@@ -3496,7 +3482,10 @@ mod tests {
         };
         let shared: Vec<_> = inference_targets(&state, "model", Some(&limited)).collect();
         assert_eq!(shared, vec![("second".into(), "model-b".into())]);
-        assert_eq!(resolve_target(&state, "model", Some(&limited)), shared[0]);
+        assert_eq!(
+            inference_targets(&state, "model", Some(&limited)).next(),
+            Some(shared[0].clone())
+        );
     }
 
     #[tokio::test]
@@ -3675,6 +3664,69 @@ mod tests {
                 .unwrap();
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(body["choices"][0]["message"]["content"], "ok");
+    }
+
+    #[tokio::test]
+    async fn chat_failover_returns_bad_gateway_when_every_candidate_fails() {
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "model".to_owned(),
+            crate::state::ModelConfig {
+                target_groups: vec![crate::state::ModelTargetGroup {
+                    name: "fallback".into(),
+                    selector: "sequential".into(),
+                    targets: vec![
+                        crate::state::ModelTarget {
+                            provider: Some("first".into()),
+                            model: Some("model-a".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                        crate::state::ModelTarget {
+                            provider: Some("second".into()),
+                            model: Some("model-b".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        *state.inner.aliases.write().unwrap() = aliases;
+        state.inner.providers.write().unwrap().extend([
+            (
+                "first".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: "http://127.0.0.1:1/v1".into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "second".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: "http://127.0.0.1:2/v1".into(),
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::post("/v1/chat/completions")
+                    .header("x-api-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"model","messages":[{"role":"user","content":"hi"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
     }
 
     fn inference_mock(status: &str, content_type: &str, body: &str) -> String {
