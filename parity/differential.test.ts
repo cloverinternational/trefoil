@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildReport, recordCase, reconcileCaseCount, reconcileCaseInventory, type CaseResult } from './differential';
+import { buildReport, parseResponseBody, parseSseResponse, recordCase, reconcileCaseCount, reconcileCaseInventory, registeredCaseNames, type CaseResult } from './differential';
 
 const result = (name: string, status: CaseResult['status']): CaseResult => ({ name, status });
 
@@ -18,6 +18,19 @@ describe('differential report', () => {
 });
 
 describe('differential reconciliation', () => {
+  test('exports a unique complete registered inventory', () => {
+    const names = registeredCaseNames();
+    expect(names.length).toBe(407);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  test('parses JSON, text, SSE, and rejects malformed JSON', () => {
+    expect(parseResponseBody('{"b":2}', 'application/json')).toEqual({ b: 2 });
+    expect(parseResponseBody('plain text', 'text/plain')).toBe('plain text');
+    expect(parseSseResponse('event: message\ndata: {"result":{"ok":true}}\n\n')).toEqual({ result: { ok: true } });
+    expect(() => parseResponseBody('{', 'application/json')).toThrow('malformed JSON response');
+  });
+
   test('rejects duplicate case names', () => {
     const results: CaseResult[] = [];
     recordCase(result('same', 'pass'), results);

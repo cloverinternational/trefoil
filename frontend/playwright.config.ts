@@ -1,8 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const port = 14773;
-const chromium = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
-  ?? '/home/swarm/.cache/ms-playwright/chromium-1234/chrome-linux/chrome';
+const chromium = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: './e2e',
@@ -13,7 +12,7 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     trace: 'retain-on-failure',
-    launchOptions: { executablePath: chromium },
+    launchOptions: chromium ? { executablePath: chromium } : {},
   },
   webServer: {
     command: `npm run preview -- --host 127.0.0.1 --port ${port}`,

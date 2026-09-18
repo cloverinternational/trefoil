@@ -98,6 +98,10 @@ async function writeReport(status: 'complete' | 'incomplete', error?: string) {
   await Bun.write(destination, JSON.stringify(report, null, 2) + '\n');
 }
 
+export function registeredCaseNames(): string[] {
+  return registeredCaseGroups().flat().map((testCase) => testCase.name);
+}
+
 function registeredCaseCount(): number {
   return registeredCaseGroups().reduce((total, cases) => total + cases.length, 0);
 }
@@ -281,10 +285,37 @@ function normalizeForCase(path: string, body: unknown): unknown {
 // Structural comparison, independent of key insertion order (Fastify/JS
 // object literals and Rust serde_json output insertion-order their keys
 // differently even when semantically identical).
+export function parseResponseBody(text: string, contentType: string | null): unknown {
+  const trimmed = text.trim();
+  const isJson = contentType?.includes('application/json') || contentType?.includes('+json');
+  if (isJson || (trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    try { return JSON.parse(text); } catch (error) {
+      if (isJson) throw new Error(`malformed JSON response: ${String(error)}`);
+    }
+  }
+  return text;
+}
+
+export function parseSseResponse(text: string): unknown {
+  const data = text.split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart())
+    .join('\n');
+  if (!data) throw new Error('MCP SSE response contained no data event');
+  return parseResponseBody(data, 'application/json');
+}
+
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== typeof b) return false;
   if (a === null || b === null) return a === b;
+  if (typeof a === 'string' && typeof b === 'string') {
+    try {
+      const parsedA = JSON.parse(a);
+      const parsedB = JSON.parse(b);
+      return deepEqual(parsedA, parsedB);
+    } catch { return false; }
+  }
   if (typeof a !== 'object') return false;
   if (Array.isArray(a) !== Array.isArray(b)) return false;
   if (Array.isArray(a) && Array.isArray(b)) {
@@ -321,8 +352,38 @@ async function fetchJson(
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const contentType = res.headers.get('content-type');
-  const responseBody = contentType?.includes('text/plain') ? await res.text() : await res.json().catch(() => null);
+  const raw = await res.text();
+  const responseBody = parseResponseBody(raw, contentType);
   return { status: res.status, body: responseBody, contentType };
+}
+
+const mcpSessions = new Map<string, string>();
+
+async function fetchMcp(baseUrl: string, body: unknown, adminHeader?: string) {
+  const headers: Record<string, string> = {
+    Accept: 'application/json, text/event-stream',
+    'Content-Type': 'application/json',
+  };
+  if (adminHeader !== undefined) headers['x-admin-key'] = adminHeader;
+  let session = mcpSessions.get(baseUrl);
+  if (!mcpSessions.has(baseUrl)) {
+    const init = await fetch(`${baseUrl}/mcp/plexus`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 'parity-init', method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'trefoil-parity', version: '1' } } }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const initText = await init.text();
+    const initBody = init.headers.get('content-type')?.includes('text/event-stream') ? parseSseResponse(initText) : parseResponseBody(initText, init.headers.get('content-type'));
+    if (!init.ok || !initBody || typeof initBody !== 'object' || !('result' in initBody)) throw new Error(`MCP initialize failed: ${init.status} ${JSON.stringify(initBody)}`);
+    session = init.headers.get('mcp-session-id') ?? '';
+    mcpSessions.set(baseUrl, session);
+    await fetch(`${baseUrl}/mcp/plexus`, { method: 'POST', headers: { ...headers, 'mcp-session-id': session }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  }
+  if (session) headers['mcp-session-id'] = session;
+  const response = await fetch(`${baseUrl}/mcp/plexus`, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  const contentType = response.headers.get('content-type');
+  const raw = await response.text();
+  return { status: response.status, body: contentType?.includes('text/event-stream') ? parseSseResponse(raw) : parseResponseBody(raw, contentType), contentType };
 }
 
 interface KeysCase {
@@ -441,7 +502,7 @@ const KEYS_CASES: KeysCase[] = [
     body: { comment: 'hi' },
   },
   {
-    name: 'GET reflects the PATCH',
+    name: 'GET key reflects the PATCH',
     method: 'GET',
     path: `/v0/management/keys/parity-key-${runId}`,
     adminHeader: ADMIN_KEY,
@@ -453,7 +514,7 @@ const KEYS_CASES: KeysCase[] = [
     adminHeader: ADMIN_KEY,
   },
   {
-    name: 'GET after delete -> 404',
+    name: 'KEYS_CASES: GET after delete -> 404',
     method: 'GET',
     path: `/v0/management/keys/parity-key-${runId}`,
     adminHeader: ADMIN_KEY,
@@ -582,7 +643,7 @@ const ALIASES_CASES: KeysCase[] = [
     body: { additional_aliases: ['nick'] },
   },
   {
-    name: 'GET reflects the PATCH',
+    name: 'GET alias reflects the PATCH',
     method: 'GET',
     path: `/v0/management/aliases/my-alias-${runId}`,
     adminHeader: ADMIN_KEY,
@@ -595,7 +656,7 @@ const ALIASES_CASES: KeysCase[] = [
     body: {
       target_groups: [
         {
-          name: 'g',
+          name: 'ALIASES_CASES: g',
           selector: 'random',
           targets: [
             { provider: 'p', model: 'm' },
@@ -610,7 +671,7 @@ const ALIASES_CASES: KeysCase[] = [
     method: 'PUT',
     path: `/v0/management/aliases/bad-target-${runId}`,
     adminHeader: ADMIN_KEY,
-    body: { target_groups: [{ name: 'g', selector: 'random', targets: [{}] }] },
+    body: { target_groups: [{ name: 'ALIASES_CASES: g', selector: 'random', targets: [{}] }] },
   },
   {
     name: 'PUT rejects an invalid selector',
@@ -619,7 +680,7 @@ const ALIASES_CASES: KeysCase[] = [
     adminHeader: ADMIN_KEY,
     body: {
       target_groups: [
-        { name: 'g', selector: 'not-a-selector', targets: [{ provider: 'p', model: 'm' }] },
+        { name: 'ALIASES_CASES: g', selector: 'not-a-selector', targets: [{ provider: 'p', model: 'm' }] },
       ],
     },
   },
@@ -630,7 +691,7 @@ const ALIASES_CASES: KeysCase[] = [
     adminHeader: ADMIN_KEY,
     body: {
       additional_aliases: ['x', 'x'],
-      target_groups: [{ name: 'g', selector: 'random', targets: [{ provider: 'p', model: 'm' }] }],
+      target_groups: [{ name: 'ALIASES_CASES: g', selector: 'random', targets: [{ provider: 'p', model: 'm' }] }],
     },
   },
   {
@@ -638,14 +699,14 @@ const ALIASES_CASES: KeysCase[] = [
     method: 'PUT',
     path: `/v0/management/aliases/alias-a-${runId}`,
     adminHeader: ADMIN_KEY,
-    body: { target_groups: [{ name: 'g', selector: 'random', targets: [{ alias: `alias-b-${runId}` }] }] },
+    body: { target_groups: [{ name: 'ALIASES_CASES: g', selector: 'random', targets: [{ alias: `alias-b-${runId}` }] }] },
   },
   {
     name: 'PUT alias-b -> alias-a detects the cycle -> 500',
     method: 'PUT',
     path: `/v0/management/aliases/alias-b-${runId}`,
     adminHeader: ADMIN_KEY,
-    body: { target_groups: [{ name: 'g', selector: 'random', targets: [{ alias: `alias-a-${runId}` }] }] },
+    body: { target_groups: [{ name: 'ALIASES_CASES: g', selector: 'random', targets: [{ alias: `alias-a-${runId}` }] }] },
   },
   {
     name: 'GET alias-b -> 404 (cycle detected before save)',
@@ -667,7 +728,7 @@ const ALIASES_CASES: KeysCase[] = [
     adminHeader: ADMIN_KEY,
   },
   {
-    name: 'GET after delete -> 404',
+    name: 'ALIASES_CASES: GET after delete -> 404',
     method: 'GET',
     path: `/v0/management/aliases/my-alias-${runId}`,
     adminHeader: ADMIN_KEY,
@@ -1561,9 +1622,12 @@ async function runCases(cases: KeysCase[]): Promise<number> {
   for (const testCase of cases) {
     let plexus, trefoil;
     try {
+      const fetcher = testCase.path === '/mcp/plexus'
+        ? (base: string) => fetchMcp(base, testCase.body, testCase.adminHeader)
+        : (base: string) => fetchJson(base, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers, testCase.rawBody);
       [plexus, trefoil] = await Promise.all([
-        fetchJson(PLEXUS_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers, testCase.rawBody),
-        fetchJson(TREFOIL_BASE_URL, testCase.method, testCase.path, testCase.adminHeader, testCase.body, testCase.headers, testCase.rawBody),
+        fetcher(PLEXUS_BASE_URL),
+        fetcher(TREFOIL_BASE_URL),
       ]);
     } catch (error) {
       recordCase({ name: testCase.name, status: 'error', error: String(error) });
@@ -1719,7 +1783,7 @@ async function main() {
   }
   failures += await runCases(selfRestCases);
 
-  const registeredNames = registeredCaseGroups().flat().map((testCase) => testCase.name);
+  const registeredNames = registeredCaseNames();
   reconcileCaseInventory(caseResults.map((result) => result.name), registeredNames);
   reconcileCaseCount(caseResults.length);
   if (failures > 0) {

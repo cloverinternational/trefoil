@@ -352,11 +352,9 @@ async fn test(
         let result = run_builtin_checker(&state, &id, provider, &options).await;
         match result {
             Ok(meters) => {
-                persist_result(&state, &id, provider, &meters, None).await;
                 return Json(serde_json::json!({"success":true,"checkerId":id,"provider":provider,"meters":meters})).into_response();
             }
             Err(message) => {
-                persist_result(&state, &id, provider, &Value::Array(vec![]), Some(&message)).await;
                 return Json(serde_json::json!({"success":false,"checkerId":id,"provider":provider,"meters":[],"error":message})).into_response();
             }
         }
@@ -543,7 +541,9 @@ async fn run_builtin_checker(
     .await
     .map_err(|_| "failed to load OAuth credentials".to_string())?
     .ok_or_else(|| format!("OAuth credentials not found for {oauth_provider}/{account}"))?;
-    let mut request = Client::new().get(endpoint).bearer_auth(token);
+    let mut request = Client::builder().timeout(Duration::from_secs(15)).build()
+        .map_err(|_| "failed to initialize quota client".to_string())?
+        .get(endpoint).bearer_auth(token);
     if id == "claude-code" {
         request = request.header("anthropic-beta", "oauth-2025-04-20");
     }

@@ -335,9 +335,9 @@ async fn delete_key(
             .into_response();
     };
     let Some(pool) = &state.inner.database else {
-        return not_found("MCP key");
+        return key_not_found(id);
     };
-    match sqlx::query("DELETE FROM mcp_keys k USING mcp_servers s WHERE k.mcp_server_id=s.id AND s.name=$1 AND k.id=$2").bind(name).bind(id).execute(pool).await{Ok(r) if r.rows_affected()>0=>Json(serde_json::json!({"success":true})).into_response(),_=>not_found("MCP key")}
+    match sqlx::query("DELETE FROM mcp_keys k USING mcp_servers s WHERE k.mcp_server_id=s.id AND s.name=$1 AND k.id=$2").bind(name).bind(id).execute(pool).await{Ok(r) if r.rows_affected()>0=>Json(serde_json::json!({"success":true})).into_response(),_=>key_not_found(id)}
 }
 async fn clear_key_cooldown(
     State(state): State<AppState>,
@@ -365,8 +365,16 @@ async fn clear_key_cooldown(
         Ok(result) if result.rows_affected() > 0 => {
             Json(serde_json::json!({"success":true})).into_response()
         }
-        _ => not_found("MCP key"),
+        _ => key_not_found(id),
     }
+}
+
+fn key_not_found(id: i32) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"error":format!("MCP key '{id}' not found")})),
+    )
+        .into_response()
 }
 
 fn not_found(name: &str) -> Response {
@@ -623,12 +631,67 @@ async fn process_logs(
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
-    let status = state
+    let logs = state
         .inner
-        .mcp_process_status
+        .mcp_process_logs
         .lock()
         .await
         .get(&name)
-        .cloned();
-    Json(serde_json::json!({"serverName":name,"data":[],"status":status.as_ref().map(|v|v.0.as_str()).unwrap_or("stopped"),"error":status.and_then(|v|v.1)})).into_response()
+        .cloned()
+        .unwrap_or_default();
+    Json(serde_json::json!({"data":logs})).into_response()
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn missing_key_error_identifies_key_not_server() {
+        let state = AppState::new(Some("admin".into()), Default::default());
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::delete("/v0/management/mcp-servers/example/keys/999")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body, serde_json::json!({"error":"MCP key '999' not found"}));
+    }
+
+    #[tokio::test]
+    async fn process_logs_returns_stored_logs_without_invented_status_fields() {
+        let state = AppState::new(Some("admin".into()), Default::default());
+        state
+            .inner
+            .mcp_process_logs
+            .lock()
+            .await
+            .insert("example".into(), vec!["started".into()]);
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::get("/v0/management/mcp-servers/example/process-logs")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body, serde_json::json!({"data":["started"]}));
+    }
 }

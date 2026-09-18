@@ -1377,22 +1377,7 @@ async fn model_alias_operation(
 }
 
 fn redact_provider(provider: &crate::state::ProviderConfig) -> Value {
-    let mut value = serde_json::to_value(provider).unwrap_or_else(|_| json!({}));
-    if let Some(object) = value.as_object_mut() {
-        object.insert("api_key".into(), json!("[REDACTED]"));
-        for key in [
-            "oauth_token",
-            "access_token",
-            "refresh_token",
-            "secret",
-            "authorization",
-            "cookie",
-            "password",
-        ] {
-            object.insert(key.into(), json!("[REDACTED]"));
-        }
-    }
-    value
+    redact_key_secrets(serde_json::to_value(provider).unwrap_or_else(|_| json!({})))
 }
 
 async fn key_operation(
@@ -1499,7 +1484,10 @@ fn redact_key_secrets(value: Value) -> Value {
                     k.to_ascii_lowercase().as_str(),
                     "secret" | "api_key" | "apikey" | "authorization" | "cookie" | "password"
                 ) || k.to_ascii_lowercase().contains("token")
-                    || k.to_ascii_lowercase().contains("session");
+                    || k.to_ascii_lowercase().contains("session")
+                    || k.to_ascii_lowercase().contains("password")
+                    || k.to_ascii_lowercase().contains("authcookie")
+                    || k.to_ascii_lowercase().contains("managementapikey");
                 if sensitive {
                     *v = json!("[REDACTED]");
                 } else {
@@ -2623,5 +2611,29 @@ mod tests {
             assert_eq!(response.status(), StatusCode::IM_A_TEAPOT);
             assert_eq!(body(response).await["error"]["type"], "mcp_disabled");
         }
+    }
+}
+
+#[cfg(test)]
+mod redaction_regression_tests {
+    use super::*;
+    #[test]
+    fn provider_redaction_preserves_shape_and_covers_nested_sensitive_fields() {
+        let provider = crate::state::ProviderConfig {
+            api_key: Some("private".into()),
+            ..Default::default()
+        };
+        let original = serde_json::to_value(&provider).unwrap();
+        let redacted = redact_provider(&provider);
+        assert_eq!(
+            redacted.as_object().unwrap().keys().collect::<Vec<_>>(),
+            original.as_object().unwrap().keys().collect::<Vec<_>>()
+        );
+        assert_eq!(redacted["api_key"], "[REDACTED]");
+        let nested = redact_key_secrets(
+            json!({"safe":"keep", "nested":[{"dbPassword":"private","managementApiKey":"private","authCookie":"private"}]}),
+        );
+        assert_eq!(nested["safe"], "keep");
+        assert!(!nested.to_string().contains("private"));
     }
 }
