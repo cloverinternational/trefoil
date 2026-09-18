@@ -50,3 +50,29 @@ async fn concurrent_claim_has_exactly_one_winner() {
     let verifier:Option<String> = sqlx::query_scalar("SELECT pkce_verifier FROM oauth_login_sessions WHERE id='claim-race'").fetch_one(&pool).await.unwrap();
     assert!(verifier.is_none());
 }
+
+#[tokio::test]
+#[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL"]
+async fn chat_failover_audit_has_contiguous_candidate_numbers() {
+    use axum::{body::Body, http::Request, routing::post, Json, Router};
+    use tower::ServiceExt;
+    use trefoil_backend::{AppState, state::{ProviderConfig, ModelConfig, ModelTargetGroup, ModelTarget}};
+    let pool = database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
+    database::migrate(&pool).await.unwrap();
+    let app = Router::new().route("/chat/completions",post(|Json(body):Json<serde_json::Value>| async move {
+        if body["model"]=="third" { (axum::http::StatusCode::OK,Json(serde_json::json!({"choices":[],"usage":{}}))) }
+        else { (axum::http::StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":{"message":"retry"}}))) }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr=listener.local_addr().unwrap();
+    let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+    let state=AppState::new(Some("admin".into()),Default::default()).with_database(pool.clone());
+    for name in ["first","second","third"] { state.inner.providers.write().unwrap().insert(name.into(),ProviderConfig{api_base_url:format!("http://{addr}"),enabled:true,..Default::default()}); }
+    state.inner.aliases.write().unwrap().insert("alias".into(),ModelConfig{target_groups:vec![ModelTargetGroup{name:"ordered".into(),selector:"in_order".into(),targets:["first","second","third"].into_iter().map(|name|ModelTarget{provider:Some(name.into()),model:Some(name.into()),enabled:true,..Default::default()}).collect()}],..Default::default()});
+    let response=trefoil_backend::app(state).oneshot(Request::post("/v1/chat/completions").header("x-api-key","admin").header("content-type","application/json").body(Body::from(r#"{"model":"alias","messages":[{"role":"user","content":"hello"}]}"#)).unwrap()).await.unwrap();
+    assert_eq!(response.status(),axum::http::StatusCode::OK);
+    let id=response.headers()["x-request-id"].to_str().unwrap();
+    let attempts:Vec<i32>=sqlx::query_scalar("SELECT attempt_index FROM inference_attempts WHERE request_id=$1 ORDER BY attempt_index").bind(id).fetch_all(&pool).await.unwrap();
+    assert_eq!(attempts,vec![1,2,3]);
+    server.abort();
+}

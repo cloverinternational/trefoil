@@ -1973,7 +1973,7 @@ async fn chat_completions(
         match request.send().await {
         Ok(upstream) => {
             let status = upstream.status();
-            if body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
+            if status.is_success() && body.get("stream").and_then(Value::as_bool).unwrap_or(false) {
                 let content_type = upstream
                     .headers()
                     .get("content-type")
@@ -2034,6 +2034,7 @@ async fn chat_completions(
                 )
                 .await;
                 register_provider_failure(&state, &provider_slug, &upstream_model, reason).await;
+                _permit.take();
                 return chat_status_failover(
                     &state,
                     &client,
@@ -2046,6 +2047,8 @@ async fn chat_completions(
                 )
                 .await;
             }
+            record_attempt(&state, &request_id, 1, &provider_slug, &upstream_model, "chat",
+                if status.is_success() { "success" } else { "failed" }, payload["error"]["message"].as_str(), Some(status.as_u16() as i32), false, start_time).await;
             if let Some(pool) = &state.inner.database {
                 let input_tokens = payload["usage"]["prompt_tokens"]
                     .as_i64()
@@ -2109,118 +2112,9 @@ async fn chat_completions(
             )
             .await;
             register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
-            for (offset, (fallback_provider_slug, fallback_model)) in
-                targets.into_iter().skip(1).enumerate()
-            {
-                let attempt = (offset + 2) as i32;
-                let Some(fallback_provider) = state
-                    .inner
-                    .providers
-                    .read()
-                    .unwrap()
-                    .get(&fallback_provider_slug)
-                    .cloned()
-                else {
-                    continue;
-                };
-                let Ok(fallback_base) = dispatch_provider_url(&fallback_provider.api_base_url)
-                else {
-                    continue;
-                };
-                let mut fallback_body = original_body.clone();
-                fallback_body["model"] = Value::String(fallback_model.clone());
-                let mut fallback_request = client
-                    .post(format!(
-                        "{}/chat/completions",
-                        fallback_base.as_str().trim_end_matches('/')
-                    ))
-                    .json(&fallback_body);
-                if let Some(api_key) = fallback_provider.api_key {
-                    fallback_request = fallback_request.bearer_auth(api_key);
-                }
-                let _permit = crate::concurrency::acquire(&state, fallback_provider_slug.clone(), fallback_model.clone());
-                match fallback_request.send().await {
-                    Ok(fallback) => {
-                        let fallback_status = fallback.status();
-                        let fallback_payload = fallback.json::<Value>().await.unwrap_or_else(|_| {
-                            serde_json::json!({"error": {"message": "Invalid response from upstream provider", "type": "upstream_error"}})
-                        });
-                        let retryable = is_retryable_upstream_status(&state, fallback_status, None);
-                        record_attempt(
-                            &state,
-                            &request_id,
-                            attempt,
-                            &fallback_provider_slug,
-                            &fallback_model,
-                            "chat",
-                            if fallback_status.is_success() {
-                                "success"
-                            } else {
-                                "failed"
-                            },
-                            fallback_payload["error"]["message"].as_str(),
-                            Some(fallback_status.as_u16() as i32),
-                            retryable,
-                            start_time,
-                        )
-                        .await;
-                        if retryable {
-                            register_provider_failure(
-                                &state,
-                                &fallback_provider_slug,
-                                &fallback_model,
-                                fallback_payload["error"]["message"]
-                                    .as_str()
-                                    .unwrap_or("retryable upstream error")
-                                    .to_owned(),
-                            )
-                            .await;
-                            continue;
-                        }
-                        record_response_usage(
-                            &state,
-                            &request_id,
-                            usage_key_name,
-                            &fallback_provider_slug,
-                            &model,
-                            "chat",
-                            fallback_status.is_success(),
-                            start_time,
-                            &fallback_payload,
-                            true,
-                        )
-                        .await;
-                        return response_with_request_id(
-                            fallback_status,
-                            fallback_payload,
-                            &request_id,
-                        );
-                    }
-                    Err(fallback_error) => {
-                        let reason = fallback_error.to_string();
-                        record_attempt(
-                            &state,
-                            &request_id,
-                            attempt,
-                            &fallback_provider_slug,
-                            &fallback_model,
-                            "chat",
-                            "failed",
-                            Some(&reason),
-                            None,
-                            true,
-                            start_time,
-                        )
-                        .await;
-                        register_provider_failure(
-                            &state,
-                            &fallback_provider_slug,
-                            &fallback_model,
-                            reason,
-                        )
-                        .await;
-                    }
-                }
+            _permit.take();
+            if failover_enabled(&state) && retryable_transport_error(&state, &error) {
+                return chat_status_failover(&state, &client, targets, &original_body, &request_id, usage_key_name, &model, start_time).await;
             }
             record_basic_usage(
                 &state,
@@ -2255,7 +2149,7 @@ async fn chat_status_failover(
     start_time: i64,
 ) -> Response {
     let mut last_error = "retryable upstream error".to_owned();
-    let mut failover_policy = RetryableFailoverPolicy::new(targets, true);
+    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover_enabled(state));
     let _ = failover_policy.next();
     while let Some((attempt_offset, (provider_slug, upstream_model))) = failover_policy.next() {
         let Some(provider) = state
@@ -2286,6 +2180,17 @@ async fn chat_status_failover(
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
+                if status.is_success() && original_body["stream"].as_bool() == Some(true) {
+                    record_attempt(state, request_id, (attempt_offset + 1) as i32, &provider_slug, &upstream_model, "chat", "success", None, Some(status.as_u16() as i32), false, start_time).await;
+                    return axum::http::Response::builder().status(status)
+                        .header("content-type", response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("text/event-stream"))
+                        .header("x-request-id", request_id)
+                        .body(accounted_sse_body(response.bytes_stream(), StreamAccounting {
+                            permit: _permit.take(), pool:state.inner.database.clone(), event_sender:state.inner.usage_events.clone(),
+                            request_id:request_id.into(),key_name:usage_key_name.map(str::to_owned),provider:provider_slug.clone(),model:requested_model.into(),api_type:"chat".into(),start_time,
+                            input_tokens:None,output_tokens:None,cost:None,terminal_on_usage:false,stream_success:true,finalized:false,
+                        })).unwrap().into_response();
+                }
                 let payload = response.json::<Value>().await.unwrap_or_else(
                     |_| json!({"error":{"message":"Invalid response from upstream provider"}}),
                 );
@@ -2294,7 +2199,7 @@ async fn chat_status_failover(
                 record_attempt(
                     state,
                     request_id,
-                    (attempt_offset + 2) as i32,
+                    (attempt_offset + 1) as i32,
                     &provider_slug,
                     &upstream_model,
                     "chat",
@@ -2340,7 +2245,7 @@ async fn chat_status_failover(
                 record_attempt(
                     state,
                     request_id,
-                    (attempt_offset + 2) as i32,
+                    (attempt_offset + 1) as i32,
                     &provider_slug,
                     &upstream_model,
                     "chat",
@@ -3019,6 +2924,11 @@ fn is_retryable_upstream_status(
         }
         None => defaults(status),
     }
+}
+
+fn retryable_transport_error(state: &AppState, error: &reqwest::Error) -> bool {
+    let code = if error.is_timeout() { "ETIMEDOUT" } else if error.is_connect() { "ECONNREFUSED" } else { "" };
+    (!code.is_empty() && is_retryable_upstream_error(state, code)) || is_retryable_upstream_error(state, &error.to_string())
 }
 
 fn is_retryable_upstream_error(state: &AppState, error: &str) -> bool {
@@ -5383,5 +5293,43 @@ mod headroom_service_tests {
         let mut failed = original.clone();
         apply_configured_headroom(&mut failed, &state).await;
         assert_eq!(failed, original);
+    }
+}
+
+#[cfg(test)]
+mod chat_stream_failover_tests {
+    use super::*;
+    use axum::{routing::post, http::{Request, StatusCode}};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    use std::sync::atomic::AtomicUsize;
+
+    #[tokio::test]
+    async fn retryable_stream_status_falls_back_to_sse_and_disabled_policy_stops() {
+        let hits=Arc::new(AtomicUsize::new(0));
+        let counter=hits.clone();
+        let upstream=Router::new().route("/chat/completions",post(move |Json(body):Json<Value>| {
+            let counter=counter.clone();
+            async move {
+                if body["model"]=="first" { (StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":{"message":"retry"}}))).into_response() }
+                else { counter.fetch_add(1,Ordering::SeqCst); ([("content-type","text/event-stream")],"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n").into_response() }
+            }
+        }));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {axum::serve(listener,upstream).await.unwrap()});
+        for enabled in [true,false] {
+            let state=AppState::new(Some("admin".into()),Default::default());
+            state.inner.settings.write().unwrap().insert("failover.enabled".into(),json!(enabled));
+            state.inner.providers.write().unwrap().insert("mock".into(),crate::state::ProviderConfig{api_base_url:format!("http://{addr}"),enabled:true,..Default::default()});
+            state.inner.aliases.write().unwrap().insert("alias".into(),crate::state::ModelConfig{target_groups:vec![crate::state::ModelTargetGroup{name:"ordered".into(),selector:"in_order".into(),targets:["first","second"].into_iter().map(|model|crate::state::ModelTarget{provider:Some("mock".into()),model:Some(model.into()),enabled:true,..Default::default()}).collect()}],..Default::default()});
+            let response=router().with_state(state.clone()).oneshot(Request::post("/v1/chat/completions").header("x-api-key","admin").header("content-type","application/json").body(Body::from(r#"{"model":"alias","stream":true,"messages":[{"role":"user","content":"hello"}]}"#)).unwrap()).await.unwrap();
+            assert_eq!(response.status(),if enabled {StatusCode::OK} else {StatusCode::SERVICE_UNAVAILABLE});
+            let body=String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+            if enabled {assert!(body.contains("data: [DONE]"));}
+            assert!(crate::concurrency::snapshot(&state).is_empty());
+        }
+        assert_eq!(hits.load(Ordering::SeqCst),1);
+        server.abort();
     }
 }
