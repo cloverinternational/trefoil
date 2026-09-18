@@ -301,7 +301,9 @@ async fn audio_transcriptions(
     let start_time = now_ms();
     let mut attempted = None;
     let targets: Vec<_> = inference_targets(&state, &model, key_config).collect();
-    for (attempt, (provider_slug, upstream_model)) in targets.into_iter().enumerate() {
+    let failover = failover_enabled(&state);
+    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover);
+    while let Some((attempt, (provider_slug, upstream_model))) = failover_policy.next() {
         let attempt_index = (attempt + 1) as i32;
         if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
             return error_response(
@@ -1312,7 +1314,9 @@ async fn responses(
     let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let mut last_error = None;
 
-    for (index, (provider_slug, upstream_model)) in targets.into_iter().enumerate() {
+    let failover = failover_enabled(&state);
+    let mut failover_policy = RetryableFailoverPolicy::new(targets, failover);
+    while let Some((index, (provider_slug, upstream_model))) = failover_policy.next() {
         let attempt = (index + 1) as i32;
         let Some(provider) = state
             .inner
@@ -2854,6 +2858,17 @@ fn is_retryable_upstream_error(state: &AppState, error: &str) -> bool {
     is_retryable_upstream_status(state, axum::http::StatusCode::BAD_GATEWAY, Some(error))
 }
 
+fn failover_enabled(state: &AppState) -> bool {
+    state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get("failover.enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
 #[cfg(test)]
 mod retry_policy_tests {
     use super::*;
@@ -2918,6 +2933,29 @@ mod retry_policy_tests {
             axum::http::StatusCode::NOT_FOUND,
             Some("ECONNREFUSED")
         ));
+    }
+
+    #[test]
+    fn shared_failover_policy_has_parity_for_enabled_and_disabled_modes() {
+        let state = AppState::new(None, HashMap::new());
+        let targets = vec![
+            ("first".to_owned(), "model-a".to_owned()),
+            ("second".to_owned(), "model-b".to_owned()),
+        ];
+        let mut enabled = RetryableFailoverPolicy::new(targets.clone(), failover_enabled(&state));
+        assert_eq!(enabled.next(), Some((0, targets[0].clone())));
+        assert_eq!(enabled.next(), Some((1, targets[1].clone())));
+        assert_eq!(enabled.next(), None);
+
+        state
+            .inner
+            .settings
+            .write()
+            .unwrap()
+            .insert("failover.enabled".into(), serde_json::json!(false));
+        let mut disabled = RetryableFailoverPolicy::new(targets.clone(), failover_enabled(&state));
+        assert_eq!(disabled.next(), Some((0, targets[0].clone())));
+        assert_eq!(disabled.next(), None);
     }
 }
 
