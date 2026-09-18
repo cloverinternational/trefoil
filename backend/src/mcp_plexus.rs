@@ -169,6 +169,9 @@ async fn call_tool(
         ("plexus_config", "timeout") => {
             return config_timeout_operation(state, id, args).await;
         }
+        ("plexus_config", "mcp_enabled") => {
+            return config_mcp_enabled_operation(state, id, args).await;
+        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
             // HashMap iteration order is intentionally unstable.  MCP clients
@@ -393,6 +396,39 @@ async fn config_timeout_operation(state: &AppState, id: Value, args: Option<&Val
                 "timeout",
                 "GET",
                 "/v0/management/config/timeout",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_mcp_enabled_operation(
+    state: &AppState,
+    id: Value,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "mcp_enabled",
+                "PATCH",
+                "/v0/management/config/mcp-enabled",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "mcp_enabled",
+                "GET",
+                "/v0/management/config/mcp-enabled",
                 None,
             )
             .await
@@ -1541,6 +1577,25 @@ mod tests {
             "params":{"name":"plexus_config","arguments":{"operation":"timeout","body":{"defaultSeconds":0}}}
         })).await).await;
         assert_eq!(response["result"]["structuredContent"]["ok"], false);
+    }
+
+    #[tokio::test]
+    async fn config_mcp_enabled_supports_read_patch_and_validation() {
+        let state = state();
+        let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled"}}})).await).await;
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["enabled"],
+            true
+        );
+        let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled","body":{"enabled":false}}}})).await).await;
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["enabled"],
+            false
+        );
+        let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled","body":{"enabled":"false"}}}})).await).await;
+        assert_eq!(response["result"]["structuredContent"]["ok"], false);
+        let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled","body":[]}}})).await).await;
+        assert_eq!(response["error"]["code"], -32602);
     }
 
     #[tokio::test]
