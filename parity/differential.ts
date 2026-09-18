@@ -81,6 +81,25 @@ function normalize(body: unknown): unknown {
 
 function normalizeForCase(path: string, body: unknown): unknown {
   const normalized = normalize(body);
+  if (
+    path === '/v0/management/oauth/providers' &&
+    normalized &&
+    typeof normalized === 'object' &&
+    !Array.isArray(normalized)
+  ) {
+    const object = { ...(normalized as Record<string, unknown>) };
+    if (Array.isArray(object.data)) {
+      object.data = object.data.map((provider) => {
+        if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return provider;
+        const descriptor = { ...(provider as Record<string, unknown>) };
+        // Trefoil retains internal flow metadata for session handling, while
+        // Plexus intentionally exposes only the public discovery descriptor.
+        delete descriptor.capabilities;
+        return descriptor;
+      });
+    }
+    return object;
+  }
   if (path.startsWith('/v0/management/backup') && normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
     const object = { ...(normalized as Record<string, unknown>) };
     delete object.created_at;
