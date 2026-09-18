@@ -61,9 +61,13 @@ async fn main() {
     *state.inner.cooldowns.write().unwrap() = cooldowns;
     trefoil_backend::custom_checkers::start_poller(state.clone());
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(8080);
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
-        .expect("failed to bind port 8080");
+        .expect("failed to bind configured port");
     axum::serve(listener, app(state))
         .await
         .expect("server error");

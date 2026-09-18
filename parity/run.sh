@@ -7,7 +7,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 REFERENCE_DIR=${REFERENCE_DIR:-"$ROOT/.reference/plexus"}
 PLEXUS_PORT=${PLEXUS_PORT:-4100}
 TREFOIL_PORT=${TREFOIL_PORT:-8080}
-POSTGRES_PORT=${POSTGRES_PORT:-5432}
+POSTGRES_PORT=${POSTGRES_PORT:-0}
 COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-trefoil-parity-${RANDOM}${RANDOM}}
 ADMIN_KEY=${ADMIN_KEY:-correct-admin-key}
 DATABASE_URL=${DATABASE_URL:-postgres://trefoil:trefoil@127.0.0.1:${POSTGRES_PORT}/trefoil}
@@ -26,7 +26,7 @@ cleanup() {
   [[ -n "$trefoil_pid" ]] && kill "$trefoil_pid" 2>/dev/null
   [[ -n "$plexus_pid" ]] && wait "$plexus_pid" 2>/dev/null
   [[ -n "$trefoil_pid" ]] && wait "$trefoil_pid" 2>/dev/null
-  docker compose -p "$COMPOSE_PROJECT_NAME" -f "$ROOT/docker-compose.yml" down -v >/dev/null 2>&1
+  [[ -n "${postgres_id:-}" ]] && docker stop "$postgres_id" >/dev/null 2>&1
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT INT TERM
@@ -39,10 +39,16 @@ command -v docker >/dev/null || die "docker is required"
 [[ -d "$REFERENCE_DIR" ]] || die "reference checkout not found: $REFERENCE_DIR"
 
 echo "Starting PostgreSQL..."
-# The parity database is disposable; remove the named volume so every run
-# starts from the same migration state.
-docker compose -p "$COMPOSE_PROJECT_NAME" -f "$ROOT/docker-compose.yml" down -v >/dev/null 2>&1
-postgres_id=$(docker compose -p "$COMPOSE_PROJECT_NAME" -f "$ROOT/docker-compose.yml" run -d --service-ports -p "$POSTGRES_PORT:5432" postgres)
+# Run an isolated disposable database. Do not use compose --service-ports:
+# its service mapping and -p override collide when both publish 5432.
+postgres_id=$(docker run --rm -d --tmpfs /var/lib/postgresql/data \
+  -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil \
+  -p "127.0.0.1:${POSTGRES_PORT}:5432" postgres:16-alpine)
+if [[ "$POSTGRES_PORT" == 0 ]]; then
+  POSTGRES_PORT=$(docker port "$postgres_id" 5432/tcp | sed -E 's/.*:([0-9]+)$/\1/')
+  [[ -n "$POSTGRES_PORT" ]] || die "failed to determine PostgreSQL host port"
+  DATABASE_URL="postgres://trefoil:trefoil@127.0.0.1:${POSTGRES_PORT}/trefoil"
+fi
 
 for attempt in {1..60}; do
   if docker exec "$postgres_id" pg_isready -U trefoil -d trefoil >/dev/null 2>&1; then break; fi
@@ -52,7 +58,7 @@ done
 
 if [[ "$SKIP_REFERENCE_BUILD" != 1 ]]; then
   echo "Building Plexus reference..."
-  (cd "$REFERENCE_DIR" && bun run build:frontend && bun run generate:openapi:asset)
+  (cd "$REFERENCE_DIR" && bun install --frozen-lockfile && bun run build:frontend && bun run generate:openapi:asset)
 fi
 if [[ "$SKIP_TREFOIL_BUILD" != 1 ]]; then
   echo "Building Trefoil..."

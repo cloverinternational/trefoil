@@ -2,23 +2,12 @@ name: differential parity
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [main]
 permissions:
   contents: read
 jobs:
   parity:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: trefoil
-          POSTGRES_USER: trefoil
-          POSTGRES_PASSWORD: trefoil
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U trefoil -d trefoil"
-          --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -28,9 +17,16 @@ jobs:
           path: .reference/plexus
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: oven-sh/setup-bun@v2
+      - name: Install reference dependencies
+        working-directory: .reference/plexus
+        run: bun install --frozen-lockfile
+      - name: Install Playwright browser
+        run: bunx playwright install --with-deps chromium
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
       - run: npm ci --prefix frontend
+      - name: Build reference frontend and assets
+        working-directory: .reference/plexus
+        run: bun run build:frontend && bun run generate:openapi:asset
       - run: cargo test --all-targets
-      - run: npm --prefix frontend run test:e2e
-      - run: REFERENCE_DIR=.reference/plexus PLEXUS_PORT=4410 TREFOIL_PORT=8810 POSTGRES_PORT=5432 ./parity/run.sh
+      - run: REFERENCE_DIR=.reference/plexus PLEXUS_PORT=4410 TREFOIL_PORT=8810 POSTGRES_PORT=0 SKIP_REFERENCE_BUILD=1 ./parity/run.sh
