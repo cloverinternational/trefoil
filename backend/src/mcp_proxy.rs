@@ -381,18 +381,24 @@ fn sanitize_sse_lines(buffer: &mut String, chunk: &[u8]) -> Bytes {
     Bytes::from(output)
 }
 
+fn safe_client_header(name: &str) -> bool {
+    safe_configured_header(name)
+        && !matches!(
+            name.to_ascii_lowercase().as_str(),
+            "authorization" | "cookie" | "set-cookie" | "x-api-key" | "proxy-authorization"
+        )
+}
+
 fn copy_request_headers(
     mut request: reqwest::RequestBuilder,
     incoming: &HeaderMap,
     configured: &HashMap<String, String>,
 ) -> reqwest::RequestBuilder {
-    // Authentication is deliberately never copied from the client. MCP transport
-    // metadata is safe and required for session-based upstreams.
-    for key in ["content-type", "accept", "mcp-session-id", "last-event-id"] {
-        if let Some(value) = incoming.get(key) {
-            if let Ok(value) = value.to_str() {
-                request = request.header(key, value);
-            }
+    // Forward transport metadata and ordinary client headers, but never leak
+    // gateway credentials to the upstream. Configured headers are applied after.
+    for (name, value) in incoming {
+        if safe_client_header(name.as_str()) {
+            request = request.header(name, value);
         }
     }
     for (key, value) in configured {
@@ -422,6 +428,13 @@ async fn forward(
     let mut request = copy_request_headers(client.request(method, url), &headers, &configured);
     if let Some(ref body) = body {
         request = request.body(body.clone());
+        let has_content_type = headers.keys().any(|name| name == header::CONTENT_TYPE)
+            || configured
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("content-type"));
+        if !has_content_type {
+            request = request.header(header::CONTENT_TYPE, "application/json");
+        }
     }
     let upstream = match request.send().await {
         Ok(response) => response,
@@ -464,15 +477,9 @@ async fn forward(
     )));
     *response.status_mut() =
         StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    for key in [
-        header::CONTENT_TYPE.as_str(),
-        header::CACHE_CONTROL.as_str(),
-        "mcp-session-id",
-    ] {
-        if let Some(value) = response_headers.get(key) {
-            if let Ok(value) = HeaderValue::from_bytes(value.as_bytes()) {
-                response.headers_mut().insert(key, value);
-            }
+    for (name, value) in &response_headers {
+        if safe_configured_header(name.as_str()) {
+            response.headers_mut().append(name, value.clone());
         }
     }
     // Streamable HTTP clients require these proxy-safe SSE headers.  The
@@ -676,8 +683,8 @@ async fn delete(
 #[cfg(test)]
 mod tests {
     use super::{
-        inject_upstream_auth, safe_configured_header, select_round_robin, validate_jsonrpc,
-        UpstreamKey,
+        inject_upstream_auth, safe_client_header, safe_configured_header, select_round_robin,
+        validate_jsonrpc, UpstreamKey,
     };
     use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
     use serde_json::json;
@@ -701,6 +708,9 @@ mod tests {
         assert!(safe_configured_header("authorization"));
         assert!(safe_configured_header("x-api-key"));
         assert!(safe_configured_header("mcp-session-id"));
+        assert!(!safe_client_header("authorization"));
+        assert!(!safe_client_header("x-api-key"));
+        assert!(safe_client_header("mcp-session-id"));
     }
 
     #[test]
