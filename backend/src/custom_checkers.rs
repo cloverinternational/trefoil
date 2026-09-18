@@ -374,6 +374,17 @@ async fn test(
         "provider": provider,
         "options": body.options.unwrap_or(Value::Null),
     });
+    if !state.inner.providers.read().unwrap().contains_key(provider) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "provider is not defined",
+                "errorType": "runtime"
+            })),
+        )
+            .into_response();
+    }
     match run_checker(&code, &input).await {
         Ok(meters) => Json(serde_json::json!({
             "success": true,

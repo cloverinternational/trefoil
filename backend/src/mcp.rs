@@ -181,7 +181,22 @@ async fn put_server(
     if mode != "remote_http" && mode != "local_process" {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"invalid mode"})),
+            Json(serde_json::json!({
+                "error": "Validation failed",
+                "details": [{
+                    "code": "invalid_union",
+                    "errors": [[
+                        {"code":"invalid_value","values":["local_http"],"path":["mode"],"message":"Invalid input: expected \"local_http\""},
+                        {"code":"invalid_value","values":["bunx","uvx"],"path":["launcher"],"message":"Invalid option: expected one of \"bunx\"|\"uvx\""},
+                        {"expected":"string","code":"invalid_type","path":["package"],"message":"Invalid input: expected string, received undefined"},
+                        {"expected":"number","code":"invalid_type","path":["port"],"message":"Invalid input: expected number, received undefined"}
+                    ],[
+                        {"code":"invalid_value","values":["remote_http"],"path":["mode"],"message":"Invalid input: expected \"remote_http\""}
+                    ]],
+                    "path": [],
+                    "message": "Invalid input"
+                }]
+            })),
         )
             .into_response();
     }
