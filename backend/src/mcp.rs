@@ -92,7 +92,7 @@ struct KeyBody {
 }
 
 fn serialize_server(row: &sqlx::postgres::PgRow) -> serde_json::Value {
-    serde_json::json!({"upstreamUrl":row.try_get::<String,_>("upstream_url").unwrap_or_default(),"enabled":row.try_get::<bool,_>("enabled").unwrap_or(true),"mode":row.try_get::<String,_>("mode").unwrap_or_else(|_|"remote_http".into()),"authScheme":row.try_get::<Option<String>,_>("auth_scheme").unwrap_or(None),"launcher":row.try_get::<Option<String>,_>("launcher").unwrap_or(None),"packageName":row.try_get::<Option<String>,_>("package_name").unwrap_or(None),"args":row.try_get::<Option<String>,_>("args").unwrap_or(None),"env":row.try_get::<Option<String>,_>("env").unwrap_or(None),"startupTimeoutMs":row.try_get::<Option<i64>,_>("startup_timeout_ms").unwrap_or(None)})
+    serde_json::json!({"upstream_url":row.try_get::<String,_>("upstream_url").unwrap_or_default(),"enabled":row.try_get::<bool,_>("enabled").unwrap_or(true),"auth_scheme":row.try_get::<Option<String>,_>("auth_scheme").unwrap_or(None),"rate_limit_cooldown_ms":row.try_get::<i64,_>("rate_limit_cooldown_ms").unwrap_or(60000),"quota_cooldown_ms":row.try_get::<i64,_>("quota_cooldown_ms").unwrap_or(86400000)})
 }
 
 async fn list_servers(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -284,7 +284,7 @@ async fn list_keys(
         return Json(serde_json::json!({"keys":[]})).into_response();
     };
     let Ok(rows)=sqlx::query("SELECT k.id,k.key,k.is_active FROM mcp_keys k JOIN mcp_servers s ON s.id=k.mcp_server_id WHERE s.name=$1 ORDER BY k.id").bind(name).fetch_all(pool).await else{return (StatusCode::INTERNAL_SERVER_ERROR,Json(serde_json::json!({"error":"Internal server error"}))).into_response()};
-    Json(serde_json::json!({"keys":rows.into_iter().map(|r|serde_json::json!({"id":r.try_get::<i32,_>("id").unwrap_or_default(),"key":r.try_get::<String,_>("key").unwrap_or_default(),"isActive":r.try_get::<bool,_>("is_active").unwrap_or(true)})).collect::<Vec<_>>() })).into_response()
+    Json(serde_json::json!({"keys":rows.into_iter().map(|r|serde_json::json!({"id":r.try_get::<i32,_>("id").unwrap_or_default(),"key":r.try_get::<String,_>("key").unwrap_or_default(),"is_active":r.try_get::<bool,_>("is_active").unwrap_or(true),"cooldown_until":serde_json::Value::Null})).collect::<Vec<_>>() })).into_response()
 }
 async fn add_key(
     State(state): State<AppState>,
@@ -302,7 +302,7 @@ async fn add_key(
         )
             .into_response();
     };
-    match sqlx::query("INSERT INTO mcp_keys (mcp_server_id,key,is_active,created_at,updated_at) SELECT id,$2,$3,NOW(),NOW() FROM mcp_servers WHERE name=$1 RETURNING id,key,is_active").bind(name).bind(body.key).bind(body.is_active.unwrap_or(true)).fetch_optional(pool).await{Ok(Some(r))=>(StatusCode::CREATED,Json(serde_json::json!({"id":r.try_get::<i32,_>("id").unwrap_or_default(),"key":r.try_get::<String,_>("key").unwrap_or_default(),"isActive":r.try_get::<bool,_>("is_active").unwrap_or(true)}))).into_response(),Ok(None)=>not_found("MCP server"),Err(_)=>(StatusCode::INTERNAL_SERVER_ERROR,Json(serde_json::json!({"error":"Internal server error"}))).into_response()}
+    match sqlx::query("INSERT INTO mcp_keys (mcp_server_id,key,is_active,created_at,updated_at) SELECT id,$2,$3,NOW(),NOW() FROM mcp_servers WHERE name=$1 RETURNING id,key,is_active").bind(name).bind(body.key).bind(body.is_active.unwrap_or(true)).fetch_optional(pool).await{Ok(Some(r))=>(StatusCode::CREATED,Json(serde_json::json!({"id":r.try_get::<i32,_>("id").unwrap_or_default(),"key":r.try_get::<String,_>("key").unwrap_or_default(),"is_active":r.try_get::<bool,_>("is_active").unwrap_or(true),"cooldown_until":serde_json::Value::Null}))).into_response(),Ok(None)=>not_found("MCP server"),Err(_)=>(StatusCode::INTERNAL_SERVER_ERROR,Json(serde_json::json!({"error":"Internal server error"}))).into_response()}
 }
 async fn delete_key(
     State(state): State<AppState>,

@@ -119,7 +119,20 @@ fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
 }
 
 fn error(status: StatusCode, message: impl Into<String>) -> Response {
-    (status, Json(serde_json::json!({"error": message.into()}))).into_response()
+    let message = message.into();
+    if status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED {
+        let (kind, code) = if status == StatusCode::FORBIDDEN {
+            ("forbidden", 403)
+        } else {
+            ("auth_error", 401)
+        };
+        return (
+            status,
+            Json(serde_json::json!({"error":{"message":message,"type":kind,"code":code}})),
+        )
+            .into_response();
+    }
+    (status, Json(serde_json::json!({"error": message}))).into_response()
 }
 
 fn valid_id(id: &str) -> bool {
@@ -194,7 +207,7 @@ async fn get(
     };
     match sqlx::query("SELECT id,display_name,code,enabled,created_at,updated_at FROM custom_checkers WHERE id=$1").bind(&id).fetch_optional(pool).await {
         Ok(Some(row)) => Json(row_json(&row)).into_response(),
-        Ok(None) => error(StatusCode::NOT_FOUND, "Custom checker not found"),
+        Ok(None) => error(StatusCode::NOT_FOUND, format!("Custom checker '{id}' not found")),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to retrieve custom checker"),
     }
 }
