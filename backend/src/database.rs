@@ -278,7 +278,7 @@ pub async fn delete_all_keys(pool: &PgPool) -> Result<(), sqlx::Error> {
 }
 
 pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderConfig>, sqlx::Error> {
-    let rows = sqlx::query("SELECT slug, display_name, api_base_url, api_key, oauth_provider_type, enabled, disable_cooldown, stall_cooldown, allow_100_percent_utilization, discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled, auto_compat, adapter, model_autosync_enabled, model_autosync_interval, raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled, quota_checker_interval, quota_checker_options, retry_policy FROM providers")
+    let rows = sqlx::query("SELECT slug, display_name, api_base_url, api_key, oauth_provider_type, oauth_account, enabled, disable_cooldown, stall_cooldown, allow_100_percent_utilization, discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled, auto_compat, adapter, model_autosync_enabled, model_autosync_interval, raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled, quota_checker_interval, quota_checker_options, retry_policy FROM providers")
         .fetch_all(pool).await?;
     let mut result = HashMap::new();
     for row in rows {
@@ -292,7 +292,7 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
                 api_base_url: base.as_str().unwrap_or_default().to_string(),
                 api_key: row.try_get("api_key")?,
                 oauth_provider: row.try_get("oauth_provider_type")?,
-                oauth_account: None,
+                oauth_account: row.try_get("oauth_account")?,
                 enabled: row.try_get("enabled")?,
                 disable_cooldown: row.try_get("disable_cooldown")?,
                 stall_cooldown: row.try_get("stall_cooldown")?,
@@ -351,11 +351,11 @@ pub async fn upsert_provider(
            discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled,
            auto_compat, adapter, model_autosync_enabled, model_autosync_interval,
            raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled,
-           quota_checker_interval, quota_checker_options, retry_policy, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+           quota_checker_interval, quota_checker_options, retry_policy, created_at, updated_at, oauth_account)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
          ON CONFLICT (slug) DO UPDATE SET
            display_name=EXCLUDED.display_name, api_base_url=EXCLUDED.api_base_url,
-           api_key=EXCLUDED.api_key, oauth_provider_type=EXCLUDED.oauth_provider_type,
+           api_key=EXCLUDED.api_key, oauth_provider_type=EXCLUDED.oauth_provider_type, oauth_account=EXCLUDED.oauth_account,
            enabled=EXCLUDED.enabled, disable_cooldown=EXCLUDED.disable_cooldown,
            stall_cooldown=EXCLUDED.stall_cooldown,
            allow_100_percent_utilization=EXCLUDED.allow_100_percent_utilization,
@@ -400,6 +400,7 @@ pub async fn upsert_provider(
     .bind(serde_json::to_value(&config.retry_policy).unwrap())
     .bind(now)
     .bind(now)
+    .bind(&config.oauth_account)
     .execute(pool)
     .await
     .map(|_| ())

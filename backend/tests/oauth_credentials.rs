@@ -90,3 +90,16 @@ async fn responses_route_enforces_request_quota_before_upstream_selection() {
     let response=trefoil_backend::app(state).oneshot(Request::post("/v1/responses").header("x-api-key","quota-secret").header("content-type","application/json").body(Body::from(r#"{"model":"absent/model","input":"hello"}"#)).unwrap()).await.unwrap();
     assert_eq!(response.status(),StatusCode::TOO_MANY_REQUESTS);
 }
+
+#[tokio::test]
+#[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL"]
+async fn provider_selected_oauth_account_survives_database_reload() {
+    let pool=database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
+    database::migrate(&pool).await.unwrap();
+    let mut provider=trefoil_backend::state::ProviderConfig {api_base_url:"oauth://openrouter".into(),oauth_provider:Some("openrouter".into()),oauth_account:Some("work-account".into()),enabled:true,..Default::default()};
+    database::upsert_provider(&pool,"oauth-provider-test",&provider).await.unwrap();
+    assert_eq!(database::load_providers(&pool).await.unwrap()["oauth-provider-test"].oauth_account.as_deref(),Some("work-account"));
+    provider.oauth_account=Some("personal-account".into());
+    database::upsert_provider(&pool,"oauth-provider-test",&provider).await.unwrap();
+    assert_eq!(database::load_providers(&pool).await.unwrap()["oauth-provider-test"].oauth_account.as_deref(),Some("personal-account"));
+}
