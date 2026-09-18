@@ -347,29 +347,35 @@ fixtures per `parity/README.md`, not wired into CI).
 
 ---
 
-## Current parity estimate
+## Current parity estimate (recalculated 2026-09-17)
 
 Using the 12 plan areas with equal weight, and scoring partial areas by
 checked capability items rather than route count, the current estimate is
-**approximately 86%**. This is a progress metric, not a claim of drop-in
-compatibility: several high-complexity unchecked items (provider-specific
-OAuth/masking, exact dispatch cancellation/retry policy, vision/compaction,
-frontend browser tests, and differential CI) still carry substantial risk.
+**approximately 89%**. This is a progress metric, not a claim of drop-in
+compatibility. Remaining risk is concentrated in provider-specific OAuth
+exchanges, complete dispatch cancellation/attempt-history semantics,
+custom-checker runtime parity, MCP edge cases, frontend browser coverage,
+and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** 199 passing.
-- **Frontend:** typecheck, build, and 26 Vitest tests pass, including OAuth
+- **Backend tests:** 203 passing (`cargo test --all-targets`).
+- **Frontend:** typecheck, build, and 23 Vitest tests pass, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
-- **Differential harness:** 283/283 currently-covered cases passed live after inference auth/validation parity fixes.
+- **Differential harness:** 265 named cases are registered in
+  `parity/differential.ts`; no live Plexus/Trefoil run was performed in this
+  refresh, so no end-to-end pass count is claimed.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.
 - **MCP:** remote HTTP proxy, local subprocess lifecycle/stdio transport, OAuth token validation, and management-shim operations are implemented across the listed tools.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation, and provider login-session persistence/PKCE URL generation are implemented; provider-specific exchanges and masking remain partial.
 - **Observability:** Prometheus metrics, usage SSE, and system-log SSE routes are implemented.
 
-The checklist is capability-based: a checked route means the route exists and has real behavior, not that every Plexus edge case or frontend test has been ported. The 283/283 live pass covers the currently registered cases; broader inference and MCP edge-case coverage remains in progress.
+The checklist is capability-based: a checked route means the route exists and
+has real behavior, not that every Plexus edge case or frontend test has been
+ported. Registered differential cases are coverage inventory, not evidence of
+an end-to-end pass until the live runner is executed.
 
 ## Latest progress
 

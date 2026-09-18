@@ -4,7 +4,7 @@ Re-audited directly against `.reference/plexus` source (not the prior
 estimate). Route inventory extracted mechanically from both codebases and
 diffed; feature depth verified by reading handler bodies.
 
-## Route inventory (mechanical diff)
+## Route inventory (mechanical diff; historical baseline)
 
 - Plexus registers **182** distinct method+path route entries (excluding
   `__tests__`).
@@ -15,7 +15,9 @@ diffed; feature depth verified by reading handler bodies.
   has no revoke endpoint, only Trefoil's mgmt `/v0/management/mcp-oauth/*
   /revoke`, which is a different, already-ported surface).
 
-### Routes missing outright in Trefoil (27)
+The original 27-route gap list below is retained as audit history only. The current source now implements the previously listed custom-checker, checker-result, observability, probe, and conversations surfaces.
+
+### Historical routes missing outright in Trefoil (27)
 
 Custom quota checkers (whole feature, 6 routes):
 - `GET/PUT/PATCH/DELETE /v0/management/custom-checkers/:id`
@@ -59,16 +61,16 @@ one call per verb. Not an actual gap.
 
 | Area | Route coverage | Depth vs Plexus | Notes |
 |---|---:|---|---|
-| Management CRUD/config/auth | ~95% of routes ported | Strong | Field-level config schema (failover, cooldown, compaction, vision-fallthrough, trusted-proxies, MCP servers, OAuth discovery) all present with matching validation error shapes and ~275 differential-harness cases plus 173 passing Rust unit tests. |
-| Custom quota checkers | 0% | **Not implemented** | No `custom_checkers` table/module in Trefoil at all. `checker_types()` returns a hardcoded mirror of Plexus's built-in registry; `configured` is always `[]`. Running/testing user-supplied checker code (`custom-checker-runtime.ts` in Plexus) has no Trefoil equivalent. |
+| Management CRUD/config/auth | ~95% of routes ported | Strong | Field-level config schema (failover, cooldown, compaction, vision-fallthrough, trusted-proxies, MCP servers, OAuth discovery) all present with matching validation error shapes and ~265 registered differential cases plus 203 passing Rust unit tests. |
+| Custom quota checkers | Implemented, depth partial | Migration, CRUD, check/test routes, validation, and polling are present in `custom_checkers.rs`; sandbox/runtime and exact built-in upstream checker behavior still need parity audit. |
 | Quota checker results | Partial | `/v0/management/quotas` and `/quota/status/:key` exist (real DB-backed `quota_state` reads) but the per-checker `/quotas/:checkerId`, `/history`, `/check` routes are absent — no scheduled provider-quota polling (`QuotaScheduler`) exists. |
 | Provider OAuth login flow | Routes and session state implemented; provider exchanges partial | **Partial** | `oauth.rs` implements session lifecycle, PKCE callback/manual-code capability reporting, credential persistence, and model discovery. Provider-specific exchanges and request masking remain incomplete; `backend/src/oauth.rs` tests assert every advertised provider exposes exactly one supported login flow. |
 | Inference dispatch/failover | Route-complete | Partial | `resolve_target` picks the *first* eligible alias target per group rather than iterating the full ordered target list with retry-on-failure across all candidates (Plexus's `dispatcher.ts`/`router.ts`). Each inference handler (`chat_completions`, `completions`, `embeddings`, `messages`) hand-rolls its own single-hop "fallback" branch instead of sharing one dispatch service — duplicated retry/failover/usage-recording logic across ~4 call sites in `inference.rs` (3190 lines, monolithic) vs Plexus's dedicated `services/dispatch/` package (dispatcher, media-dispatcher, standard-attempt-request, request-manager, image-model-bridge — ~4000 lines across focused modules). |
 | Quota enforcement | Functional, documented gap | `enforce_request_quotas` only reports the single most-constrained quota in `blocking_quotas`; Plexus aggregates all simultaneously-blocking quotas. Comment in code acknowledges this. |
-| Observability/metrics | Missing | No Prometheus `/metrics` endpoint, no SSE `/events` or `/logs/stream` endpoints. `GET /v0/system/logs/recent` (polling) is present; live streaming is not. |
+| Observability/metrics | Implemented, depth partial | Prometheus metrics, usage SSE, and system-log SSE routes are present; metric dimensions and stream edge cases still need reference comparison. |
 | Vision descriptor | Stub | `/cache/vision-descriptor/clear` is a truthful no-op (feature doesn't exist upstream in Trefoil), matches Plexus route but not Plexus behavior (Plexus actually generates/caches descriptors). |
 | Compaction | Config-only | GET/PATCH persist and validate `compaction` config shape, but there's no evidence Trefoil's inference path actually performs headroom/native compaction on oversized requests — this needs verification against `services/compaction/*` (not confirmed either way from route/config code alone). |
-| Custom probe/test endpoint | Missing | `POST /v0/management/test` (manual per-provider/model canonical probe) has no Trefoil equivalent; no `ProbeService`. |
+| Custom probe/test endpoint | Implemented, depth partial | `POST /v0/management/test` is present in `providers.rs`; provider-backed behavior still needs live comparison. |
 | MCP proxy (remote) | Implemented | JSON-RPC envelope validation, round-robin key selection, cooldown-on-failure, upstream auth injection, header allowlisting — present in `mcp_proxy.rs`. |
 | MCP local process lifecycle | Implemented | Spawn/stop/restart with launcher allowlist, env/arg parsing, process-log capture (`mcp.rs`) — recently added (latest commit), matches Plexus's `mcp-process-manager.ts` at a route level; sandboxing/resource-limit depth not independently verified. |
 | MCP admin-shim (`/mcp/plexus`) | Route-present | `mcp_plexus.rs` dispatches `plexus_quota` status, clear (acknowledged destructive confirmation), and recompute through DB-backed management handlers; broader tool depth remains thinner than Plexus. |
@@ -76,7 +78,7 @@ one call per verb. Not an actual gap.
 | Backup/restore | Implemented | Table list (`TABLES` in `backup.rs`) is an exact match to Plexus's `OPERATIONAL_TABLES` (13 tables). Gzip+tar archive format, admin-only, size-capped. |
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
 | Frontend | Partial | Trefoil now includes configuration, detailed usage, request Logs (`/logs`), custom quota checkers, system logs, MCP management, debug trace management, Errors, and the Models catalog (`/models`); remaining major pages include MyKey and Playground. |
-| Rust test suite | 173/173 passing | Green, fast (<1s). No regressions from latest commit. |
+| Rust test suite | 203/203 passing | Green, fast (<1s). No regressions from latest commit. |
 | Differential harness | ~275 named cases in `parity/differential.ts` | Requires manually running both live servers side-by-side (Plexus TS + Trefoil against Postgres) — not wired into CI per the README; last-run status unverified in this pass. |
 
 ## What's actually left (ranked by size/impact)
