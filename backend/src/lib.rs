@@ -35,6 +35,7 @@ pub mod system_logs;
 pub mod system_settings;
 pub mod usage;
 pub mod user_quotas;
+pub mod vision;
 
 pub use state::AppState;
 

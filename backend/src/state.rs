@@ -209,6 +209,7 @@ pub struct AppState {
 
 #[derive(Debug, Default)]
 pub struct AppStateInner {
+    pub vision_descriptor_cache: std::sync::Mutex<crate::vision::VisionDescriptorCache>,
     /// In-flight provider OAuth onboarding sessions. These are ephemeral;
     /// completed credentials are persisted separately.
     pub oauth_sessions: RwLock<HashMap<String, crate::oauth::OAuthSession>>,
@@ -252,6 +253,9 @@ impl AppState {
     pub fn new(admin_key: Option<String>, keys: HashMap<String, KeyConfig>) -> Self {
         Self {
             inner: Arc::new(AppStateInner {
+                vision_descriptor_cache: std::sync::Mutex::new(
+                    crate::vision::VisionDescriptorCache::default(),
+                ),
                 oauth_sessions: RwLock::new(HashMap::new()),
                 oauth_pkce_verifiers: RwLock::new(HashMap::new()),
                 oauth_refresh_locks: std::sync::Mutex::new(HashMap::new()),

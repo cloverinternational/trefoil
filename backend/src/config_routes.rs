@@ -598,8 +598,12 @@ async fn clear_vision_descriptor_cache(
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    // Vision descriptor generation/cache storage is not yet implemented in
-    // Trefoil, so clearing the currently-empty cache is an idempotent no-op.
+    state
+        .inner
+        .vision_descriptor_cache
+        .lock()
+        .expect("vision descriptor cache lock poisoned")
+        .clear();
     Json(serde_json::json!({
         "success": true,
         "message": "Vision descriptor cache cleared."
