@@ -210,7 +210,8 @@ export async function getOAuthCredentialStatus(providerId: string, accountId: st
   const query = new URLSearchParams({ providerId, accountId });
   const response = await fetch(`/v0/management/oauth/credentials/status?${query}`, { headers: authHeaders() });
   if (!response.ok) throw new Error('Unable to check OAuth credential status');
-  const body = await response.json() as { data?: OAuthCredentialStatus }; return body.data ?? { ready: false };
+  const body = await response.json() as { data?: unknown };
+  return { ready: typeof body.data === 'object' && body.data !== null && 'ready' in body.data && typeof body.data.ready === 'boolean' ? body.data.ready : false };
 }
 export async function deleteOAuthCredentials(providerId: string, accountId: string): Promise<void> {
   const response = await fetch('/v0/management/oauth/credentials', { method: 'DELETE', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ providerId, accountId }) });

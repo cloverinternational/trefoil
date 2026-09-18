@@ -6,6 +6,9 @@ import {
   getConfigStatus,
   getMetrics,
   getOAuthSession,
+  getOAuthProviders,
+  getOAuthCredentialStatus,
+  deleteOAuthCredentials,
   getProviders,
   getRecentUsage,
   getUsageSummary,
@@ -159,5 +162,41 @@ describe('frontend management API wire contracts', () => {
     await expect(getOAuthSession('missing')).rejects.toThrow('Administrator access required');
     await expect(cancelOAuthSession('expired')).rejects.toThrow('session backend unavailable');
     await expect(getOAuthSession('malformed')).rejects.toThrow('Invalid OAuth login session response');
+  });
+
+  it('keeps OAuth account management requests token-free and encodes account boundaries', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'oauth-key') });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ data: [{ id: 'anthropic', name: 'Anthropic OAuth', usesCallbackServer: false }] }))
+      .mockResolvedValueOnce(response({ data: { ready: true } }))
+      .mockResolvedValueOnce(response(null));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getOAuthProviders()).resolves.toEqual([
+      { id: 'anthropic', name: 'Anthropic OAuth', usesCallbackServer: false },
+    ]);
+    await expect(getOAuthCredentialStatus('anthropic/provider', 'account one')).resolves.toEqual({ ready: true });
+    await expect(deleteOAuthCredentials('anthropic/provider', 'account one')).resolves.toBeUndefined();
+
+    expect(fetchMock.mock.calls).toEqual([
+      ['/v0/management/oauth/providers', { headers: { 'x-admin-key': 'oauth-key' } }],
+      ['/v0/management/oauth/credentials/status?providerId=anthropic%2Fprovider&accountId=account+one', { headers: { 'x-admin-key': 'oauth-key' } }],
+      ['/v0/management/oauth/credentials', { method: 'DELETE', headers: { 'x-admin-key': 'oauth-key', 'content-type': 'application/json' }, body: '{"providerId":"anthropic/provider","accountId":"account one"}' }],
+    ]);
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('access_token');
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('refresh_token');
+  });
+
+  it('uses safe defaults for malformed OAuth discovery/status payloads and preserves errors', async () => {
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'oauth-key') });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ data: { not: 'a list' } }))
+      .mockResolvedValueOnce(response({ data: {} }))
+      .mockResolvedValueOnce(response({ error: 'OAuth credentials not found' }, 404));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getOAuthProviders()).resolves.toEqual([]);
+    await expect(getOAuthCredentialStatus('anthropic', 'default')).resolves.toEqual({ ready: false });
+    await expect(deleteOAuthCredentials('anthropic', 'default')).rejects.toThrow('OAuth credentials not found');
   });
 });
