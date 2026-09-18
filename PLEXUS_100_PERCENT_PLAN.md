@@ -372,7 +372,8 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 288 unit + 4 integration tests pass; credential DB test separately passes |
+| `cargo test --all-targets` | 289 unit + 4 integration tests pass |
+| OAuth encrypted-storage integration | 3 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
@@ -525,3 +526,25 @@ onboarding remains incomplete. Cancelled verifiers are removed from persisted
 sessions, prompts cannot reopen an exchange, and refresh re-reads credentials
 under its per-account gate. Cross-process exchange/cancellation races still need
 transactional treatment. No claim of all six providers working is made.
+
+## Latest transactional OAuth pass
+
+The verification gate now has eight lanes: **seven pass**, while live
+comparison remains **406/407** (recent system-log history). Backend coverage is
+289 unit + 4 stdio integration tests; the separate storage lane executes all
+3 normally ignored PostgreSQL credential tests. Frontend/harness counts remain
+45 / 3 browser / 12 harness tests.
+
+Durable OAuth claims now use a conditional database update; two simultaneous
+claimers have exactly one winner. Credential insertion and session completion
+are transactional, so cancelled/expired/already-completed sessions cannot write
+a new credential. Terminal session records cannot be overwritten by stale
+upserts, and completion clears verifier/prompt and records completion progress.
+These properties are exercised against disposable PostgreSQL and enforced in CI
+by `parity/test-oauth-storage.sh`, which never uses production `DATABASE_URL`.
+
+Anthropic now uses the pinned reference client ID, authorization/token hosts,
+JSON refresh/exchange bodies and required state; payload tests cover those
+contracts. This does not finish its fixed-port callback-server flow. Copilot's
+client-ID transcription was also corrected. Remaining provider device flows,
+callback listeners and live provider acceptance remain unverified/open.

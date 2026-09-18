@@ -29,3 +29,8 @@ Persistence verification was run against an isolated PostgreSQL 16 container:
 raw access/refresh columns carried `v1:` ciphertext, decrypted round-trip and
 nonexpiring timestamp values matched, and changing the account identifier caused
 authentication failure. This does not verify live provider authorization.
+
+The unified `./verify-parity.sh` and CI now run `parity/test-oauth-storage.sh`.
+It creates and removes its own PostgreSQL container and checks encryption,
+account binding, cancelled/completed exchange rejection, and concurrent claim
+exclusivity. Login completion writes credentials and terminal state atomically.
