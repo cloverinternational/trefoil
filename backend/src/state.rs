@@ -212,6 +212,7 @@ pub struct AppState {
 
 #[derive(Debug, Default)]
 pub struct AppStateInner {
+    pub concurrency: Arc<crate::concurrency::ConcurrencyTracker>,
     pub vision_descriptor_cache: std::sync::Mutex<crate::vision::VisionDescriptorCache>,
     /// In-flight provider OAuth onboarding sessions. These are ephemeral;
     /// completed credentials are persisted separately.
@@ -258,6 +259,7 @@ impl AppState {
     pub fn new(admin_key: Option<String>, keys: HashMap<String, KeyConfig>) -> Self {
         Self {
             inner: Arc::new(AppStateInner {
+                concurrency: Arc::new(crate::concurrency::ConcurrencyTracker::default()),
                 vision_descriptor_cache: std::sync::Mutex::new(
                     crate::vision::VisionDescriptorCache::default(),
                 ),

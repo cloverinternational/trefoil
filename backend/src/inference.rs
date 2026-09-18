@@ -30,6 +30,7 @@ use crate::{
 /// than in the request handler, makes accounting request-local and ensures a
 /// row is finalized exactly once when the body is dropped or exhausted.
 struct StreamAccounting {
+    permit: Option<crate::concurrency::Permit>,
     pool: Option<sqlx::PgPool>,
     event_sender: Option<tokio::sync::broadcast::Sender<crate::usage::UsageEvent>>,
     request_id: String,
@@ -53,6 +54,7 @@ impl StreamAccounting {
             return;
         }
         self.finalized = true;
+        self.permit.take();
         if let Some(sender) = &self.event_sender {
             let id = now_ms();
             let _ = sender.send(crate::usage::UsageEvent {
@@ -1057,6 +1059,7 @@ async fn forward_json_api(
                         .body(accounted_sse_body(
                             response.bytes_stream(),
                             StreamAccounting {
+                            permit: Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone())),
                                 pool: state.inner.database.clone(),
                                 event_sender: state.inner.usage_events.clone(),
                                 request_id: request_id.clone(),
@@ -1420,6 +1423,7 @@ async fn responses(
                         .body(accounted_sse_body(
                             response.bytes_stream(),
                             StreamAccounting {
+                            permit: Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone())),
                                 pool: state.inner.database.clone(),
                                 event_sender: state.inner.usage_events.clone(),
                                 request_id: request_id.clone(),
@@ -1976,6 +1980,7 @@ async fn chat_completions(
                     .body(accounted_sse_body(
                         upstream.bytes_stream(),
                         StreamAccounting {
+                            permit: Some(crate::concurrency::acquire(&state, provider_slug.clone(), upstream_model.clone())),
                             pool: state.inner.database.clone(),
                             event_sender: state.inner.usage_events.clone(),
                             request_id: request_id.clone(),
@@ -3456,6 +3461,7 @@ mod tests {
 
     fn test_stream_accounting() -> StreamAccounting {
         StreamAccounting {
+            permit: None,
             pool: None,
             event_sender: None,
             request_id: "test".into(),
