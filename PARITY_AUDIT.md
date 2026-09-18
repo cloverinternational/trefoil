@@ -86,7 +86,7 @@ one call per verb. Not an actual gap.
 | MCP proxy (remote) | Implemented | JSON-RPC envelope validation, round-robin key selection, cooldown-on-failure, upstream auth injection, header allowlisting — present in `mcp_proxy.rs`. |
 | MCP local process lifecycle | Implemented | Spawn/stop/restart with launcher allowlist, env/arg parsing, process-log capture (`mcp.rs`) — recently added (latest commit), matches Plexus's `mcp-process-manager.ts` at a route level; sandboxing/resource-limit depth not independently verified. |
 | MCP admin-shim (`/mcp/plexus`) | Route-present | `mcp_plexus.rs` dispatches configuration (including MCP enablement, timeout, compaction, failover/cooldown, tracing, stall, vision fallthrough, background exploration, and trusted proxies), gateway lifecycle, quota, logging, and system-log operations through management handlers. Broader tool depth remains thinner than Plexus. |
-| OAuth (MCP client) | Implemented | Full authorization-code + PKCE S256 + refresh-token rotation with DB-backed consumption tracking (`oauth_server.rs`). This is materially more complete than the prior audit's "45%" estimate. |
+| OAuth (MCP client) | Implemented | Authorization-code + PKCE S256, protected-resource metadata, resource-bound access tokens, `mcp:read`/`mcp:write` enforcement, refresh-token rotation, and DB-backed authorization-code consumption (`oauth_server.rs`, `mcp_proxy.rs`). Legacy unscoped tokens and MCP API-key credentials remain accepted by the proxy. |
 | Backup/restore | Implemented | Table list (`TABLES` in `backup.rs`) is an exact match to Plexus's `OPERATIONAL_TABLES` (13 tables). Gzip+tar archive format, admin-only, size-capped. |
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
 | Frontend | Partial | Trefoil includes configuration, detailed usage, request Logs, custom quota checkers, system logs, MCP, debug, Errors, Models, MyKey, Playground, and Metrics; remaining browser/e2e coverage and exact UI depth remain. |
@@ -103,9 +103,8 @@ one call per verb. Not an actual gap.
    list, but there is no dedicated `dispatch` module.
 3. **Custom quota checkers** — entire feature (schema, CRUD, sandboxed
    execution, scheduler) absent.
-4. **Provider OAuth login flow** — interactive session-based OAuth
-   (`/oauth/sessions*`, `/oauth/models`) absent; only static provider
-   discovery and MCP-client OAuth are implemented.
+4. **Provider OAuth login flow** — provider-specific exchanges and request
+   masking remain partial; MCP-client OAuth is implemented separately.
 5. **Live observability endpoints** — Prometheus `/metrics`, SSE
    `/v0/management/events`, SSE `/v0/system/logs/stream`, manual
   `/v0/management/test` probe endpoint.
@@ -146,7 +145,10 @@ includes hashes and revisions needed to detect drift.
 - [x] Backup table list is an exact 13-table match to Plexus.
 - [historical] Migration count was 84 (Trefoil) vs 83 (Plexus), consistent history.
 - [x] OAuth (MCP-client) authorization-code + PKCE + refresh rotation is
-      real, DB-backed, and more complete than previously scored.
+      real, DB-backed, and resource-bound. Protected-resource metadata
+      advertises `mcp:read` and `mcp:write`; `tools/call` requires write scope,
+      other MCP methods require read scope, and unscoped legacy tokens retain
+      compatibility.
 - [x] Provider OAuth discovery reports callback/manual-code capabilities for
       all six advertised providers, with a backend test guarding the matrix.
 - [x] MCP local-process lifecycle (spawn/stop/restart/logs) is implemented

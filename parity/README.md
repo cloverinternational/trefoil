@@ -110,6 +110,28 @@ the provider-backed differential lane: external LLM compaction is rejected by
 config validation, and manual probes reject `apiType: "oauth"`; OAuth must use
 the session flow.
 
+### MCP OAuth scope and resource parity
+
+MCP OAuth exposes `/.well-known/oauth-protected-resource/mcp/:name` with the
+resource `/mcp/:name` and supported scopes `mcp:read` and `mcp:write`. The
+authorization-code flow requires a valid resource indicator and S256 PKCE;
+requested scopes are checked against the client's registered scope before a
+code is stored. Access and refresh tokens preserve both the resource and scope.
+
+The MCP proxy binds a bearer token to the requested `/mcp/:name` resource (a
+matching absolute URL is accepted by path), checks expiry and revocation, and
+requires `mcp:write` for `tools/call`. Other MCP methods require `mcp:read`,
+while `mcp:write` also grants read access. Tokens without a scope retain the
+legacy unrestricted behavior, and configured MCP API-key credentials continue
+to use the legacy path. A scope failure returns HTTP 403; an invalid,
+expired, revoked, or wrong-resource token returns HTTP 401.
+
+This scope/resource behavior is covered by the deterministic
+`mcp_proxy.rs` unit test `enforces_oauth_read_write_scopes_and_legacy_unscoped_tokens`.
+The live differential inventory does not claim coverage for these OAuth
+authorization and token-resource cases; provider-specific OAuth exchanges and
+request masking remain documented implementation gaps.
+
 Since that live run, the MCP admin shim has added configuration operations for
 MCP enablement, timeout, compaction, exploration/failover/cooldown, tracing,
 stall, vision fallthrough, background exploration, and trusted proxies, plus
