@@ -204,6 +204,7 @@ async fn call_tool(
         }
         ("plexus_mcp_gateway", "servers_list")
         | ("plexus_mcp_gateway", "get")
+        | ("plexus_mcp_gateway", "status")
         | ("plexus_mcp_gateway", "put")
         | ("plexus_mcp_gateway", "update")
         | ("plexus_mcp_gateway", "delete") => {
@@ -938,6 +939,16 @@ async fn mcp_gateway_operation(
                 Some(body.clone()),
             )
         }
+        "status" => {
+            let Some(name) = args.get("id").and_then(Value::as_str) else {
+                return rpc_error(id, -32602, "id is required");
+            };
+            (
+                "GET",
+                format!("/v0/management/mcp-servers/{name}/status"),
+                None,
+            )
+        }
         "delete" => {
             if args.get("destructive").and_then(Value::as_str) != Some("acknowledged") {
                 return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
@@ -1357,6 +1368,28 @@ mod tests {
         .await;
         assert_eq!(unknown["result"]["isError"], true);
         assert_eq!(unknown["result"]["content"][0]["text"], "Unknown tool");
+    }
+
+    #[tokio::test]
+    async fn mcp_gateway_status_is_forwarded_to_management_route() {
+        let response = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 6, "method":"tools/call",
+                    "params":{"name":"plexus_mcp_gateway","arguments":{"operation":"status","id":"missing"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        let structured = &response["result"]["structuredContent"];
+        assert_eq!(structured["operation"], "status");
+        assert!(structured["error"].is_object());
+        assert_ne!(
+            structured["error"]["message"],
+            "Operation is not implemented yet"
+        );
     }
 
     #[tokio::test]
