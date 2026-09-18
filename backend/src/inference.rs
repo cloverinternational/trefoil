@@ -901,7 +901,33 @@ async fn forward_json_api(
                 request.bearer_auth(key)
             };
         }
-        match request.send().await {
+        let mut retry_count = 0;
+        let response_result = loop {
+            let result = request
+                .try_clone()
+                .expect("inference request is cloneable")
+                .send()
+                .await;
+            match result {
+                Ok(response)
+                    if is_retryable_upstream_status(response.status())
+                        && retry_count < provider.retry_policy.max_retries =>
+                {
+                    let _ = response.bytes().await;
+                    retry_count += 1;
+                    let delay = (provider.retry_policy.delay_ms as f64
+                        * provider
+                            .retry_policy
+                            .backoff_multiplier
+                            .powi((retry_count - 1) as i32)) as u64;
+                    if delay > 0 {
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                    }
+                }
+                result => break result,
+            }
+        };
+        match response_result {
             Ok(response) => {
                 let status = response.status();
                 if original_body

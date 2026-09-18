@@ -72,6 +72,30 @@ pub struct RawPassthroughConfig {
     pub auth: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RetryPolicy {
+    #[serde(default)]
+    pub max_retries: u32,
+    #[serde(default, rename = "delayMs")]
+    pub delay_ms: u64,
+    #[serde(default = "default_retry_backoff", rename = "backoffMultiplier")]
+    pub backoff_multiplier: f64,
+}
+
+fn default_retry_backoff() -> f64 {
+    2.0
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: 0,
+            delay_ms: 0,
+            backoff_multiplier: 2.0,
+        }
+    }
+}
+
 fn default_auth() -> String {
     "bearer".to_string()
 }
@@ -114,6 +138,16 @@ pub struct ProviderConfig {
     pub raw_passthrough: Option<RawPassthroughConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_checker: Option<QuotaCheckerConfig>,
+    #[serde(
+        default,
+        skip_serializing_if = "is_default_retry_policy",
+        rename = "retryPolicy"
+    )]
+    pub retry_policy: RetryPolicy,
+}
+
+fn is_default_retry_policy(policy: &RetryPolicy) -> bool {
+    *policy == RetryPolicy::default()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]

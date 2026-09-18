@@ -397,6 +397,8 @@ struct ProviderBody {
     adapter: Option<AdapterInput>,
     raw_passthrough: Option<RawPassthroughConfig>,
     quota_checker: Option<QuotaCheckerConfig>,
+    #[serde(rename = "retryPolicy")]
+    retry_policy: Option<crate::state::RetryPolicy>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -585,6 +587,10 @@ fn validate_and_build(
         quota_checker: body
             .quota_checker
             .or_else(|| existing.and_then(|e| e.quota_checker.clone())),
+        retry_policy: body
+            .retry_policy
+            .or_else(|| existing.map(|e| e.retry_policy.clone()))
+            .unwrap_or_default(),
     })
 }
 
