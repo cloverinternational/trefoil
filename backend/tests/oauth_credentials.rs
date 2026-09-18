@@ -37,3 +37,16 @@ async fn cancelled_exchange_cannot_write_credentials_and_completion_is_once_only
     let count:i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_credentials WHERE account_id='cancel-test'").fetch_one(&pool).await.unwrap();
     assert_eq!(count,0);
 }
+
+#[tokio::test]
+#[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL and TREFOIL_CREDENTIAL_KEY"]
+async fn concurrent_claim_has_exactly_one_winner() {
+    let pool = database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
+    database::migrate(&pool).await.unwrap();
+    let now = chrono::Utc::now().timestamp_millis();
+    sqlx::query("INSERT INTO oauth_login_sessions(id,provider_id,account_id,status,created_at,updated_at,expires_at,pkce_verifier) VALUES('claim-race','openrouter','claim-race','waiting',$1,$1,$2,'verifier')").bind(now).bind(now+60000).execute(&pool).await.unwrap();
+    let (first, second) = tokio::join!(database::claim_oauth_exchange(&pool,"claim-race"), database::claim_oauth_exchange(&pool,"claim-race"));
+    assert_ne!(first.unwrap(), second.unwrap());
+    let verifier:Option<String> = sqlx::query_scalar("SELECT pkce_verifier FROM oauth_login_sessions WHERE id='claim-race'").fetch_one(&pool).await.unwrap();
+    assert!(verifier.is_none());
+}

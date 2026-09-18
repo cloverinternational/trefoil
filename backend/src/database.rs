@@ -69,7 +69,7 @@ pub async fn complete_oauth_exchange(
     let refresh = crate::credential_crypto::encrypt(&key, provider, account, "refresh_token", refresh).map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
     let now = chrono::Utc::now().timestamp_millis();
     let mut tx = pool.begin().await?;
-    let claimed = sqlx::query("UPDATE oauth_login_sessions SET status='complete',pkce_verifier=NULL,auth_info=NULL,updated_at=$2 WHERE id=$1 AND status='exchanging' AND expires_at>$2 AND provider_id=$3 AND account_id=$4")
+    let claimed = sqlx::query("UPDATE oauth_login_sessions SET status='complete',pkce_verifier=NULL,auth_info=NULL,prompt=NULL,progress=progress || '[{\"status\":\"complete\"}]'::jsonb,updated_at=$2 WHERE id=$1 AND status='exchanging' AND expires_at>$2 AND provider_id=$3 AND account_id=$4")
         .bind(session_id).bind(now).bind(provider).bind(account).execute(&mut *tx).await?;
     if claimed.rows_affected() != 1 { tx.rollback().await?; return Ok(false); }
     sqlx::query("INSERT INTO oauth_credentials (oauth_provider_type,account_id,access_token,refresh_token,expires_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$6) ON CONFLICT (oauth_provider_type,account_id) DO UPDATE SET access_token=EXCLUDED.access_token,refresh_token=EXCLUDED.refresh_token,expires_at=EXCLUDED.expires_at,updated_at=EXCLUDED.updated_at")
