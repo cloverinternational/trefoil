@@ -129,6 +129,7 @@ async fn get_server(
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
+    lifecycle_log(&state, format!("MCP local start requested for '{name}'"));
     let Some(pool) = &state.inner.database else {
         return not_found(&name);
     };
@@ -385,6 +386,10 @@ fn not_found(name: &str) -> Response {
         .into_response()
 }
 
+fn lifecycle_log(state:&AppState, message:String) {
+    crate::system_logs::event(state,"info",message,[("module".into(),serde_json::json!("config"))]);
+}
+
 async fn start_server(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -492,6 +497,7 @@ async fn stop_server(
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
+    lifecycle_log(&state, format!("MCP local stop requested for '{name}'"));
     let mut processes = state.inner.mcp_processes.lock().await;
     if let Some(transport) = processes.remove(&name) {
         let _ = transport.shutdown().await;
@@ -513,6 +519,7 @@ async fn restart_server(
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
+    lifecycle_log(&state, format!("MCP local restart requested for '{name}'"));
     let _ = stop_server(State(state.clone()), headers.clone(), Path(name.clone())).await;
     start_server(State(state), headers, Path(name)).await
 }
@@ -528,6 +535,7 @@ async fn server_status(
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
+    lifecycle_log(&state, format!("MCP local status requested for '{name}'"));
     let Some(pool) = &state.inner.database else {
         return not_found(&name);
     };
@@ -619,6 +627,7 @@ async fn process_logs(
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
+    lifecycle_log(&state, format!("MCP local process logs requested for '{name}'"));
     let logs = state
         .inner
         .mcp_process_logs
@@ -702,5 +711,18 @@ mod stop_contract_tests {
             assert!(chrono::DateTime::parse_from_rfc3339(body["exitedAt"].as_str().unwrap()).is_ok());
             assert_eq!(body.as_object().unwrap().len(), 7);
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_log_tests {
+    use super::*;
+    #[test]
+    fn management_actions_emit_reference_module_and_messages() {
+        let state=AppState::new(Some("admin".into()),Default::default());
+        lifecycle_log(&state,"MCP local start requested for 'fixture'".into());
+        let logs=state.inner.recent_system_logs.lock().unwrap();
+        assert_eq!(logs.back().unwrap().message,"MCP local start requested for 'fixture'");
+        assert_eq!(logs.back().unwrap().context["module"],"config");
     }
 }
