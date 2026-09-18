@@ -2800,7 +2800,16 @@ fn is_retryable_upstream_status(
             .get("failover.retryableErrors")
             .and_then(Value::as_array)
             .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-            .unwrap_or_else(|| vec!["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"]);
+            .unwrap_or_else(|| {
+                vec![
+                    "ECONNREFUSED",
+                    "ETIMEDOUT",
+                    "ENOTFOUND",
+                    "timed out",
+                    "timeout",
+                    "deadline",
+                ]
+            });
         return patterns.iter().any(|pattern| {
             regex::RegexBuilder::new(pattern)
                 .case_insensitive(true)
@@ -2904,6 +2913,15 @@ mod retry_policy_tests {
             axum::http::StatusCode::NOT_FOUND,
             Some("ECONNREFUSED")
         ));
+    }
+
+    #[test]
+    fn default_transport_timeout_errors_failover_but_request_errors_do_not() {
+        let state = AppState::new(None, HashMap::new());
+        for message in ["request timed out", "operation timeout", "deadline elapsed"] {
+            assert!(is_retryable_upstream_error(&state, message));
+        }
+        assert!(!is_retryable_upstream_error(&state, "invalid request body"));
     }
 
     #[test]
