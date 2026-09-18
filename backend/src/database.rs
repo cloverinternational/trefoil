@@ -20,7 +20,7 @@ use crate::state::{
 pub const DEFAULT_MAX_CONNECTIONS: u32 = 16;
 
 pub async fn load_oauth_sessions(pool: &PgPool) -> Result<Vec<OAuthSession>, sqlx::Error> {
-    let rows = sqlx::query("SELECT id, provider_id, account_id, status, auth_info, prompt, progress, error, created_at, updated_at, expires_at FROM oauth_login_sessions")
+    let rows = sqlx::query("SELECT id, provider_id, account_id, status, auth_info, prompt, progress, error, created_at, updated_at, expires_at, pkce_verifier FROM oauth_login_sessions")
         .fetch_all(pool).await?;
     rows.into_iter()
         .map(|row| {
@@ -36,6 +36,7 @@ pub async fn load_oauth_sessions(pool: &PgPool) -> Result<Vec<OAuthSession>, sql
                 created_at: row.try_get("created_at")?,
                 updated_at: row.try_get("updated_at")?,
                 expires_at: row.try_get("expires_at")?,
+                pkce_verifier: row.try_get("pkce_verifier")?,
             })
         })
         .collect()
@@ -45,9 +46,9 @@ pub async fn upsert_oauth_session(
     pool: &PgPool,
     session: &OAuthSession,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO oauth_login_sessions (id,provider_id,account_id,status,auth_info,prompt,progress,error,created_at,updated_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status,auth_info=EXCLUDED.auth_info,prompt=EXCLUDED.prompt,progress=EXCLUDED.progress,error=EXCLUDED.error,updated_at=EXCLUDED.updated_at,expires_at=EXCLUDED.expires_at")
+    sqlx::query("INSERT INTO oauth_login_sessions (id,provider_id,account_id,status,auth_info,prompt,progress,error,created_at,updated_at,expires_at,pkce_verifier) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status,auth_info=EXCLUDED.auth_info,prompt=EXCLUDED.prompt,progress=EXCLUDED.progress,error=EXCLUDED.error,updated_at=EXCLUDED.updated_at,expires_at=EXCLUDED.expires_at,pkce_verifier=EXCLUDED.pkce_verifier")
         .bind(&session.id).bind(&session.provider_id).bind(&session.account_id).bind(&session.status).bind(&session.auth_info)
-        .bind(&session.prompt).bind(&session.progress).bind(&session.error).bind(session.created_at).bind(session.updated_at).bind(session.expires_at)
+        .bind(&session.prompt).bind(&session.progress).bind(&session.error).bind(session.created_at).bind(session.updated_at).bind(session.expires_at).bind(&session.pkce_verifier)
         .execute(pool).await.map(|_| ())
 }
 

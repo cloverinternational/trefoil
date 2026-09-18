@@ -110,6 +110,8 @@ pub struct OAuthSession {
     pub created_at: i64,
     pub updated_at: i64,
     pub expires_at: i64,
+    #[serde(skip)]
+    pub pkce_verifier: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,6 +229,7 @@ async fn create_session(
         created_at: now,
         updated_at: now,
         expires_at: now + 20 * 60 * 1000,
+        pkce_verifier: Some(verifier.clone()),
     };
     state
         .inner
@@ -308,21 +311,20 @@ async fn callback(
         )
             .into_response();
     }
-    let verifier = match state
+    let verifier = state
         .inner
         .oauth_pkce_verifiers
-        .write()
+        .read()
         .unwrap()
-        .remove(&id)
-    {
-        Some(verifier) => verifier,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error":"OAuth verifier unavailable"})),
-            )
-                .into_response()
-        }
+        .get(&id)
+        .cloned()
+        .or_else(|| session.pkce_verifier.clone());
+    let Some(verifier) = verifier else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"OAuth verifier unavailable"})),
+        )
+            .into_response();
     };
     let Some(endpoint) = token_endpoint(&session.provider_id) else {
         return (
@@ -409,6 +411,15 @@ async fn callback(
             )
             .await;
         }
+    }
+    state
+        .inner
+        .oauth_pkce_verifiers
+        .write()
+        .unwrap()
+        .remove(&id);
+    if let Some(current) = state.inner.oauth_sessions.write().unwrap().get_mut(&id) {
+        current.pkce_verifier = None;
     }
     update_session(&state, &id, "manual-code", Some("complete".into())).await
 }
