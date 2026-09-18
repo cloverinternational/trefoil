@@ -372,7 +372,7 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 308 unit + 4 integration tests pass |
+| `cargo test --all-targets` | 310 unit + 4 integration tests pass |
 | OAuth storage / dispatch / checker integration | 12 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
@@ -700,3 +700,17 @@ Full gate before the final Kimi-inference integration: seven lanes pass, live
 406/407. Backend 308 unit + 4 stdio, 12 executed PostgreSQL, 45 frontend, 3
 browser and 12 harness tests pass. Provider flows and full dispatch parity remain
 open.
+
+## Latest xAI device-flow pass
+
+xAI device authorization and refresh now use the provider-specific device/token
+forms, required scope/referrer, strict HTTPS verification URI validation,
+pending/slow-down/denial/expiry states, five-minute expiry skew and optional
+refresh-token retention. Shared device-session persistence handles its encrypted
+completion. Mock upstream tests verify forms, slow-down intervals, URL rejection
+and unrotated refresh tokens. No live xAI subscription was used.
+
+Backend coverage after these tests is 310 unit + 4 stdio integration; the
+full gate has not been rerun after this focused implementation. Previous full
+result remains 406/407 live; all documented provider acceptance limitations and
+unimplemented flows still mean the completion goal is unmet.
