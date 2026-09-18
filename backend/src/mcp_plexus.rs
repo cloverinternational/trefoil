@@ -172,6 +172,9 @@ async fn call_tool(
         ("plexus_config", "mcp_enabled") => {
             return config_mcp_enabled_operation(state, id, args).await;
         }
+        ("plexus_config", "exploration_rate") => {
+            return config_exploration_rate_operation(state, id, args).await;
+        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
             // HashMap iteration order is intentionally unstable.  MCP clients
@@ -429,6 +432,39 @@ async fn config_mcp_enabled_operation(
                 "mcp_enabled",
                 "GET",
                 "/v0/management/config/mcp-enabled",
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn config_exploration_rate_operation(
+    state: &AppState,
+    id: Value,
+    args: Option<&Value>,
+) -> Response {
+    let args = args.cloned().unwrap_or_else(|| json!({}));
+    match args.get("body") {
+        Some(body) if body.is_object() => {
+            forwarded_operation(
+                state,
+                id,
+                "exploration_rate",
+                "PATCH",
+                "/v0/management/config/exploration-rate",
+                Some(body.clone()),
+            )
+            .await
+        }
+        Some(_) => rpc_error(id, -32602, "body must be an object"),
+        None => {
+            forwarded_operation(
+                state,
+                id,
+                "exploration_rate",
+                "GET",
+                "/v0/management/config/exploration-rate",
                 None,
             )
             .await
@@ -1596,6 +1632,29 @@ mod tests {
         assert_eq!(response["result"]["structuredContent"]["ok"], false);
         let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled","body":[]}}})).await).await;
         assert_eq!(response["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn config_exploration_rate_supports_read_patch_and_validation() {
+        let state = state();
+        let read = body(dispatch(&state, json!({"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"exploration_rate"}}})).await).await;
+        assert_eq!(read["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            read["result"]["structuredContent"]["data"]["performanceExplorationRate"],
+            0.05
+        );
+        let patched = body(dispatch(&state, json!({"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"exploration_rate","body":{"performanceExplorationRate":0.25}}}})).await).await;
+        assert_eq!(
+            patched["result"]["structuredContent"]["data"]["performanceExplorationRate"],
+            0.25
+        );
+        let repeated = body(dispatch(&state, json!({"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"exploration_rate","body":{"performanceExplorationRate":0.25}}}})).await).await;
+        assert_eq!(
+            repeated["result"]["structuredContent"]["data"]["performanceExplorationRate"],
+            0.25
+        );
+        let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"exploration_rate","body":{"performanceExplorationRate":2}}}})).await).await;
+        assert_eq!(invalid["result"]["structuredContent"]["ok"], false);
     }
 
     #[tokio::test]
