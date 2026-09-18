@@ -46,24 +46,20 @@ async fn refresh_one(state: &AppState, provider: String, account: String, refres
             .clone()
     };
     let _guard = gate.lock().await;
-    let response = reqwest::Client::new()
-        .post(url)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token.as_str()),
-            ("client_id", "trefoil"),
-        ])
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await;
-    let Ok(response) = response else { return };
-    if !response.status().is_success() {
-        return;
-    }
-    let Ok(payload) = response.json::<Value>().await else {
+    let transport = crate::oauth_transport::ReqwestTransport;
+    let Ok(response) = crate::oauth_transport::refresh(&transport, &provider, &refresh_token).await
+    else {
         return;
     };
-    let Ok(token) = parse_refresh_response(&payload, &refresh_token, now_ms()) else {
+    let Ok(token) = parse_refresh_response(
+        &serde_json::json!({
+            "access_token": response.access_token,
+            "refresh_token": response.refresh_token,
+            "expires_in": response.expires_in,
+        }),
+        &refresh_token,
+        now_ms(),
+    ) else {
         return;
     };
     if let Some(pool) = &state.inner.database {
