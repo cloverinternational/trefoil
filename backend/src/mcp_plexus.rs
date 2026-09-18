@@ -1929,6 +1929,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn system_logs_level_operations_round_trip_through_management_router() {
+        let changed = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 47, "method":"tools/call",
+                    "params":{"name":"plexus_system_logs","arguments":{"operation":"set_level","level":"warn"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(changed["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            changed["result"]["structuredContent"]["data"]["level"],
+            "warn"
+        );
+
+        let read = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 48, "method":"tools/call",
+                    "params":{"name":"plexus_system_logs","arguments":{"operation":"level"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(read["result"]["structuredContent"]["data"]["level"], "warn");
+
+        let reset = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 49, "method":"tools/call",
+                    "params":{"name":"plexus_system_logs","arguments":{"operation":"reset_level"}}
+                }),
+            )
+            .await,
+        )
+        .await;
+        let reset_data = &reset["result"]["structuredContent"]["data"];
+        assert_eq!(reset["result"]["structuredContent"]["ok"], true);
+        assert_eq!(reset_data["level"], reset_data["startupLevel"]);
+    }
+
+    #[tokio::test]
     async fn config_timeout_supports_read_and_patch_validation() {
         let response = body(
             dispatch(
