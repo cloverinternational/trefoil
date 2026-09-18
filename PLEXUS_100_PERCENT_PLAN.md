@@ -335,7 +335,7 @@ Missing pages (each needs its own API adapter + component + tests):
 
 ## 12. Differential harness — 🟡 partial
 
-`parity/differential.ts` currently has 302 named cases. OAuth provider
+`parity/differential.ts` currently has 313 named cases. OAuth provider
 discovery now matches Plexus's response shape: Trefoil omits its internal
 `capabilities` metadata while preserving the provider descriptors.
 
@@ -363,24 +363,26 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** the OAuth PKCE persistence/replay tests pass, including
-  verifier redaction and one-time in-memory callback consumption. A full
-  `cargo test --all-targets` run currently has one unrelated MCP stdio
-  assertion failure (`malformed_child_output_is_reported_to_pending_request`).
+- **Backend tests:** `cargo test --all-targets` passes 253 tests, including
+  shared media failover ordering, terminal failure behavior, and disabled-
+  failover limits.
 - **Frontend:** typecheck, build, and 34 Vitest tests pass across 8 files, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
-- **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
+- **Latest media dispatch:** image generation, image edit, audio speech, and
+  audio transcription use the shared JSON failover policy; deterministic
+  speech fallback evidence is in `backend/src/inference.rs`.
 - **Generic failover:** non-chat inference preserves configured candidate order
   and returns the last upstream error after all candidates fail, with no extra
   attempt; provider-not-found and chat transport-failure fallback tests remain
   green. Generic JSON and chat status-failover paths share
   `RetryableFailoverPolicy`; request construction, cancellation, and usage
   recording remain route-specific.
-- **Differential harness:** 302 named cases are registered in
-  `parity/differential.ts`; the latest executed MCP/custom-checker lane at
+- **Differential harness:** 313 named cases are registered in
+  `parity/differential.ts`; the latest recorded MCP/custom-checker lane at
   Trefoil `a5bc1a6` against Plexus `31b09ce` completed with all 302 cases
-  matching. OAuth provider discovery
+  matching. That historical result does not cover the current 313-case
+  inventory. OAuth provider discovery
   omits the internal `capabilities` metadata and matches the Plexus wire
   shape.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.

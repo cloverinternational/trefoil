@@ -97,13 +97,12 @@ traversal across two transport failures followed by success, while generic
 non-chat coverage proves configured target ordering and exhaustion returns the
 final error without an extra attempt.
 
-The current inventory contains 302 named cases. The latest live differential
-attempt (Trefoil `701ddb4`, Plexus `31b09ce`) executed 283 cases: 282 matched
-and one diverged on the documented OAuth provider-discovery shape difference
-(Trefoil currently includes its internal `capabilities` metadata). This is a
-known wire-shape mismatch, not evidence that the remaining registered cases
-passed. Provider-backed success and SSE cases still require an explicitly
-configured disposable upstream as described above.
+The current inventory contains 313 named cases. The latest recorded live
+differential attempt (Trefoil `701ddb4`, Plexus `31b09ce`) executed 283 cases:
+282 matched and one diverged on the then-documented OAuth provider-discovery
+shape difference. That historical run is not evidence that the current 313
+registered cases passed. Provider-backed success and SSE cases still require
+an explicitly configured disposable upstream as described above.
 
 ### Backup and restore parity coverage
 
@@ -176,5 +175,5 @@ Since that live run, the MCP admin shim has added configuration operations for
 MCP enablement, timeout, compaction, exploration/failover/cooldown, tracing,
 stall, vision fallthrough, background exploration, and trusted proxies, plus
 system-log level and module operations. These milestones are verified by the
-Rust unit suite at revision `f2319d9` (`cargo test --all-targets`: 238 passed),
+Rust unit suite at revision `0c2cc70` (`cargo test --all-targets`: 253 passed),
 but are not yet represented by a newer live differential-run claim.
