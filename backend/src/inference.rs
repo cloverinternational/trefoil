@@ -14,7 +14,7 @@ use axum::{
     Json, Router,
 };
 use futures_util::{Stream, StreamExt};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::Row;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -2020,6 +2020,42 @@ async fn chat_completions(
             let payload = upstream.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({
                 "error": { "message": "Invalid response from upstream provider", "type": "upstream_error" }
             }));
+            // Chat previously returned retryable HTTP failures immediately,
+            // unlike the generic JSON dispatchers.  Treat those responses as
+            // failover candidates too; transport failures and HTTP failures
+            // must have the same ordered-target semantics.
+            if !status.is_success() && is_retryable_upstream_status(&state, status, None) {
+                let reason = payload["error"]["message"]
+                    .as_str()
+                    .unwrap_or("retryable upstream error")
+                    .to_owned();
+                record_attempt(
+                    &state,
+                    &request_id,
+                    1,
+                    &provider_slug,
+                    &model,
+                    "chat",
+                    "failed",
+                    Some(&reason),
+                    Some(status.as_u16() as i32),
+                    true,
+                    start_time,
+                )
+                .await;
+                register_provider_failure(&state, &provider_slug, &model, reason).await;
+                return chat_status_failover(
+                    &state,
+                    &client,
+                    targets,
+                    &original_body,
+                    &request_id,
+                    usage_key_name,
+                    &model,
+                    start_time,
+                )
+                .await;
+            }
             if let Some(pool) = &state.inner.database {
                 let input_tokens = payload["usage"]["prompt_tokens"]
                     .as_i64()
@@ -2215,6 +2251,141 @@ async fn chat_completions(
             )
         }
     }
+}
+
+async fn chat_status_failover(
+    state: &AppState,
+    client: &reqwest::Client,
+    targets: Vec<(String, String)>,
+    original_body: &Value,
+    request_id: &str,
+    usage_key_name: Option<&str>,
+    requested_model: &str,
+    start_time: i64,
+) -> Response {
+    let mut last_error = "retryable upstream error".to_owned();
+    for (attempt_offset, (provider_slug, upstream_model)) in targets.into_iter().skip(1).enumerate()
+    {
+        let Some(provider) = state
+            .inner
+            .providers
+            .read()
+            .unwrap()
+            .get(&provider_slug)
+            .cloned()
+        else {
+            continue;
+        };
+        let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+            continue;
+        };
+        let mut body = original_body.clone();
+        body["model"] = Value::String(upstream_model.clone());
+        let mut request = client
+            .post(format!(
+                "{}/chat/completions",
+                base.as_str().trim_end_matches('/')
+            ))
+            .json(&body);
+        if let Some(key) = provider.api_key {
+            request = request.bearer_auth(key);
+        }
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                let payload = response.json::<Value>().await.unwrap_or_else(
+                    |_| json!({"error":{"message":"Invalid response from upstream provider"}}),
+                );
+                let retryable = is_retryable_upstream_status(state, status, None);
+                let reason = payload["error"]["message"].as_str();
+                record_attempt(
+                    state,
+                    request_id,
+                    (attempt_offset + 2) as i32,
+                    &provider_slug,
+                    &upstream_model,
+                    "chat",
+                    if status.is_success() {
+                        "success"
+                    } else {
+                        "failed"
+                    },
+                    reason,
+                    Some(status.as_u16() as i32),
+                    retryable,
+                    start_time,
+                )
+                .await;
+                if retryable {
+                    last_error = reason.unwrap_or("retryable upstream error").to_owned();
+                    register_provider_failure(
+                        state,
+                        &provider_slug,
+                        &upstream_model,
+                        last_error.clone(),
+                    )
+                    .await;
+                    continue;
+                }
+                record_response_usage(
+                    state,
+                    request_id,
+                    usage_key_name,
+                    &provider_slug,
+                    requested_model,
+                    "chat",
+                    status.is_success(),
+                    start_time,
+                    &payload,
+                    true,
+                )
+                .await;
+                return response_with_request_id(status, payload, request_id);
+            }
+            Err(error) => {
+                last_error = error.to_string();
+                record_attempt(
+                    state,
+                    request_id,
+                    (attempt_offset + 2) as i32,
+                    &provider_slug,
+                    &upstream_model,
+                    "chat",
+                    "failed",
+                    Some(&last_error),
+                    None,
+                    true,
+                    start_time,
+                )
+                .await;
+                register_provider_failure(
+                    state,
+                    &provider_slug,
+                    &upstream_model,
+                    last_error.clone(),
+                )
+                .await;
+            }
+        }
+    }
+    record_basic_usage(
+        state,
+        request_id,
+        usage_key_name,
+        "",
+        requested_model,
+        "chat",
+        "error",
+        false,
+        start_time,
+    )
+    .await;
+    error_with_request_id(
+        axum::http::StatusCode::BAD_GATEWAY,
+        &last_error,
+        "upstream_error",
+        request_id,
+    )
 }
 
 async fn register_provider_failure(state: &AppState, provider: &str, model: &str, message: String) {
