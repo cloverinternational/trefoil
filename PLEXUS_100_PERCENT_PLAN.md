@@ -288,8 +288,12 @@ not confirmed in this audit — needs a direct code check against
 `headroom-compactor.ts` (320 lines) equivalence.
 
 - [x] Implement native and local headroom compaction application before dispatch.
-- [ ] External LLM-based headroom compaction remains unsupported and explicit;
-      configuration rejects `strategy: "external"` before dispatch.
+- [~] Configured `strategy: "headroom"` now calls the actual `/v1/compress`
+      service protocol with auth, timeout, protected instructions/recent messages,
+      validated output and fail-open behavior. Mock service tests pass. Complete
+      model-context/inheritance and native-message parity remain open.
+      `strategy: "external"` remains invalid (the reference also only defines
+      `native` and `headroom`).
 
 ---
 
@@ -368,13 +372,13 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 272 unit + 4 integration tests pass |
-| Frontend Vitest | 44 tests across 8 files pass |
+| `cargo test --all-targets` | 281 unit + 4 integration tests pass |
+| Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
 | Playwright Chromium | 3 browser scenarios pass |
-| Differential harness unit tests | 11 pass |
-| Live differential | **404 pass, 3 fail, 407 observed, no missing/duplicate cases** |
+| Differential harness unit tests | 12 pass |
+| Live differential | **405 pass, 2 fail, 407 observed, no missing/duplicate cases** |
 
 Reports: `target/parity-report.json` and `target/differential-report.json`.
 These are regenerable local artifacts, not committed acceptance evidence.
@@ -427,7 +431,7 @@ reference checkout, and the runner owns only its disposable database container.
 
 ### Latest progress
 
-The full gate is intentionally red until the 3 live differences and remaining
+The full gate is intentionally red until the remaining live differences and remaining
 capability gaps are resolved. The old 82% estimate was not an acceptance result
 and should not be used to claim drop-in compatibility. Newly found gaps above
 supersede stale checked-item descriptions elsewhere in this document.
@@ -473,3 +477,27 @@ are validated before normalization; identity, counts, tool, status and payload
 remain compared. Malformed restore probes run last because the reference
 partially mutates configuration even when rejecting them; Trefoil does not copy
 that unsafe behavior. Usage grouped breakdowns/exclusions remain incomplete.
+
+## Latest implementation pass: runtime accounting and external services
+
+Full gate: 281 backend unit + 4 integration, 45 frontend unit, 3 browser and
+12 harness unit tests pass; build/typecheck pass. Latest live result is
+**405/407 matching**, with recent logs differing and metadata refresh differing
+only because Plexus coalesced the manual request into an in-flight `startup`
+refresh. An earlier run matched 406/407. Counts, source identity, success and
+errors remain strict; the trigger race was not normalized away.
+
+Implemented real attempt concurrency counts, streaming ownership and synchronous
+release when the body is dropped; metrics now expose these counts and match the
+reference exposition. Scheduler intervals now run independently in minutes.
+Metadata refresh fetches and retains catalogs, including auxiliary OpenRouter
+embeddings/video sources, with tested partial-source failure handling.
+Configured Headroom service requests preserve protected context and fail open;
+local fallback remains when no service base URL is explicitly configured.
+Dashboard summary adaptation now handles the new reference-shaped backend data.
+
+OpenRouter token transport now supports its JSON key exchange and nonexpiring
+key response, but end-to-end login remains open: an unverified authorization/
+manual-code handler change was removed rather than marked complete. Encryption,
+other provider flows, shared dispatch extraction, comprehensive cancellation,
+metadata consumption/scheduling and exhaustive checker semantics remain open.

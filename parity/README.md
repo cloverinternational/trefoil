@@ -222,7 +222,9 @@ failover limits each media request to its primary target.
 
 The current inventory is 407 cases, including 86 generated MCP operation
 read/validation cases. The latest full local run observed every case exactly
-once: **404 passed, 3 differed**. Older 313-case/302-pass statements above are
+once: **405 passed, 2 differed**. Older 313-case/302-pass statements above are
 historical, not current acceptance. MCP calls negotiate JSON/SSE and initialize
 the protocol; JSON error payloads and JSON-encoded tool text compare structurally.
 The unified gate additionally runs Playwright and harness unit tests.
+
+Metadata refresh may return the reference startup trigger when its manual request joins an in-flight startup refresh; this remains a strict mismatch, not a suppressed field. The previous run matched 406/407.
