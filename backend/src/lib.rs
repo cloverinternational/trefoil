@@ -2,6 +2,7 @@ pub mod aliases;
 pub mod anthropic_masking;
 pub mod auth;
 pub mod backup;
+pub mod codex_masking;
 pub mod concurrency;
 pub mod config_routes;
 pub mod cooldowns;

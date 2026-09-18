@@ -906,6 +906,10 @@ async fn forward_json_api(
                     .oauth_provider
                     .as_deref()
                     .is_some_and(|name| name.eq_ignore_ascii_case("anthropic")));
+        let codex_oauth = provider
+            .oauth_provider
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("openai-codex"));
         let native_gemini = path.starts_with("/v1beta/models/")
             && gemini_native_provider(&provider_slug, &provider);
         if path == "/messages" && !native_anthropic {
@@ -931,7 +935,17 @@ async fn forward_json_api(
                 .json(&request_body);
         }
         if let Some(key) = provider.api_key {
-            request = if auth_header == "x-api-key" {
+            request = if codex_oauth {
+                let mut request = request
+                    .bearer_auth(&key)
+                    .header("originator", "codex_cli_rs")
+                    .header("Version", crate::codex_masking::CODEX_VERSION)
+                    .header("User-Agent", crate::codex_masking::user_agent());
+                if let Some(account) = crate::codex_masking::account_id(&key) {
+                    request = request.header("chatgpt-account-id", account);
+                }
+                request
+            } else if auth_header == "x-api-key" {
                 request.header("x-api-key", key)
             } else {
                 request.bearer_auth(key)
@@ -1619,7 +1633,9 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Principal, Resp
         .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()));
     match resolve_principal(state, key) {
         Some(principal) if headers.contains_key("x-api-key") => Ok(principal),
-        Some(Principal::Limited { key_name, config }) => Ok(Principal::Limited { key_name, config }),
+        Some(Principal::Limited { key_name, config }) => {
+            Ok(Principal::Limited { key_name, config })
+        }
         Some(Principal::Admin) | None => Err(auth_error(
             axum::http::StatusCode::UNAUTHORIZED,
             "invalid authorization header",
