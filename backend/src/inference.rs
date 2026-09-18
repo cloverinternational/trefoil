@@ -324,7 +324,7 @@ async fn audio_transcriptions(
             Ok(response) => {
                 let status = response.status();
                 let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
-                if is_retryable_upstream_status(status) {
+                if is_retryable_upstream_status(&state, status, None) {
                     attempted = Some(
                         payload["error"]["message"]
                             .as_str()
@@ -910,7 +910,7 @@ async fn forward_json_api(
                 .await;
             match result {
                 Ok(response)
-                    if is_retryable_upstream_status(response.status())
+                    if is_retryable_upstream_status(state, response.status(), None)
                         && retry_count < provider.retry_policy.max_retries =>
                 {
                     let _ = response.bytes().await;
@@ -980,7 +980,7 @@ async fn forward_json_api(
                     payload = normalize_anthropic_error(payload, status);
                 }
                 // Retry provider failures, but preserve deterministic client errors.
-                if failover && is_retryable_upstream_status(status) {
+                if failover && is_retryable_upstream_status(state, status, None) {
                     register_provider_failure(
                         state,
                         &provider_slug,
@@ -1009,6 +1009,13 @@ async fn forward_json_api(
                 return (status, Json(payload)).into_response();
             }
             Err(error) => {
+                if !is_retryable_upstream_error(state, &error.to_string()) {
+                    return error_response(
+                        axum::http::StatusCode::BAD_GATEWAY,
+                        &error.to_string(),
+                        "upstream_error",
+                    );
+                }
                 register_provider_failure(
                     state,
                     &provider_slug,
@@ -1128,7 +1135,7 @@ async fn responses(
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
-                let retryable = is_retryable_upstream_status(status);
+                let retryable = is_retryable_upstream_status(&state, status, None);
                 if retryable {
                     let payload = response.json::<Value>().await.unwrap_or_else(|_| serde_json::json!({"error":{"message":"Invalid upstream response","type":"upstream_error"}}));
                     let reason = payload["error"]["message"]
@@ -1241,6 +1248,7 @@ async fn responses(
             }
             Err(error) => {
                 let reason = error.to_string();
+                let retryable = is_retryable_upstream_error(&state, &reason);
                 record_attempt(
                     &state,
                     &request_id,
@@ -1251,13 +1259,20 @@ async fn responses(
                     "failed",
                     Some(&reason),
                     None,
-                    true,
+                    retryable,
                     start_time,
                 )
                 .await;
-                register_provider_failure(&state, &provider_slug, &upstream_model, reason.clone())
+                if retryable {
+                    register_provider_failure(
+                        &state,
+                        &provider_slug,
+                        &upstream_model,
+                        reason.clone(),
+                    )
                     .await;
-                last_error = Some(reason);
+                    last_error = Some(reason);
+                }
             }
         }
     }
@@ -2268,14 +2283,125 @@ fn compact_json_value(
     }
 }
 
-fn is_retryable_upstream_status(status: axum::http::StatusCode) -> bool {
-    // A 404 commonly means that a provider does not expose the requested
-    // model/API route.  It is therefore failoverable just like the default
-    // management policy (which includes all non-2xx statuses except 413/422).
-    status == axum::http::StatusCode::NOT_FOUND
-        || status == axum::http::StatusCode::REQUEST_TIMEOUT
-        || status == axum::http::StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
+fn is_retryable_upstream_status(
+    state: &AppState,
+    status: axum::http::StatusCode,
+    error: Option<&str>,
+) -> bool {
+    let defaults = |status: axum::http::StatusCode| {
+        // The default management policy retries all non-2xx statuses except
+        // deterministic request failures (413 and 422).
+        !status.is_success()
+            && status != axum::http::StatusCode::PAYLOAD_TOO_LARGE
+            && status != axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    };
+    let settings = state.inner.settings.read().unwrap();
+    let enabled = settings
+        .get("failover.enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if !enabled {
+        return false;
+    }
+    if let Some(error) = error {
+        let patterns = settings
+            .get("failover.retryableErrors")
+            .and_then(Value::as_array)
+            .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+            .unwrap_or_else(|| vec!["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"]);
+        return patterns.iter().any(|pattern| {
+            regex::RegexBuilder::new(pattern)
+                .case_insensitive(true)
+                .build()
+                .map(|regex| regex.is_match(error))
+                .unwrap_or(false)
+        });
+    }
+    match settings
+        .get("failover.retryableStatusCodes")
+        .and_then(Value::as_array)
+    {
+        Some(values) => {
+            let codes: Vec<_> = values.iter().filter_map(Value::as_i64).collect();
+            if codes.is_empty() {
+                defaults(status)
+            } else {
+                codes.contains(&i64::from(status.as_u16()))
+            }
+        }
+        None => defaults(status),
+    }
+}
+
+fn is_retryable_upstream_error(state: &AppState, error: &str) -> bool {
+    is_retryable_upstream_status(state, axum::http::StatusCode::BAD_GATEWAY, Some(error))
+}
+
+#[cfg(test)]
+mod retry_policy_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn retry_policy_uses_configured_statuses_and_case_insensitive_regex_errors() {
+        let state = AppState::new(None, HashMap::new());
+        state.inner.settings.write().unwrap().extend([
+            (
+                "failover.retryableStatusCodes".into(),
+                serde_json::json!([418]),
+            ),
+            (
+                "failover.retryableErrors".into(),
+                serde_json::json!(["rate\\.limit", "timeout"]),
+            ),
+        ]);
+        assert!(is_retryable_upstream_status(
+            &state,
+            axum::http::StatusCode::IM_A_TEAPOT,
+            None
+        ));
+        assert!(!is_retryable_upstream_status(
+            &state,
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            None
+        ));
+        assert!(is_retryable_upstream_status(
+            &state,
+            axum::http::StatusCode::BAD_GATEWAY,
+            Some("RATE.LIMIT exceeded")
+        ));
+        assert!(!is_retryable_upstream_status(
+            &state,
+            axum::http::StatusCode::BAD_GATEWAY,
+            Some("invalid request")
+        ));
+    }
+
+    #[test]
+    fn retry_policy_defaults_and_disable_are_backward_compatible() {
+        let state = AppState::new(None, HashMap::new());
+        assert!(is_retryable_upstream_status(
+            &state,
+            axum::http::StatusCode::NOT_FOUND,
+            None
+        ));
+        assert!(!is_retryable_upstream_status(
+            &state,
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            None
+        ));
+        state
+            .inner
+            .settings
+            .write()
+            .unwrap()
+            .insert("failover.enabled".into(), serde_json::json!(false));
+        assert!(!is_retryable_upstream_status(
+            &state,
+            axum::http::StatusCode::NOT_FOUND,
+            Some("ECONNREFUSED")
+        ));
+    }
 }
 
 async fn enforce_request_quotas(state: &AppState, principal: &Principal) -> Result<(), Response> {
