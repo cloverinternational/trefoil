@@ -901,7 +901,7 @@ async fn forward_json_api(
     // payloads on the normal text path and avoids unsafe assumptions in
     // provider transforms; descriptor generation is opt-in via configuration.
     apply_native_compaction(&mut body, state);
-    apply_headroom_compaction(&mut body, state);
+    apply_configured_headroom(&mut body, state).await;
     if let Some(config) = key_config {
         if !model_allowed(config, &model) {
             return error_response(
@@ -1875,7 +1875,7 @@ async fn chat_completions(
         return response;
     }
     apply_native_compaction(&mut body, &state);
-    apply_headroom_compaction(&mut body, &state);
+    apply_configured_headroom(&mut body, &state).await;
     let key_config = if let Principal::Limited { config, .. } = &principal {
         if !model_allowed(config, &model) {
             return error_response(
@@ -2795,6 +2795,50 @@ fn apply_native_compaction(body: &mut Value, state: &AppState) {
         return;
     }
     compact_json_value(body, arrays, strings, protect_recent);
+}
+
+async fn apply_configured_headroom(body: &mut Value, state: &AppState) {
+    let config = state.inner.settings.read().unwrap().get("compaction").cloned();
+    let Some(config) = config else { return };
+    let Some(base) = config.pointer("/headroom/baseUrl").and_then(Value::as_str) else {
+        apply_headroom_compaction(body, state);
+        return;
+    };
+    if config["enabled"] != true || config["strategy"] != "headroom" { return; }
+    let Some(limit) = config["absoluteTriggerTokens"].as_u64() else { return };
+    let estimated = estimate_tokens(body) as u64;
+    let trigger = config["triggerRatio"].as_f64().unwrap_or(0.8);
+    if estimated < config["minTokens"].as_u64().unwrap_or(2000) || estimated <= (limit as f64 * trigger) as u64 { return; }
+    let Some(messages) = body["messages"].as_array() else { return };
+    let protected = config["protectRecent"].as_u64().unwrap_or(4) as usize;
+    let split = messages.len().saturating_sub(protected);
+    let mut instructions = Vec::new();
+    let mut compressible = Vec::new();
+    for message in &messages[..split] {
+        if matches!(message["role"].as_str(), Some("system" | "developer")) { instructions.push(message.clone()); }
+        else { compressible.push(message.clone()); }
+    }
+    if compressible.is_empty() { return; }
+    let recent = messages[split..].to_vec();
+    let Ok(base) = dispatch_provider_url(base) else { return };
+    let timeout = Duration::from_millis(config.pointer("/headroom/timeoutMs").and_then(Value::as_u64).unwrap_or(5000).max(1));
+    let Ok(client) = reqwest::Client::builder().timeout(timeout).build() else { return };
+    let mut payload = json!({"messages":compressible,"model":body.get("model").and_then(Value::as_str).unwrap_or("gpt-4o")});
+    if let Some(ratio) = config.pointer("/headroom/targetRatio").and_then(Value::as_f64) {
+        payload["token_budget"] = json!((limit as f64 * ratio).floor() as u64);
+    }
+    let mut request = client.post(format!("{}/v1/compress", base.as_str().trim_end_matches('/'))).json(&payload);
+    if let Some(key) = config.pointer("/headroom/apiKey").and_then(Value::as_str) { request = request.bearer_auth(key); }
+    let Ok(response) = request.send().await else { return };
+    if !response.status().is_success() { return; }
+    let Ok(result) = response.json::<Value>().await else { return };
+    let Some(compressed) = result["messages"].as_array() else { return };
+    if compressed.is_empty() || compressed.iter().any(|message| !matches!(message["role"].as_str(), Some("user" | "assistant" | "tool"))) { return; }
+    instructions.extend(compressed.iter().cloned());
+    instructions.extend(recent);
+    let mut candidate = body.clone();
+    candidate["messages"] = Value::Array(instructions);
+    if estimate_tokens(&candidate) < estimate_tokens(body) { *body = candidate; }
 }
 
 fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
@@ -5307,5 +5351,37 @@ mod vision_dispatch_tests {
         apply_vision_fallthrough(&mut untouched, &state, "text", None).await;
         assert_eq!(untouched, body);
         server.abort();
+    }
+}
+
+#[cfg(test)]
+mod headroom_service_tests {
+    use super::*;
+    use axum::routing::post;
+    #[tokio::test]
+    async fn external_service_uses_compress_protocol_and_protects_context() {
+        let app = Router::new().route("/v1/compress", post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+            assert_eq!(headers["authorization"], "Bearer fixture-key");
+            assert_eq!(body["model"], "model");
+            assert_eq!(body["token_budget"], 10);
+            assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+            assert_eq!(body["messages"][0]["role"], "user");
+            Json(json!({"messages":[{"role":"user","content":"summary"}]}))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let state = AppState::new(None, Default::default());
+        state.inner.settings.write().unwrap().insert("compaction".into(),json!({"enabled":true,"strategy":"headroom","absoluteTriggerTokens":20,"minTokens":0,"protectRecent":1,"headroom":{"baseUrl":format!("http://{addr}"),"apiKey":"fixture-key","targetRatio":0.5}}));
+        let mut body = json!({"model":"model","messages":[{"role":"system","content":"instruction"},{"role":"user","content":"old ".repeat(100)},{"role":"user","content":"latest"}]});
+        apply_configured_headroom(&mut body, &state).await;
+        assert_eq!(body["messages"][0]["content"], "instruction");
+        assert_eq!(body["messages"][1]["content"], "summary");
+        assert_eq!(body["messages"][2]["content"], "latest");
+        server.abort();
+        let original = json!({"model":"model","messages":[{"role":"user","content":"old ".repeat(100)},{"role":"user","content":"latest"}]});
+        let mut failed = original.clone();
+        apply_configured_headroom(&mut failed, &state).await;
+        assert_eq!(failed, original);
     }
 }
