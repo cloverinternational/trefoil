@@ -1379,7 +1379,18 @@ async fn model_alias_operation(
 fn redact_provider(provider: &crate::state::ProviderConfig) -> Value {
     let mut value = serde_json::to_value(provider).unwrap_or_else(|_| json!({}));
     if let Some(object) = value.as_object_mut() {
-        object.remove("api_key");
+        object.insert("api_key".into(), json!("[REDACTED]"));
+        for key in [
+            "oauth_token",
+            "access_token",
+            "refresh_token",
+            "secret",
+            "authorization",
+            "cookie",
+            "password",
+        ] {
+            object.insert(key.into(), json!("[REDACTED]"));
+        }
     }
     value
 }
@@ -1484,7 +1495,12 @@ fn redact_key_secrets(value: Value) -> Value {
         Value::Array(v) => Value::Array(v.into_iter().map(redact_key_secrets).collect()),
         Value::Object(mut o) => {
             for (k, v) in o.iter_mut() {
-                if k.eq_ignore_ascii_case("secret") {
+                let sensitive = matches!(
+                    k.to_ascii_lowercase().as_str(),
+                    "secret" | "api_key" | "apikey" | "authorization" | "cookie" | "password"
+                ) || k.to_ascii_lowercase().contains("token")
+                    || k.to_ascii_lowercase().contains("session");
+                if sensitive {
                     *v = json!("[REDACTED]");
                 } else {
                     *v = redact_key_secrets(v.take());

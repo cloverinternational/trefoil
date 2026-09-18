@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json, Router,
 };
+use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
@@ -341,6 +342,20 @@ async fn test(
     let Some(provider) = body.provider.as_deref().filter(|p| !p.trim().is_empty()) else {
         return error(StatusCode::BAD_REQUEST, "provider is required");
     };
+    let options = body.options.unwrap_or(Value::Null);
+    if builtin(&id) {
+        let result = run_builtin_checker(&state, &id, provider, &options).await;
+        match result {
+            Ok(meters) => {
+                persist_result(&state, &id, provider, &meters, None).await;
+                return Json(serde_json::json!({"success":true,"checkerId":id,"provider":provider,"meters":meters})).into_response();
+            }
+            Err(message) => {
+                persist_result(&state, &id, provider, &Value::Array(vec![]), Some(&message)).await;
+                return Json(serde_json::json!({"success":false,"checkerId":id,"provider":provider,"meters":[],"error":message})).into_response();
+            }
+        }
+    }
     let code = if let Some(code) = body.code {
         code
     } else {
@@ -373,7 +388,7 @@ async fn test(
     }
     let input = serde_json::json!({
         "provider": provider,
-        "options": body.options.unwrap_or(Value::Null),
+        "options": options,
     });
     if !state.inner.providers.read().unwrap().contains_key(provider) {
         return (
@@ -417,6 +432,7 @@ async fn check(
     let Some(provider) = body.provider.as_deref().filter(|p| !p.trim().is_empty()) else {
         return error(StatusCode::BAD_REQUEST, "provider is required");
     };
+    let options = body.options.unwrap_or(Value::Null);
     let code = if let Some(code) = body.code {
         code
     } else {
@@ -454,8 +470,7 @@ async fn check(
             "Checker code contains forbidden operations",
         );
     }
-    let input =
-        serde_json::json!({"provider": provider, "options": body.options.unwrap_or(Value::Null)});
+    let input = serde_json::json!({"provider": provider, "options": options});
     match run_checker(&code, &input).await {
         Ok(meters) => {
             persist_result(&state, &id, provider, &meters, None).await;
@@ -466,6 +481,81 @@ async fn check(
             Json(serde_json::json!({"success":false,"checkerId":id,"provider":provider,"meters":[],"error":message})).into_response()
         }
     }
+}
+
+async fn run_builtin_checker(
+    state: &AppState,
+    id: &str,
+    _provider: &str,
+    options: &Value,
+) -> Result<Value, String> {
+    let (default_endpoint, oauth_provider) = match id {
+        "claude-code" => ("https://api.anthropic.com/api/oauth/usage", "anthropic"),
+        "openai-codex" => ("https://chatgpt.com/backend-api/wham/usage", "openai-codex"),
+        _ => {
+            return Err(format!(
+                "built-in checker '{id}' has no upstream implementation"
+            ))
+        }
+    };
+    let endpoint = options
+        .get("endpoint")
+        .and_then(Value::as_str)
+        .unwrap_or(default_endpoint);
+    let account = options
+        .get("oauthAccountId")
+        .and_then(Value::as_str)
+        .or_else(|| options.get("accountId").and_then(Value::as_str))
+        .unwrap_or("default");
+    let token = if let Some(key) = options
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+    {
+        key.to_string()
+    } else {
+        let pool = state
+            .inner
+            .database
+            .as_ref()
+            .ok_or("PostgreSQL is required for OAuth quota checks")?;
+        sqlx::query_scalar::<_,String>("SELECT access_token FROM oauth_credentials WHERE oauth_provider_type=$1 AND account_id=$2").bind(oauth_provider).bind(account).fetch_optional(pool).await.map_err(|e|e.to_string())?.ok_or_else(|| format!("OAuth credentials not found for {oauth_provider}/{account}"))?
+    };
+    let mut request = Client::new().get(endpoint).bearer_auth(token);
+    if id == "claude-code" {
+        request = request.header("anthropic-beta", "oauth-2025-04-20");
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    let status = response.status();
+    let payload: Value = response.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("quota request failed with status {status}"));
+    }
+    let mut meters = Vec::new();
+    if id == "claude-code" {
+        for (key, label, field) in [
+            ("five_hour", "5-hour quota", "five_hour"),
+            ("weekly", "Weekly quota", "seven_day"),
+        ] {
+            if let Some(w) = payload.get(field) {
+                if let Some(used) = w.get("utilization").and_then(Value::as_f64) {
+                    meters.push(serde_json::json!({"key":key,"label":label,"unit":"percentage","used":used,"remaining":(100.0-used).max(0.0),"periodCycle":"rolling","resetsAt":w.get("resets_at")}));
+                }
+            }
+        }
+    } else if let Some(rate) = payload.get("rate_limit") {
+        for (key, label) in [
+            ("primary", "Primary rate limit"),
+            ("secondary", "Secondary rate limit"),
+        ] {
+            if let Some(w) = rate.get(format!("{key}_window")) {
+                if let Some(used) = w.get("used_percent").and_then(Value::as_f64) {
+                    meters.push(serde_json::json!({"key":key,"label":label,"unit":"percentage","used":used.clamp(0.0,100.0),"remaining":(100.0-used).clamp(0.0,100.0),"periodCycle":"rolling"}));
+                }
+            }
+        }
+    }
+    Ok(Value::Array(meters))
 }
 
 async fn persist_result(
