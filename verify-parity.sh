@@ -48,6 +48,9 @@ run_lane() {
 run_lane "backend (cargo test --all-targets)" \
   cargo test --all-targets --manifest-path "$ROOT/Cargo.toml"
 
+run_lane "OAuth encrypted storage (disposable PostgreSQL)" \
+  "$ROOT/parity/test-oauth-storage.sh"
+
 run_lane "frontend (npm test)" \
   npm --prefix "$ROOT/frontend" test
 run_lane "frontend (npm run typecheck)" \

@@ -34,4 +34,5 @@ jobs:
         working-directory: .reference/plexus
         run: bun run build:frontend && bun run generate:openapi:asset
       - run: cargo test --all-targets
+      - run: ./parity/test-oauth-storage.sh
       - run: REFERENCE_DIR=.reference/plexus PLEXUS_PORT=4410 TREFOIL_PORT=8810 POSTGRES_PORT=0 SKIP_REFERENCE_BUILD=1 ./parity/run.sh
