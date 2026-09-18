@@ -134,22 +134,7 @@ async fn clear_quota(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    // Plexus authenticates this destructive endpoint without promoting a
-    // limited principal to a management authorization failure: limited and
-    // missing credentials both receive its 401 auth envelope.
-    let principal = resolve_principal(
-        &state,
-        headers.get("x-admin-key").and_then(|v| v.to_str().ok()),
-    );
-    if !matches!(principal, Some(Principal::Admin)) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "error": {"message":"Unauthorized","type":"auth_error","code":401}
-            })),
-        )
-            .into_response();
-    }
+    if let Err(response) = require_admin(&state, &headers) { return response; }
     let key = body
         .get("key")
         .and_then(Value::as_str)

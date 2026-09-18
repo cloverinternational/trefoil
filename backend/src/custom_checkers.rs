@@ -117,10 +117,7 @@ fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
         headers.get("x-admin-key").and_then(|v| v.to_str().ok()),
     ) {
         Some(Principal::Admin) => Ok(()),
-        // Checker routes use Plexus's credential gate, where a limited API
-        // key is treated like an absent credential rather than a management
-        // authorization failure.
-        Some(Principal::Limited { .. }) => Err(error(StatusCode::UNAUTHORIZED, "Unauthorized")),
+        Some(Principal::Limited { .. }) => Err(error(StatusCode::FORBIDDEN, "Admin privileges required")),
         None => Err(error(StatusCode::UNAUTHORIZED, "Unauthorized")),
     }
 }

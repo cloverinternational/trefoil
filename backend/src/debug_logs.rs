@@ -104,7 +104,7 @@ async fn get(
     Json(serde_json::json!({"requestId":r.try_get::<String,_>("request_id").unwrap_or_default(),"createdAt":r.try_get::<i64,_>("created_at").unwrap_or_default(),"rawRequest":r.try_get::<Option<String>,_>("raw_request").unwrap_or(None),"transformedRequest":r.try_get::<Option<String>,_>("transformed_request").unwrap_or(None),"rawResponse":r.try_get::<Option<String>,_>("raw_response").unwrap_or(None),"transformedResponse":r.try_get::<Option<String>,_>("transformed_response").unwrap_or(None),"rawResponseSnapshot":r.try_get::<Option<String>,_>("raw_response_snapshot").unwrap_or(None),"transformedResponseSnapshot":r.try_get::<Option<String>,_>("transformed_response_snapshot").unwrap_or(None),"requestHeaders":r.try_get::<Option<String>,_>("request_headers").unwrap_or(None),"responseHeaders":r.try_get::<Option<String>,_>("response_headers").unwrap_or(None),"responseStatus":r.try_get::<Option<i32>,_>("response_status").unwrap_or(None)})).into_response()
 }
 async fn delete_all(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    match principal(&state,&headers){Ok(Principal::Admin)=>{},Ok(Principal::Limited{..})=>return(StatusCode::UNAUTHORIZED,Json(serde_json::json!({"error":{"message":"Unauthorized","type":"auth_error","code":401}}))).into_response(),Err(r)=>return r}
+    match principal(&state,&headers){Ok(Principal::Admin)=>{},Ok(Principal::Limited{..})=>return(StatusCode::FORBIDDEN,Json(serde_json::json!({"error":{"message":"Admin privileges required","type":"forbidden","code":403}}))).into_response(),Err(r)=>return r}
     if let Some(pool) = &state.inner.database {
         if sqlx::query("DELETE FROM debug_logs")
             .execute(pool)
@@ -228,6 +228,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
     }
 }

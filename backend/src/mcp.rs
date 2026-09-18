@@ -68,7 +68,7 @@ pub fn router() -> Router<AppState> {
 fn admin(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     match resolve_principal(state, headers.get("x-admin-key").and_then(|v| v.to_str().ok())) {
         Some(Principal::Admin) => Ok(()),
-        Some(Principal::Limited { .. }) => Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":{"message":"Unauthorized","type":"auth_error","code":401}}))).into_response()),
+        Some(Principal::Limited { .. }) => Err((StatusCode::FORBIDDEN, Json(serde_json::json!({"error":{"message":"Admin privileges required","type":"forbidden","code":403}}))).into_response()),
         None => Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":{"message":"Unauthorized","type":"auth_error","code":401}}))).into_response()),
     }
 }
