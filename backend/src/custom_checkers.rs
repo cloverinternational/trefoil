@@ -489,6 +489,7 @@ async fn check(
         {
             Ok(Some(code)) => code,
             Ok(None) => {
+                crate::system_logs::event(&state,"warn",format!("Quota checker '{id}' not found"),[("module".into(),serde_json::json!("quota-scheduler")),("functionName".into(),serde_json::json!("runCheckNow"))]);
                 return error(
                     StatusCode::NOT_FOUND,
                     format!("Quota checker '{id}' not found"),
