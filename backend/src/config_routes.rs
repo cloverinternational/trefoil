@@ -412,11 +412,24 @@ async fn quota_checker_types(State(state): State<AppState>, headers: HeaderMap) 
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    // Plexus builds this from its checker registry. Trefoil does not yet run
-    // provider quota checkers, so discovery mirrors the pinned reference
-    // revision's registry for management-client compatibility.
-    let types = checker_types();
-    Json(serde_json::json!({ "types": types, "count": 30 })).into_response()
+    let mut types = checker_types().as_array().cloned().unwrap_or_default();
+    if let Some(pool) = &state.inner.database {
+        if let Ok(rows) = sqlx::query(
+            "SELECT id,display_name FROM custom_checkers WHERE enabled=true ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        {
+            types.extend(rows.into_iter().map(|row| {
+                serde_json::json!({
+                    "type": row.try_get::<String, _>("id").unwrap_or_default(),
+                    "displayName": row.try_get::<String, _>("display_name").unwrap_or_default(),
+                })
+            }));
+        }
+    }
+    let count = types.len();
+    Json(serde_json::json!({ "types": types, "count": count })).into_response()
 }
 
 pub(crate) fn checker_types() -> serde_json::Value {
@@ -458,7 +471,7 @@ async fn quota_checkers(State(state): State<AppState>, headers: HeaderMap) -> Re
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    let known_types = checker_types()
+    let mut known_types = checker_types()
         .as_array()
         .unwrap()
         .iter()
@@ -470,16 +483,51 @@ async fn quota_checkers(State(state): State<AppState>, headers: HeaderMap) -> Re
             })
         })
         .collect::<Vec<_>>();
-    let configured = if let Some(pool) = &state.inner.database {
-        sqlx::query("SELECT id,display_name,code,enabled,created_at,updated_at FROM custom_checkers ORDER BY id")
-            .fetch_all(pool).await.unwrap_or_default().into_iter().map(|row| {
-                serde_json::json!({"type": row.try_get::<String,_>("id").unwrap_or_default(), "displayName": row.try_get::<String,_>("display_name").unwrap_or_default(), "custom": true, "enabled": row.try_get::<bool,_>("enabled").unwrap_or(true)})
-            }).collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let mut known_types = known_types;
-    known_types.extend(configured.iter().cloned());
+    if let Some(pool) = &state.inner.database {
+        if let Ok(rows) = sqlx::query(
+            "SELECT id,display_name FROM custom_checkers WHERE enabled=true ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        {
+            known_types.extend(rows.into_iter().map(|row| {
+                serde_json::json!({
+                    "type": row.try_get::<String, _>("id").unwrap_or_default(),
+                    "displayName": row.try_get::<String, _>("display_name").unwrap_or_default(),
+                    "custom": true,
+                })
+            }));
+        }
+    }
+    // `configured` describes active provider quota instances, not every
+    // custom definition available in the registry.
+    let mut configured = state
+        .inner
+        .providers
+        .read()
+        .unwrap()
+        .iter()
+        .filter_map(|(provider, config)| {
+            let quota = config.quota_checker.as_ref()?;
+            if !config.enabled || !quota.enabled {
+                return None;
+            }
+            let checker_type = quota.checker_type.clone().or_else(|| quota.id.clone())?;
+            let checker_id = quota.id.clone().unwrap_or_else(|| provider.clone());
+            let custom = !checker_types().as_array().is_some_and(|types| {
+                types.iter().any(|t| t["type"] == checker_type)
+            });
+            let display_name = checker_type.clone();
+            Some(serde_json::json!({
+                "type": checker_type,
+                "displayName": display_name,
+                "custom": custom,
+                "enabled": true,
+                "checkerId": checker_id,
+            }))
+        })
+        .collect::<Vec<_>>();
+    configured.sort_by(|a, b| a["checkerId"].as_str().cmp(&b["checkerId"].as_str()));
     Json(serde_json::json!({ "knownTypes": known_types, "configured": configured })).into_response()
 }
 
