@@ -44,6 +44,22 @@ fn jsonrpc_error(code: i32, message: &str, id: Value) -> Response {
         .into_response()
 }
 
+fn scope_allows(scopes: Option<&str>, required: &str) -> bool {
+    let Some(scopes) = scopes else {
+        return true;
+    };
+    let granted: std::collections::HashSet<&str> = scopes.split_whitespace().collect();
+    granted.contains(required) || (required == "mcp:read" && granted.contains("mcp:write"))
+}
+
+fn required_scope(method: Option<&str>) -> &'static str {
+    if method == Some("tools/call") {
+        "mcp:write"
+    } else {
+        "mcp:read"
+    }
+}
+
 /// Validate JSON-RPC envelopes before forwarding them upstream.
 fn validate_jsonrpc(body: &[u8]) -> Result<(Option<String>, Option<String>), Response> {
     let value: Value = serde_json::from_slice(body)
@@ -244,7 +260,16 @@ fn inject_upstream_auth(
     output
 }
 
-async fn authenticate(state: &AppState, name: &str, incoming: &HeaderMap) -> Result<(), Response> {
+#[derive(Debug, Default)]
+struct AuthContext {
+    oauth_scopes: Option<String>,
+}
+
+async fn authenticate(
+    state: &AppState,
+    name: &str,
+    incoming: &HeaderMap,
+) -> Result<AuthContext, Response> {
     let Some(pool) = &state.inner.database else {
         return Err(error(
             StatusCode::UNAUTHORIZED,
@@ -267,7 +292,7 @@ async fn authenticate(state: &AppState, name: &str, incoming: &HeaderMap) -> Res
         let hash = hex::encode(Sha256::digest(token.as_bytes()));
         let now = chrono::Utc::now().timestamp_millis();
         if let Some(row) = sqlx::query(
-            "SELECT access_token, resource FROM mcp_oauth_tokens WHERE access_token_hash=$1 AND revoked_at IS NULL AND access_token_expires_at>$2",
+            "SELECT access_token, resource, scope FROM mcp_oauth_tokens WHERE access_token_hash=$1 AND revoked_at IS NULL AND access_token_expires_at>$2",
         )
         .bind(&hash)
         .bind(now)
@@ -286,7 +311,7 @@ async fn authenticate(state: &AppState, name: &str, incoming: &HeaderMap) -> Res
             let token_matches = Sha256::digest(token.as_bytes())
                 .ct_eq(Sha256::digest(stored.as_bytes()).as_ref());
             if resource_matches && bool::from(token_matches) {
-                return Ok(());
+                return Ok(AuthContext { oauth_scopes: row.try_get("scope").unwrap_or(None) });
             }
             return Err(error(StatusCode::UNAUTHORIZED, "Invalid MCP credentials"));
         }
@@ -311,7 +336,7 @@ async fn authenticate(state: &AppState, name: &str, incoming: &HeaderMap) -> Res
         matched |= bool::from(digest.ct_eq(Sha256::digest(key.as_bytes()).as_ref()));
     }
     if matched {
-        Ok(())
+        Ok(AuthContext::default())
     } else {
         Err(error(StatusCode::UNAUTHORIZED, "Invalid MCP credentials"))
     }
@@ -539,9 +564,10 @@ async fn post(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Err(response) = authenticate(&state, &name, &headers).await {
-        return response;
-    }
+    let auth = match authenticate(&state, &name, &headers).await {
+        Ok(auth) => auth,
+        Err(response) => return response,
+    };
     let (url, _, configured, server_id, auth_scheme, rate_cooldown, quota_cooldown) =
         match config(&state, &name).await {
             Ok(v) => v,
@@ -554,6 +580,15 @@ async fn post(
         Ok(value) => value,
         Err(response) => return response,
     };
+    if !scope_allows(
+        auth.oauth_scopes.as_deref(),
+        required_scope(jsonrpc_method.as_deref()),
+    ) {
+        return error(
+            StatusCode::FORBIDDEN,
+            "MCP OAuth scope does not permit this operation",
+        );
+    }
     let started = chrono::Utc::now().timestamp_millis();
     let request_id = format!("mcp-{started}-{}", rand::random::<u64>());
     let keys = match active_upstream_keys(&state, server_id).await {
@@ -849,5 +884,16 @@ mod tests {
         );
         assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
         assert_eq!(headers["x-accel-buffering"], "no");
+    }
+
+    #[test]
+    fn enforces_oauth_read_write_scopes_and_legacy_unscoped_tokens() {
+        assert!(super::scope_allows(Some("mcp:read"), "mcp:read"));
+        assert!(!super::scope_allows(Some("mcp:read"), "mcp:write"));
+        assert!(super::scope_allows(Some("mcp:write"), "mcp:read"));
+        assert!(super::scope_allows(Some("mcp:write"), "mcp:write"));
+        assert!(super::scope_allows(None, "mcp:write"));
+        assert_eq!(super::required_scope(Some("tools/call")), "mcp:write");
+        assert_eq!(super::required_scope(Some("tools/list")), "mcp:read");
     }
 }
