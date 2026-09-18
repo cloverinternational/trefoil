@@ -149,6 +149,15 @@ cancellation with conflict. Migration `0086`
 and the startup session loader cover recovery of the persisted verifier after a
 restart.
 
+OAuth refresh scheduling and rotation also have deterministic backend evidence
+in `backend/src/oauth_refresh.rs`: `rotation_is_atomic_from_the_parser_callers_point_of_view`
+rejects missing, malformed, non-positive, and overflowed expiry responses without
+manufacturing replacement state, while `provider_rotation_replaces_only_a_nonempty_refresh_token`
+covers refresh-token rotation and retention when a provider omits or blanks the
+replacement token. `validates_response_and_retains_rotating_token` covers required
+access tokens and expiry boundaries. Network failures and non-success provider
+responses fail closed and leave the persisted credential unchanged.
+
 Unsupported modes are intentionally covered by local contract tests rather than
 the provider-backed differential lane: external LLM compaction is rejected by
 config validation, and manual probes reject `apiType: "oauth"`; OAuth must use

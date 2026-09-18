@@ -392,7 +392,9 @@ and repeatable differential CI.
 - **OAuth:** MCP-client authorization-code/PKCE, refresh rotation/revocation,
   and provider login-session persistence/PKCE URL generation are implemented.
   New deterministic tests cover persistence redaction, one-time callback
-  verifier consumption, and rejection of callbacks after cancellation;
+  verifier consumption, rejection of callbacks after cancellation, and
+  refresh rotation/error handling (including malformed expiry and fail-closed
+  retention of the persisted credential);
   provider-specific exchanges and masking remain partial.
 - **Observability:** Prometheus metrics, usage SSE, and system-log SSE routes are implemented.
 
