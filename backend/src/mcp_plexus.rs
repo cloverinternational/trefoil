@@ -1477,7 +1477,7 @@ async fn provider_operation(
     )
 }
 
-async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn post(State(state): State<AppState>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, body: Bytes) -> Response {
     if !enabled(&state) {
         return disabled();
     }
@@ -1496,10 +1496,15 @@ async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) ->
     let tool = request.pointer("/params/name").and_then(Value::as_str).map(str::to_owned);
     let response = dispatch(&state, request).await;
     if let Some(pool) = &state.inner.database {
-        let id = format!("mcp-{:032x}", rand::random::<u128>());
+        let bytes = rand::random::<[u8; 16]>();
+        let mut uuid = bytes;
+        uuid[6] = (uuid[6] & 0x0f) | 0x40;
+        uuid[8] = (uuid[8] & 0x3f) | 0x80;
+        let hex = hex::encode(uuid);
+        let id = format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]);
         let duration = chrono::Utc::now().timestamp_millis().saturating_sub(started);
-        if let Err(error) = sqlx::query("INSERT INTO mcp_request_usage (request_id,start_time,duration_ms,server_name,upstream_url,method,jsonrpc_method,tool_name,api_key,response_status) VALUES ($1,$2,$3,'plexus','/mcp/plexus','POST',$4,$5,'admin',$6)")
-            .bind(id).bind(started).bind(duration).bind(method).bind(tool).bind(response.status().as_u16() as i32).execute(pool).await {
+        if let Err(error) = sqlx::query("INSERT INTO mcp_request_usage (request_id,start_time,duration_ms,server_name,upstream_url,method,jsonrpc_method,tool_name,api_key,response_status,source_ip) VALUES ($1,$2,$3,'plexus','/mcp/plexus','POST',$4,$5,'admin',$6,$7)")
+            .bind(id).bind(started).bind(duration).bind(method).bind(tool).bind(response.status().as_u16() as i32).bind(peer.map(|peer| peer.0.ip().to_string())).execute(pool).await {
             crate::system_logs::event(&state, "error", "Unable to persist management MCP audit", [("error".into(), json!(error.to_string()))]);
         }
     }

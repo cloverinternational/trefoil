@@ -70,3 +70,25 @@ describe('backup binary comparison', () => {
     expect(() => parseBackupArchive(gzipSync(Buffer.alloc(1024)))).toThrow('missing manifest/config');
   });
 });
+
+test('backup parser compares decompressed JSON and preserves table contents', async () => {
+  const { parseBackupArchive } = await import('./differential');
+  const { gzipSync } = await import('node:zlib');
+  const entry = (name: string, text: string) => {
+    const bytes = Buffer.from(text);
+    const header = Buffer.alloc(512);
+    header.write(name);
+    header.write(bytes.length.toString(8).padStart(11, '0') + '\0', 124);
+    header[156] = 48;
+    return Buffer.concat([header, bytes, Buffer.alloc((512 - bytes.length % 512) % 512)]);
+  };
+  const archive = gzipSync(Buffer.concat([
+    entry('manifest.json', JSON.stringify({ version: 1, created_at: 'today', dialect: 'sqlite' })),
+    entry('config.json', JSON.stringify({ keys: { fixture: { secret: 'test-only' } } })),
+    entry('request_usage.csv', 'request_id\nfixture'), Buffer.alloc(1024),
+  ]));
+  expect(parseBackupArchive(archive)).toEqual({
+    'manifest.json': { version: 1 }, 'config.json': { keys: { fixture: { secret: 'test-only' } } },
+    'request_usage.csv': 'request_id\nfixture',
+  });
+});
