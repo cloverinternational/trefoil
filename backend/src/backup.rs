@@ -61,19 +61,18 @@ async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     ) {
         Some(Principal::Admin) => {}
         Some(Principal::Limited { .. }) => {
-            return (StatusCode::FORBIDDEN, "Admin privileges required").into_response()
+            return restore_error(StatusCode::FORBIDDEN, "Admin privileges required")
         }
-        None => return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response(),
+        None => return restore_error(StatusCode::UNAUTHORIZED, "Unauthorized"),
     }
     if body.len() > MAX_BACKUP_BYTES {
-        return (StatusCode::PAYLOAD_TOO_LARGE, "Backup is too large").into_response();
+        return restore_error(StatusCode::PAYLOAD_TOO_LARGE, "Backup is too large");
     }
     let Some(pool) = &state.inner.database else {
-        return (
+        return restore_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Restore requires a database",
-        )
-            .into_response();
+        );
     };
     let result = if headers
         .get("content-type")
@@ -83,7 +82,7 @@ async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     {
         let value: serde_json::Value = match serde_json::from_slice(&body) {
             Ok(v) => v,
-            Err(_) => return (StatusCode::BAD_REQUEST, "Invalid backup JSON").into_response(),
+            Err(_) => return restore_error(StatusCode::BAD_REQUEST, "Invalid backup JSON"),
         };
         restore_config(pool, &state, &value)
             .await
@@ -95,8 +94,12 @@ async fn restore(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     };
     match result {
         Ok(value) => axum::Json(value).into_response(),
-        Err(error) => (StatusCode::BAD_REQUEST, format!("Invalid backup: {error}")).into_response(),
+        Err(error) => restore_error(StatusCode::BAD_REQUEST, &format!("Invalid backup: {error}")),
     }
+}
+
+fn restore_error(status: StatusCode, message: &str) -> Response {
+    (status, axum::Json(serde_json::json!({"error": message}))).into_response()
 }
 
 async fn restore_archive(
@@ -408,7 +411,7 @@ fn append_bytes<W: Write>(
 
 #[cfg(test)]
 mod tests {
-    use super::valid_archive_entry;
+    use super::{valid_archive_entry, StatusCode};
     use std::path::Path;
 
     #[test]
@@ -457,6 +460,13 @@ mod tests {
             super::MAX_UNCOMPRESSED_BACKUP_BYTES,
             false
         ));
+    }
+
+    #[test]
+    fn restore_errors_use_reference_json_envelope() {
+        let response = super::restore_error(StatusCode::BAD_REQUEST, "bad backup");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()["content-type"], "application/json");
     }
 }
 
