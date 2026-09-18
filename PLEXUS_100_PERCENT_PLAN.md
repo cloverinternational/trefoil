@@ -331,7 +331,7 @@ Missing pages (each needs its own API adapter + component + tests):
 
 ## 12. Differential harness — 🟡 partial
 
-`parity/differential.ts` has ~275 named cases but this audit did not confirm
+`parity/differential.ts` currently has 135 named cases but this audit did not confirm
 they currently pass end-to-end (requires two live servers + Postgres
 fixtures per `parity/README.md`, not wired into CI).
 
@@ -359,12 +359,12 @@ and repeatable differential CI.
 
 ## Current verified status
 
-- **Backend tests:** 206 passing (`cargo test --all-targets`).
+- **Backend tests:** 209 passing (`cargo test --all-targets`).
 - **Frontend:** typecheck, build, and 23 Vitest tests pass across 5 files, including OAuth
   session API lifecycle, authentication/error, and malformed-response coverage
   (`cd frontend && npm test`, `npm run typecheck`, `npm run build`).
 - **Latest media dispatch:** image edit and audio transcription use shared target dispatch; speech remains to be verified.
-- **Differential harness:** 265 named cases are registered in
+- **Differential harness:** 135 named cases are registered in
   `parity/differential.ts`; no live Plexus/Trefoil run was performed in this
   refresh, so no end-to-end pass count is claimed.
 - **Frontend:** management pages through metrics, debug, logs, MCP, system logs, models, My Key, playground, and custom checkers build and typecheck successfully.

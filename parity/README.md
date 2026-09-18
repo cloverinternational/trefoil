@@ -71,6 +71,21 @@ artifacts. `REFERENCE_DIR`, `PLEXUS_PORT`, `TREFOIL_PORT`, `ADMIN_KEY`, and
 
 Add new `Case` entries to `differential.ts` as more endpoints are ported.
 
+### Reproducible evidence counts
+
+Regenerate the inventory used by the parity audit with the read-only command:
+
+```sh
+python3 parity/counts.py --reference-dir .reference/plexus > target/parity-counts.json
+```
+
+The JSON records both repository revisions, SHA-256 hashes for the differential
+harness and OpenAPI input, and counts for named differential cases, Trefoil
+`.route(...)` declarations, Plexus OpenAPI paths/operations, and migrations.
+The command exits non-zero when a required source is missing or malformed; it
+does not turn unavailable evidence into zero and never overwrites raw inputs.
+The output is intentionally a derived artifact and may be deleted/recreated.
+
 The harness also runs `INFERENCE_CASES`, a small live contract slice for the
 OpenAI-compatible inference boundary. These cases intentionally cover
 authentication, required fields, streaming-request validation, and unknown
