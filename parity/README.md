@@ -5,6 +5,23 @@ ported endpoints, byte-for-byte on status code and structural JSON equality.
 
 ## Usage
 
+### One-shot runner (recommended)
+
+With Docker, Bun, and Cargo installed, run the complete check from the
+repository root:
+
+```sh
+REFERENCE_DIR=.reference/plexus parity/run.sh
+```
+
+The runner resets and tears down its disposable PostgreSQL volume, builds both backends, starts
+temporary Plexus and Trefoil instances, waits for their health endpoints, and invokes the
+differential harness. Logs are printed if either server fails to become ready.
+The `.reference/plexus` checkout is intentionally external to this repository.
+Set `SKIP_REFERENCE_BUILD=1` or `SKIP_TREFOIL_BUILD=1` when using already-built
+artifacts. `REFERENCE_DIR`, `PLEXUS_PORT`, `TREFOIL_PORT`, `ADMIN_KEY`, and
+`DATABASE_URL` may also be overridden.
+
 1. Start Plexus (from `.reference/plexus`, after `bun run build:frontend` and
    `generate:openapi:asset`):
    ```
