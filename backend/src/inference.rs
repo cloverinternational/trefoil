@@ -892,7 +892,7 @@ async fn forward_json_api(
     // provider transforms; descriptor generation is opt-in via configuration.
     let _image_urls = crate::vision::image_urls(&body);
     apply_native_compaction(&mut body, state);
-    apply_headroom_compaction(&mut body, state);
+    apply_headroom_compaction(&mut body, state).await;
     if let Some(config) = key_config {
         if !model_allowed(config, &model) {
             return error_response(
@@ -1861,7 +1861,7 @@ async fn chat_completions(
         return response;
     }
     apply_native_compaction(&mut body, &state);
-    apply_headroom_compaction(&mut body, &state);
+    apply_headroom_compaction(&mut body, &state).await;
     let key_config = if let Principal::Limited { config, .. } = &principal {
         if !model_allowed(config, &model) {
             return error_response(
@@ -2654,9 +2654,15 @@ fn apply_native_compaction(body: &mut Value, state: &AppState) {
     compact_json_value(body, arrays, strings, protect_recent);
 }
 
-fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
-    let settings = state.inner.settings.read().unwrap();
-    let Some(config) = settings.get("compaction").and_then(Value::as_object) else {
+async fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
+    let config = {
+        let settings = state.inner.settings.read().unwrap();
+        settings
+            .get("compaction")
+            .and_then(Value::as_object)
+            .cloned()
+    };
+    let Some(config) = config.as_ref() else {
         return;
     };
     if config.get("enabled").and_then(Value::as_bool) != Some(true)
@@ -2682,7 +2688,6 @@ fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
         .and_then(Value::as_f64)
         .filter(|ratio| ratio.is_finite() && (0.0..=1.0).contains(ratio))
         .unwrap_or(0.8);
-    let target = (limit as f64 * target_ratio).floor() as usize;
     let protect_recent = config
         .get("protectRecent")
         .and_then(Value::as_u64)
@@ -2706,30 +2711,85 @@ fn apply_headroom_compaction(body: &mut Value, state: &AppState) {
     if removable.is_empty() {
         return;
     }
-    let mut removed = vec![false; messages.len()];
-    for index in removable {
-        let mut candidate = body.clone();
-        candidate["messages"] = Value::Array(
-            messages
-                .iter()
-                .enumerate()
-                .filter(|(position, _)| !removed[*position] && *position != index)
-                .map(|(_, message)| message.clone())
-                .collect(),
-        );
-        removed[index] = true;
-        if estimate_tokens(&candidate) <= target {
-            break;
-        }
-    }
-    body["messages"] = Value::Array(
-        messages
+    let Some(headroom) = config.get("headroom").and_then(Value::as_object) else {
+        return;
+    };
+    let Some(base_url) = headroom.get("baseUrl").and_then(Value::as_str) else {
+        return; // Fail open when external compaction is not configured.
+    };
+    let Ok(base_url) = dispatch_provider_url(base_url) else {
+        return;
+    };
+    let timeout_ms = headroom
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(5000);
+    let endpoint = format!(
+        "{}{}",
+        base_url.as_str().trim_end_matches('/'),
+        "/chat/completions"
+    );
+    let source = Value::Array(
+        removable
             .iter()
-            .enumerate()
-            .filter(|(index, _)| !removed[*index])
-            .map(|(_, message)| message.clone())
+            .map(|index| messages[*index].clone())
             .collect(),
     );
+    let model = headroom
+        .get("model")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("model").and_then(Value::as_str))
+        .unwrap_or("default");
+    let prompt = "Summarize the following conversation history faithfully. Preserve decisions, facts, constraints, tool results, and unresolved questions. Return only the concise summary.";
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return,
+    };
+    let mut request = client.post(endpoint).json(&json!({
+        "model": model,
+        "messages": [{"role":"system","content":prompt},{"role":"user","content":source.to_string()}],
+        "temperature": 0,
+        "max_tokens": ((limit as f64 * target_ratio).floor() as usize).max(64)
+    }));
+    if let Some(api_key) = headroom.get("apiKey").and_then(Value::as_str) {
+        request = request.bearer_auth(api_key);
+    }
+    let response =
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), request.send()).await {
+            Ok(Ok(response)) => response,
+            _ => return, // Timeout, cancellation, or transport failure: preserve input.
+        };
+    let response = match response.error_for_status() {
+        Ok(response) => response,
+        Err(_) => return,
+    };
+    let Ok(payload) = response.json::<Value>().await else {
+        return;
+    };
+    let Some(summary) = payload
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    else {
+        return;
+    };
+    let first = *removable.first().unwrap();
+    let mut compacted = Vec::with_capacity(messages.len() - removable.len() + 1);
+    for (index, message) in messages.iter().enumerate() {
+        if index == first {
+            compacted.push(
+                json!({"role":"system","content":format!("Conversation summary:\n{summary}")}),
+            );
+        }
+        if !removable.contains(&index) {
+            compacted.push(message.clone());
+        }
+    }
+    body["messages"] = Value::Array(compacted);
 }
 
 fn estimate_tokens(value: &Value) -> usize {
@@ -3265,7 +3325,8 @@ mod tests {
     }
 
     #[test]
-    fn headroom_compaction_preserves_instructions_and_recent_history() {
+    #[tokio::test]
+    async fn headroom_compaction_preserves_instructions_and_recent_history() {
         let state = AppState::new(Some("admin".into()), HashMap::new());
         state.inner.settings.write().unwrap().insert(
             "compaction".into(),
@@ -3284,7 +3345,7 @@ mod tests {
             {"role":"user","content":"latest"}
         ],"padding":"x".repeat(200)});
         let mut body = original.clone();
-        apply_headroom_compaction(&mut body, &state);
+        apply_headroom_compaction(&mut body, &state).await;
         assert_eq!(body["messages"][0], original["messages"][0]);
         assert_eq!(
             body["messages"].as_array().unwrap().last().unwrap(),
@@ -3295,17 +3356,18 @@ mod tests {
     }
 
     #[test]
-    fn headroom_compaction_is_noop_without_messages_or_removable_history() {
+    #[tokio::test]
+    async fn headroom_compaction_is_noop_without_messages_or_removable_history() {
         let state = AppState::new(Some("admin".into()), HashMap::new());
         state.inner.settings.write().unwrap().insert(
             "compaction".into(),
             serde_json::json!({"enabled":true,"strategy":"headroom","absoluteTriggerTokens":1}),
         );
         let mut malformed = serde_json::json!({"messages":"not-an-array"});
-        apply_headroom_compaction(&mut malformed, &state);
+        apply_headroom_compaction(&mut malformed, &state).await;
         assert_eq!(malformed["messages"], "not-an-array");
         let mut instructions = serde_json::json!({"messages":[{"role":"system","content":"x"}]});
-        apply_headroom_compaction(&mut instructions, &state);
+        apply_headroom_compaction(&mut instructions, &state).await;
         assert_eq!(instructions["messages"].as_array().unwrap().len(), 1);
     }
 

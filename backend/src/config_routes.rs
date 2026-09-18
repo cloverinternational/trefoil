@@ -182,16 +182,10 @@ fn compaction_issue(
         }
     }
     if let Some(value) = object.get("strategy") {
-        if value.as_str() == Some("external") {
+        if !matches!(value.as_str(), Some("native" | "headroom" | "external")) {
             return Some(serde_json::json!({
-                "code": "custom", "path": ["strategy"],
-                "message": "External LLM-based compaction is not supported"
-            }));
-        }
-        if !matches!(value.as_str(), Some("native" | "headroom")) {
-            return Some(serde_json::json!({
-                "code": "invalid_value", "values": ["native", "headroom"],
-                "path": ["strategy"], "message": "Invalid option: expected one of \"native\"|\"headroom\""
+                "code": "invalid_value", "values": ["native", "headroom", "external"],
+                "path": ["strategy"], "message": "Invalid option: expected one of \"native\"|\"headroom\"|\"external\""
             }));
         }
     }
