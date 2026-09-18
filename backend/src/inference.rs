@@ -884,6 +884,10 @@ async fn forward_json_api(
         Principal::Limited { config, .. } => Some(config),
         Principal::Admin => None,
     };
+    let usage_key_name = match &principal {
+        Principal::Limited { key_name, .. } => Some(key_name.as_str()),
+        Principal::Admin => None,
+    };
     if let Err(response) = enforce_request_quotas(state, &principal).await {
         return response;
     }
@@ -1861,7 +1865,9 @@ async fn chat_completions(
         return response;
     }
     apply_native_compaction(&mut body, &state);
-    apply_headroom_compaction(&mut body, &state).await;
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(apply_headroom_compaction(&mut body, &state));
     let key_config = if let Principal::Limited { config, .. } = &principal {
         if !model_allowed(config, &model) {
             return error_response(
@@ -3325,8 +3331,8 @@ mod tests {
     }
 
     #[test]
-    #[tokio::test]
-    async fn headroom_compaction_preserves_instructions_and_recent_history() {
+    #[test]
+    fn headroom_compaction_preserves_instructions_and_recent_history() {
         let state = AppState::new(Some("admin".into()), HashMap::new());
         state.inner.settings.write().unwrap().insert(
             "compaction".into(),
@@ -3345,7 +3351,9 @@ mod tests {
             {"role":"user","content":"latest"}
         ],"padding":"x".repeat(200)});
         let mut body = original.clone();
-        apply_headroom_compaction(&mut body, &state).await;
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(apply_headroom_compaction(&mut body, &state));
         assert_eq!(body["messages"][0], original["messages"][0]);
         assert_eq!(
             body["messages"].as_array().unwrap().last().unwrap(),
@@ -3356,18 +3364,22 @@ mod tests {
     }
 
     #[test]
-    #[tokio::test]
-    async fn headroom_compaction_is_noop_without_messages_or_removable_history() {
+    #[test]
+    fn headroom_compaction_is_noop_without_messages_or_removable_history() {
         let state = AppState::new(Some("admin".into()), HashMap::new());
         state.inner.settings.write().unwrap().insert(
             "compaction".into(),
             serde_json::json!({"enabled":true,"strategy":"headroom","absoluteTriggerTokens":1}),
         );
         let mut malformed = serde_json::json!({"messages":"not-an-array"});
-        apply_headroom_compaction(&mut malformed, &state).await;
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(apply_headroom_compaction(&mut malformed, &state));
         assert_eq!(malformed["messages"], "not-an-array");
         let mut instructions = serde_json::json!({"messages":[{"role":"system","content":"x"}]});
-        apply_headroom_compaction(&mut instructions, &state).await;
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(apply_headroom_compaction(&mut instructions, &state));
         assert_eq!(instructions["messages"].as_array().unwrap().len(), 1);
     }
 
