@@ -389,6 +389,7 @@ async fn test(
         Ok(meters) => Json(serde_json::json!({
             "success": true,
             "checkerId": id,
+            "provider": provider,
             "meters": meters,
         }))
         .into_response(),
