@@ -1041,6 +1041,19 @@ mod tests {
             .unwrap()
             .contains_key("cancel-me"));
 
+        let callback = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::get(
+                    "/v0/management/oauth/sessions/cancel-me/callback?state=cancel-me&code=late-code",
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(callback.status(), StatusCode::CONFLICT);
+
         let repeated = router()
             .with_state(state)
             .oneshot(
