@@ -128,7 +128,7 @@ They do not replace an end-to-end PostgreSQL backup/restore round-trip test.
 
 ### Frontend management API parity coverage
 
-`frontend/src/lib/api.test.ts` contains 37 passing wire-level Vitest tests for
+`frontend/src/lib/api.test.ts` contains 38 passing wire-level Vitest tests for
 the management adapter. Coverage includes authentication and decoded reads,
 OAuth session/account flows, MCP server/key management, logging, debug and
 inference-error management, key/self-service and quota operations,
@@ -137,12 +137,16 @@ JSON mutation bodies, HTTP failures, transport failures, and malformed OAuth
 responses. This verifies frontend-to-backend request/response contracts; it
 does not claim browser/e2e or complete UI parity.
 
-OAuth PKCE persistence and replay safety have deterministic backend evidence:
+OAuth PKCE persistence, replay safety, and cancellation cleanup have deterministic backend evidence:
 `oauth::tests::pkce_verifier_is_persisted_but_not_serialized` verifies the
 verifier survives session persistence without entering the API response, and
 `oauth::tests::callback_claim_removes_in_memory_verifier` verifies that a
-callback consumes the process-local verifier. Migration `0086` and the startup
-session loader cover recovery of the persisted verifier after a restart.
+callback consumes the process-local verifier. The cancellation test
+`oauth::tests::cancelling_session_cleans_up_pkce_verifier_and_is_terminal`
+verifies successful cancellation removes the one-shot verifier and makes the
+session terminal, including conflict on repeated cancellation. Migration `0086`
+and the startup session loader cover recovery of the persisted verifier after a
+restart.
 
 Unsupported modes are intentionally covered by local contract tests rather than
 the provider-backed differential lane: external LLM compaction is rejected by
@@ -175,7 +179,7 @@ Since that live run, the MCP admin shim has added configuration operations for
 MCP enablement, timeout, compaction, exploration/failover/cooldown, tracing,
 stall, vision fallthrough, background exploration, and trusted proxies, plus
 system-log level and module operations. These milestones are verified by the
-Rust unit suite at revision `3d30d81` (`cargo test --all-targets`: 256 passed),
+Rust unit suite at revision `895bbf7` (`cargo test --all-targets`: 257 passed),
 but are not yet represented by a newer live differential-run claim.
 
 Media failover has deterministic backend evidence in
