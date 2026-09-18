@@ -221,7 +221,7 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
             axum::http::header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        body,
+        render_exposition(&body),
     )
         .into_response()
 }
@@ -479,5 +479,81 @@ mod runtime_tests {
         ));
         assert!(!text.contains("provider=\"expired\"") && !text.contains("provider=\"disabled\""));
         assert!(text.contains("plexus_cost_today_usd 0"));
+    }
+}
+
+// Exposition metadata and order follow the pinned Plexus contract.
+const METRIC_DEFINITIONS: &[(&str, &str, &str)] = &[
+    ("plexus_requests_total","counter","Total number of requests processed by Plexus since the database was created."),
+    ("plexus_errors_total","counter","Total number of non-success responses (errors) across all providers."),
+    ("plexus_tokens_total","counter","Total tokens processed, broken down by token type (input, output, cached, cache_write)."),
+    ("plexus_requests_today","gauge","Number of requests processed since local midnight."),
+    ("plexus_errors_today","gauge","Number of non-success responses since local midnight."),
+    ("plexus_cost_today_usd","gauge","Total cost in USD for requests processed since local midnight."),
+    ("plexus_tokens_today","gauge","Tokens processed since local midnight, broken down by token type."),
+    ("plexus_duration_ms_total","counter","Total inference duration in milliseconds across all requests since the database was created."),
+    ("plexus_avg_duration_ms","gauge","All-time average end-to-end latency in milliseconds per request."),
+    ("plexus_active_time_ms","gauge","Total active time in milliseconds, computed using a session-based model (15-min gap threshold, same as Google Analytics). This represents the wall-clock time during which at least one request was in-flight."),
+    ("plexus_duration_ms_today","gauge","Total inference duration in milliseconds for requests since local midnight."),
+    ("plexus_provider_requests_total","counter","Total requests routed to each provider."),
+    ("plexus_provider_errors_total","counter","Total non-success responses from each provider."),
+    ("plexus_provider_tokens_total","counter","Total tokens (input + output + cached + cache_write) sent to each provider."),
+    ("plexus_provider_cost_usd_total","counter","Cumulative cost in USD for each provider."),
+    ("plexus_provider_avg_latency_ms","gauge","All-time average end-to-end latency in milliseconds per provider."),
+    ("plexus_provider_avg_ttft_ms","gauge","All-time average time-to-first-token in milliseconds per provider."),
+    ("plexus_provider_avg_tokens_per_sec","gauge","All-time average token throughput in tokens/second per provider."),
+    ("plexus_provider_duration_ms_total","counter","Total inference duration in milliseconds per provider."),
+    ("plexus_model_alias_requests_total","counter","Total requests received per incoming model alias (the model name the client sent)."),
+    ("plexus_model_alias_tokens_total","counter","Total tokens (input + output + cached + cache_write) per incoming model alias."),
+    ("plexus_model_alias_duration_ms_total","counter","Total inference duration in milliseconds per incoming model alias."),
+    ("plexus_api_key_requests_total","counter","Total requests per API key (hashed or named key identifier)."),
+    ("plexus_api_key_tokens_total","counter","Total tokens per API key."),
+    ("plexus_api_key_attribution_requests_total","counter","Total requests per API key and attribution suffix (the part after the colon in the key, e.g. \"mysecret:copilot\" → attribution=\"copilot\")."),
+    ("plexus_api_key_attribution_tokens_total","counter","Total tokens per API key and attribution suffix."),
+    ("plexus_api_key_attribution_cost_usd_total","counter","Cumulative cost in USD per API key and attribution suffix."),
+    ("plexus_api_key_attribution_errors_total","counter","Total non-success responses per API key and attribution suffix."),
+    ("plexus_in_flight_requests","gauge","Number of requests currently in-flight (started but not yet completed), per provider."),
+    ("plexus_in_flight_requests_by_model","gauge","Number of requests currently in-flight, per canonical model name."),
+    ("plexus_cooldown_active","gauge","1 if the provider/model combination is currently in a cooldown, 0 otherwise. Active cooldowns indicate recent consecutive failures."),
+    ("plexus_cooldown_time_remaining_ms","gauge","Milliseconds remaining in the current cooldown period for this provider/model pair."),
+    ("plexus_cooldown_consecutive_failures","gauge","Number of consecutive failures that triggered the current cooldown."),
+    ("plexus_concurrency_active","gauge","Number of requests currently tracked by the in-memory ConcurrencyTracker per provider."),
+    ("plexus_concurrency_active_by_target","gauge","Number of requests currently tracked by the in-memory ConcurrencyTracker per provider/model target."),
+    ("plexus_perf_avg_ttft_ms","gauge","Average time-to-first-token in milliseconds per provider and target model, aggregated over all recorded samples."),
+    ("plexus_perf_min_ttft_ms","gauge","Minimum time-to-first-token in milliseconds per provider and model."),
+    ("plexus_perf_max_ttft_ms","gauge","Maximum time-to-first-token in milliseconds per provider and model."),
+    ("plexus_perf_avg_tokens_per_sec","gauge","Average token throughput in tokens/second per provider and model."),
+    ("plexus_perf_min_tokens_per_sec","gauge","Minimum token throughput in tokens/second per provider and model."),
+    ("plexus_perf_max_tokens_per_sec","gauge","Maximum token throughput in tokens/second per provider and model."),
+    ("plexus_perf_sample_count","gauge","Number of requests sampled in the performance aggregate for this provider and model."),
+    ("plexus_perf_success_count","gauge","Number of successful requests in the performance aggregate for this provider and model."),
+    ("plexus_perf_failure_count","gauge","Number of failed requests in the performance aggregate for this provider and model."),
+];
+
+fn render_exposition(samples: &str) -> String {
+    let mut output = String::new();
+    for (index, (name, kind, help)) in METRIC_DEFINITIONS.iter().enumerate() {
+        if index > 0 { output.push('\n'); }
+        output.push_str(&block(name, kind, help));
+        for sample in samples.lines().filter(|line| !line.starts_with('#')) {
+            if sample.strip_prefix(name).is_some_and(|rest| rest.starts_with('{') || rest.starts_with(' ')) {
+                output.push_str(sample);
+                output.push('\n');
+            }
+        }
+    }
+    output
+}
+
+#[cfg(test)]
+mod exposition_contract_tests {
+    use super::*;
+    #[test]
+    fn rendering_groups_samples_in_reference_order_without_losing_values() {
+        let rendered = render_exposition("plexus_provider_requests_total{provider=\"a\"} 3\nplexus_requests_total 7\nplexus_provider_requests_total{provider=\"b\"} 4\n");
+        assert!(rendered.starts_with("# HELP plexus_requests_total Total number of requests processed by Plexus since the database was created.\n"));
+        assert_eq!(rendered.matches("plexus_requests_total 7\n").count(), 1);
+        assert!(rendered.contains("plexus_provider_requests_total{provider=\"a\"} 3\nplexus_provider_requests_total{provider=\"b\"} 4\n"));
+        assert_eq!(rendered.lines().filter(|line| line.starts_with("# TYPE ")).count(), 44);
     }
 }
