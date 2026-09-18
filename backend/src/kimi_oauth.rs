@@ -20,6 +20,27 @@ fn parse_device(value:&Value)->Result<DeviceCode,String>{
     }
     Ok(DeviceCode{secret:field("device_code")?,user_code:field("user_code")?,verification_uri:field("verification_uri_complete")?,interval:Duration::from_secs(value["interval"].as_u64().filter(|v|*v>0).unwrap_or(5).min(3600)),expires_in:Duration::from_secs(value["expires_in"].as_u64().filter(|v|*v>0).unwrap_or(900).min(86400))})
 }
+pub async fn refresh(refresh_token:&str)->Result<(String,String,i64),String>{refresh_at("https://auth.kimi.com/api/oauth/token",refresh_token).await}
+async fn refresh_at(url:&str,refresh_token:&str)->Result<(String,String,i64),String>{
+    let mut last=None;
+    for attempt in 0..=3 {
+        if attempt>0 {tokio::time::sleep(Duration::from_secs(1<<(attempt-1))).await;}
+        let response=match client()?.post(url).header("accept","application/json").form(&[("client_id",CLIENT_ID),("grant_type","refresh_token"),("refresh_token",refresh_token)]).send().await {Ok(response)=>response,Err(_)=>{last=Some("Kimi token refresh failed".to_owned());continue;}};
+        let status=response.status();let value:Value=response.json().await.map_err(|_|"Invalid Kimi refresh response")?;
+        if status.is_success() {return parse_refresh(&value);}
+        if status==reqwest::StatusCode::UNAUTHORIZED||status==reqwest::StatusCode::FORBIDDEN||value["error"]=="invalid_grant" {return Err("Kimi token refresh unauthorized".into());}
+        if !(status==reqwest::StatusCode::TOO_MANY_REQUESTS||status.is_server_error())||attempt==3{return Err("Kimi token refresh rejected".into());}
+        last=Some("Kimi token refresh failed".into());
+    }
+    Err(last.unwrap_or_else(||"Kimi token refresh failed".into()))
+}
+fn parse_refresh(value:&Value)->Result<(String,String,i64),String>{
+    let access=value["access_token"].as_str().filter(|v|!v.is_empty()).ok_or("Missing Kimi access token")?;
+    let refresh=value["refresh_token"].as_str().filter(|v|!v.is_empty()).ok_or("Missing Kimi refresh token")?;
+    let expires=value["expires_in"].as_i64().filter(|v|*v>0).and_then(|v|v.checked_mul(1000)).and_then(|v|chrono::Utc::now().timestamp_millis().checked_add(v)).ok_or("Invalid Kimi expiry")?;
+    Ok((access.into(),refresh.into(),expires))
+}
+
 pub async fn poll(secret:&str,interval:Duration)->Result<Poll,String>{poll_at("https://auth.kimi.com/api/oauth/token",secret,interval).await}
 async fn poll_at(url:&str,secret:&str,interval:Duration)->Result<Poll,String>{
     let response=client()?.post(url).header("accept","application/json").form(&[("client_id",CLIENT_ID),("device_code",secret),("grant_type","urn:ietf:params:oauth:grant-type:device_code")]).send().await.map_err(|_|"Kimi device polling failed")?;
@@ -65,5 +86,23 @@ mod tests {
         assert!(matches!(poll_at(&format!("http://{addr}/pending"),"secret",Duration::from_secs(5)).await.unwrap(),Poll::Pending));
         let Poll::Complete{access,refresh,expires}=poll_at(&format!("http://{addr}/token"),"secret",Duration::from_secs(5)).await.unwrap() else {panic!("expected token")};
         assert_eq!(access,"access");assert_eq!(refresh,"refresh");assert!(expires>chrono::Utc::now().timestamp_millis());server.abort();
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use axum::{routing::post,Json,Router,http::StatusCode,body::Bytes};
+    use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    #[tokio::test]
+    async fn refresh_rotates_token_retries_transient_and_rejects_invalid_grant() {
+        let hits=Arc::new(AtomicUsize::new(0));let count=hits.clone();
+        let app=Router::new().route("/refresh",post(move |body:Bytes| {let count=count.clone();async move{
+            let fields:std::collections::HashMap<_,_>=url::form_urlencoded::parse(&body).into_owned().collect();assert_eq!(fields["grant_type"],"refresh_token");assert_eq!(fields["refresh_token"],"old");
+            if count.fetch_add(1,Ordering::SeqCst)==0 {(StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"busy"})))} else {(StatusCode::OK,Json(serde_json::json!({"access_token":"new","refresh_token":"rotated","expires_in":3600})))}
+        }}));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let (access,refresh,_) = refresh_at(&format!("http://{addr}/refresh"),"old").await.unwrap();assert_eq!((access,refresh),("new".into(),"rotated".into()));assert_eq!(hits.load(Ordering::SeqCst),2);server.abort();
+        assert_eq!(refresh_at("http://127.0.0.1:1/nope","old").await.unwrap_err(),"Kimi token refresh failed");
     }
 }
