@@ -4,7 +4,7 @@ use crate::AppState;
 use axum::{
     body::{Body, Bytes},
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Router,
 };
@@ -405,6 +405,24 @@ async fn forward(
             }
         }
     }
+    // Streamable HTTP clients require these proxy-safe SSE headers.  The
+    // reference proxy adds them when the upstream did not, while preserving
+    // an explicit upstream Cache-Control value.
+    let is_event_stream = response_headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"));
+    if is_event_stream {
+        if !response.headers().contains_key(header::CACHE_CONTROL) {
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        }
+        response.headers_mut().insert(
+            HeaderName::from_static("x-accel-buffering"),
+            HeaderValue::from_static("no"),
+        );
+    }
     response
 }
 
@@ -591,6 +609,7 @@ mod tests {
         inject_upstream_auth, safe_configured_header, select_round_robin, validate_jsonrpc,
         UpstreamKey,
     };
+    use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -686,5 +705,27 @@ mod tests {
             validate_jsonrpc(&serde_json::to_vec(&invalid).unwrap()).unwrap(),
             (Some("tools/call".into()), None)
         );
+    }
+
+    #[test]
+    fn event_stream_headers_preserve_cache_control_and_disable_buffering() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream; charset=utf-8"),
+        );
+        let is_event_stream = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/event-stream"));
+        assert!(is_event_stream);
+        assert!(!headers.contains_key(header::CACHE_CONTROL));
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        headers.insert(
+            HeaderName::from_static("x-accel-buffering"),
+            HeaderValue::from_static("no"),
+        );
+        assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+        assert_eq!(headers["x-accel-buffering"], "no");
     }
 }
