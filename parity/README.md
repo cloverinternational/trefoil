@@ -175,5 +175,11 @@ Since that live run, the MCP admin shim has added configuration operations for
 MCP enablement, timeout, compaction, exploration/failover/cooldown, tracing,
 stall, vision fallthrough, background exploration, and trusted proxies, plus
 system-log level and module operations. These milestones are verified by the
-Rust unit suite at revision `6786bc9` (`cargo test --all-targets`: 255 passed),
+Rust unit suite at revision `3d30d81` (`cargo test --all-targets`: 256 passed),
 but are not yet represented by a newer live differential-run claim.
+
+Media failover has deterministic backend evidence in
+`backend/src/inference.rs`: image generation, image edit, speech, and
+transcription preserve configured fallback order, while
+`media_failover_disabled_does_not_try_fallback_target` proves that disabling
+failover limits each media request to its primary target.
