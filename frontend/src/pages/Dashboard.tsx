@@ -4,6 +4,7 @@ import { Activity, AlertTriangle, BarChart3, Boxes, CircleDollarSign, Clock3, Ke
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getConfigStatus, getRecentUsage, getUsageSummary, type UsageRecord } from '../lib/api';
+import { Navigation } from '../components/layout/Navigation';
 
 const number = new Intl.NumberFormat();
 const money = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 });
@@ -58,6 +59,7 @@ export const Dashboard: React.FC = () => {
         <div className="flex items-center gap-2"><button onClick={() => void load()} disabled={loading} className="inline-flex items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-sm text-text-secondary transition hover:bg-slate-800 hover:text-text disabled:opacity-50" aria-label="Refresh dashboard"><RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> <span className="hidden sm:inline">Refresh</span></button><button onClick={logout} className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm text-text-secondary transition hover:bg-slate-800 hover:text-text" aria-label="Log out"><LogOut size={16} /></button></div>
       </div></header>
       <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-8 sm:py-8">
+        <Navigation />
         <div className="flex items-center gap-2 text-sm text-text-secondary"><ShieldCheck size={16} className="text-emerald-400" /> Signed in as <span className="font-medium text-text">{principal?.role === 'admin' ? 'Administrator' : principal?.keyName}</span>{!isAdmin && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">Limited access</span>}</div>
         {isAdmin && <div><Link to="/metrics" className="inline-flex items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-sm text-text-secondary hover:bg-slate-800 hover:text-text">View operational metrics</Link></div>}
         {error && <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200"><AlertTriangle size={17} />{error}</div>}

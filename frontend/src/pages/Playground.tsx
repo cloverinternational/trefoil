@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Check, ChevronDown, Clipboard, Code2, Play, RotateCcw, Sparkles, TriangleAlert } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { Navigation } from '../components/layout/Navigation';
 import { Button } from '../components/ui/Button';
 
 type Model = { id: string; owned_by?: string };
@@ -62,7 +63,7 @@ export const Playground: React.FC = () => {
       <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-primary">Trefoil control plane</p><h1 className="mt-1 font-heading text-2xl font-semibold tracking-tight sm:text-3xl">Playground</h1><p className="mt-1 text-sm text-text-secondary">Send a request through your configured model routing</p></div>
       <Link to="/" className="inline-flex items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-sm text-text-secondary hover:bg-slate-800 hover:text-text"><ArrowLeft size={15} /> <span className="hidden sm:inline">Overview</span></Link>
     </div></header>
-    <main className="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-8 sm:py-8">
+    <main className="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-8 sm:py-8"><Navigation />
       {error && <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200"><TriangleAlert size={17} />{error}</div>}
       <form onSubmit={run} className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
         <section className="glass-bg rounded-xl p-5 sm:p-6"><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Sparkles size={19} className="text-primary" /><h2 className="font-heading text-lg font-semibold">Try a prompt</h2></div><Button type="button" variant="ghost" size="sm" onClick={reset} leftIcon={<RotateCcw size={14} />}>Reset</Button></div>

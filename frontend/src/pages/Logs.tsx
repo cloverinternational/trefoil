@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, ArrowLeft, ChevronLeft, ChevronRight, FileText, RefreshCw, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { Navigation } from '../components/layout/Navigation';
 import { useAuth } from '../contexts/AuthContext';
 import { deleteUsage, getUsage, type UsageRecord } from '../lib/api';
 
@@ -48,7 +49,7 @@ export const Logs: React.FC = () => {
         <button onClick={() => void load()} disabled={loading} aria-label="Refresh logs" className="inline-flex items-center gap-2 rounded-md border border-border-2 px-3 py-2 text-sm text-text-secondary hover:bg-slate-800 disabled:opacity-50"><RefreshCw size={15} className={loading ? 'animate-spin' : ''} /><span className="hidden sm:inline">Refresh</span></button>
       </div>
     </header>
-    <main className="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-8 sm:py-8">
+    <main className="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-8 sm:py-8"><Navigation />
       <Link to="/" className="inline-flex items-center gap-2 text-sm text-text-secondary hover:text-text"><ArrowLeft size={15} /> Back to overview</Link>
       {error && <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200"><AlertTriangle size={17} />{error}<button className="ml-auto underline" onClick={() => void load()}>Retry</button></div>}
       <section className="glass-bg overflow-hidden rounded-xl"><div className="flex items-center gap-2 border-b border-border p-4"><FileText size={18} className="text-primary" /><h2 className="font-heading text-lg font-semibold">Request log</h2><span className="ml-auto text-xs text-text-muted">{total ? `${offset + 1}–${Math.min(offset + limit, total)} of ${total}` : 'No records'}</span></div>
