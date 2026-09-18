@@ -92,3 +92,14 @@ test('backup parser compares decompressed JSON and preserves table contents', as
     'request_usage.csv': 'request_id\nfixture',
   });
 });
+
+test('audit normalization validates nondeterminism without hiding identities or counts', async () => {
+  const { normalizeForCase } = await import('./differential');
+  const input = { data: [{ request_id: '11111111-1111-4111-8111-111111111111', created_at: '2026-09-18T00:00:00Z', start_time: 1789740000000, duration_ms: 1, source_ip: '127.0.0.1', tool_name: 'plexus_config', response_status: 200 }], total: 1 };
+  const result = normalizeForCase('/v0/management/mcp-logs?limit=5', input) as typeof input;
+  expect(result.total).toBe(1);
+  expect(result.data[0].source_ip).toBe('127.0.0.1');
+  expect(result.data[0].tool_name).toBe('plexus_config');
+  expect(result.data[0].request_id).toBe('<uuid>');
+  expect(() => normalizeForCase('/v0/management/mcp-logs', { ...input, data: [{ ...input.data[0], request_id: 'bad' }] })).toThrow('Invalid MCP audit UUID');
+});

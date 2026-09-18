@@ -209,8 +209,39 @@ function normalize(body: unknown): unknown {
   return body;
 }
 
-function normalizeForCase(path: string, body: unknown): unknown {
+export function normalizeForCase(path: string, body: unknown): unknown {
   const normalized = normalize(body);
+  if (path === '/mcp/plexus' && normalized && typeof normalized === 'object') {
+    const envelope = structuredClone(normalized) as any;
+    const structured = envelope.result?.structuredContent;
+    if (structured?.operation === 'backup' && structured?.ok === true && structured.data?.full === false) {
+      const backup = structured.data.backup;
+      if (!backup || !Number.isFinite(Date.parse(backup.created_at)) || !['sqlite', 'postgres'].includes(backup.dialect)) throw new Error('Invalid MCP backup metadata');
+      delete backup.created_at;
+      delete backup.dialect;
+      // The text block repeats structuredContent; validate it before applying
+      // the same metadata normalization rather than dropping that contract.
+      for (const item of envelope.result.content ?? []) {
+        if (item.type !== 'text') continue;
+        const text = JSON.parse(item.text);
+        if (!deepEqual(text, (normalized as any).result.structuredContent)) throw new Error('MCP text disagrees with structured content');
+        item.text = JSON.stringify(structured);
+      }
+      return envelope;
+    }
+  }
+  if (path.startsWith('/v0/management/mcp-logs') && normalized && typeof normalized === 'object' && Array.isArray((normalized as any).data)) {
+    const page = structuredClone(normalized) as any;
+    for (const row of page.data) {
+      if (typeof row.request_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(row.request_id)) throw new Error('Invalid MCP audit UUID');
+      if (!Number.isFinite(Date.parse(row.created_at)) || !Number.isSafeInteger(row.start_time) || row.start_time <= 0 || !Number.isFinite(row.duration_ms) || row.duration_ms < 0) throw new Error('Invalid MCP audit timing');
+      row.request_id = '<uuid>';
+      row.created_at = '<timestamp>';
+      row.start_time = '<timestamp-ms>';
+      row.duration_ms = '<duration-ms>';
+    }
+    return page;
+  }
   if (path.startsWith('/v0/management/backup') && normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
     const object = { ...(normalized as Record<string, unknown>) };
     delete object.created_at;
