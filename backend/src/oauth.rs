@@ -31,8 +31,7 @@ const SUPPORTED_PROVIDERS: &[&str] = &[
     "xai",
 ];
 
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy)]
 struct OAuthCapabilities {
     callback: bool,
     manual_code: bool,
@@ -634,12 +633,12 @@ async fn providers(State(state): State<AppState>, headers: HeaderMap) -> Respons
         return response;
     }
     let data = serde_json::json!([
-        { "id": "anthropic", "name": "Anthropic (Claude Pro/Max)", "usesCallbackServer": true, "capabilities": { "callback": true, "manualCode": false } },
-        { "id": "github-copilot", "name": "GitHub Copilot", "usesCallbackServer": false, "capabilities": { "callback": false, "manualCode": true } },
-        { "id": "kimi-coding", "name": "Kimi Code (subscription)", "usesCallbackServer": false, "capabilities": { "callback": false, "manualCode": true } },
-        { "id": "openai-codex", "name": "OpenAI (ChatGPT Plus/Pro)", "usesCallbackServer": true, "capabilities": { "callback": true, "manualCode": false } },
-        { "id": "openrouter", "name": "OpenRouter OAuth", "usesCallbackServer": false, "capabilities": { "callback": false, "manualCode": true } },
-        { "id": "xai", "name": "xAI (Grok/X subscription)", "usesCallbackServer": false, "capabilities": { "callback": false, "manualCode": true } },
+        { "id": "anthropic", "name": "Anthropic (Claude Pro/Max)", "usesCallbackServer": true },
+        { "id": "github-copilot", "name": "GitHub Copilot", "usesCallbackServer": false },
+        { "id": "kimi-coding", "name": "Kimi Code (subscription)", "usesCallbackServer": false },
+        { "id": "openai-codex", "name": "OpenAI (ChatGPT Plus/Pro)", "usesCallbackServer": true },
+        { "id": "openrouter", "name": "OpenRouter OAuth", "usesCallbackServer": false },
+        { "id": "xai", "name": "xAI (Grok/X subscription)", "usesCallbackServer": false },
     ]);
     Json(serde_json::json!({ "data": data, "total": 6 })).into_response()
 }
@@ -806,31 +805,16 @@ mod tests {
         assert_eq!(body["total"], 6);
         assert_eq!(body["data"][0]["id"], "anthropic");
         assert_eq!(body["data"][3]["usesCallbackServer"], true);
-        assert_eq!(body["data"][3]["capabilities"]["callback"], true);
-        assert_eq!(body["data"][3]["capabilities"]["manualCode"], false);
-        assert_eq!(body["data"][1]["capabilities"]["callback"], false);
-        assert_eq!(body["data"][1]["capabilities"]["manualCode"], true);
+        assert!(body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|provider| { provider.get("capabilities").is_none() }));
         assert!(!body["data"]
             .as_array()
             .unwrap()
             .iter()
             .any(|p| p["id"] == "radius"));
-    }
-
-    #[test]
-    fn capabilities_explicitly_describe_supported_flows() {
-        for provider in SUPPORTED_PROVIDERS {
-            let caps = capabilities(provider).expect("every advertised provider has capabilities");
-            assert_ne!(
-                caps.callback, caps.manual_code,
-                "{provider} must advertise one login flow"
-            );
-        }
-        assert_eq!(capabilities("anthropic").unwrap().callback, true);
-        assert_eq!(capabilities("anthropic").unwrap().manual_code, false);
-        assert_eq!(capabilities("github-copilot").unwrap().callback, false);
-        assert_eq!(capabilities("github-copilot").unwrap().manual_code, true);
-        assert!(capabilities("unknown").is_none());
     }
 
     #[tokio::test]
