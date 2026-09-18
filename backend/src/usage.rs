@@ -250,7 +250,27 @@ async fn clear_usage(State(state): State<AppState>, headers: HeaderMap) -> Respo
     Json(serde_json::json!({"success":true})).into_response()
 }
 
-async fn summary_usage(State(state): State<AppState>, headers: HeaderMap) -> Response {
+#[derive(Deserialize, Debug)]
+struct SummaryQuery {
+    range: Option<String>,
+    #[serde(rename = "startDate")]
+    start_date: Option<String>,
+    #[serde(rename = "endDate")]
+    end_date: Option<String>,
+    breakdowns: Option<String>,
+    #[serde(rename = "breakdownLimit")]
+    breakdown_limit: Option<i64>,
+}
+
+fn summary_empty(range: &str) -> Value {
+    serde_json::json!({"range":range,"series":[],"stats":{"totalRequests":0,"totalErrors":0,"totalTokens":0,"inputTokens":0,"outputTokens":0,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"totalCost":0.0,"avgDurationMs":0.0,"totalDurationMs":0,"avgTtftMs":0.0,"avgTokensPerSec":0.0,"successRate":0.0},"today":{"requests":0,"inputTokens":0,"outputTokens":0,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"totalCost":0.0}})
+}
+
+async fn summary_usage(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SummaryQuery>,
+) -> Response {
     let principal = match admin(&state, &headers) {
         Ok(value) => value,
         Err(response) => return response,
@@ -259,26 +279,56 @@ async fn summary_usage(State(state): State<AppState>, headers: HeaderMap) -> Res
         Principal::Admin => None,
         Principal::Limited { key_name, .. } => Some(key_name),
     };
-    let Some(pool) = &state.inner.database else {
-        return Json(serde_json::json!({"requests":0,"errors":0,"inputTokens":0,"outputTokens":0,"totalCost":0})).into_response();
-    };
-    // Matches Plexus's aggregateSelection.errors definition exactly: a row
-    // counts as an error when response_status is NULL or anything other
-    // than the literal string 'success'. Accepted streaming responses are
-    // initially successful; full terminal stream inspection is not yet ported.
-    let query = if scope.is_some() {
-        sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input_tokens, coalesce(sum(tokens_output),0)::bigint AS output_tokens, coalesce(sum(cost_total),0)::real AS total_cost FROM request_usage WHERE api_key = $1").bind(scope.unwrap()).fetch_one(pool).await
+    let range = query.range.as_deref().unwrap_or("day");
+    if !matches!(range, "hour" | "day" | "week" | "month" | "custom") {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Invalid range"}))).into_response();
+    }
+    let (start, end) = if range == "custom" {
+        let (Some(start), Some(end)) = (query.start_date.as_deref(), query.end_date.as_deref()) else {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"startDate and endDate are required for custom range"}))).into_response();
+        };
+        let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok().map(|v| v.timestamp_millis());
+        let (Some(start), Some(end)) = (parse(start), parse(end)) else {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Invalid date format"}))).into_response();
+        };
+        if end < start { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"endDate must be after startDate"}))).into_response(); }
+        if end > chrono::Utc::now().timestamp_millis() { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"endDate cannot be in the future"}))).into_response(); }
+        if end - start > 366 * 24 * 60 * 60 * 1000 { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"custom range cannot exceed 12 months"}))).into_response(); }
+        (start, end)
     } else {
-        sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input_tokens, coalesce(sum(tokens_output),0)::bigint AS output_tokens, coalesce(sum(cost_total),0)::real AS total_cost FROM request_usage").fetch_one(pool).await
+        let end = chrono::Utc::now().timestamp_millis();
+        let duration = match range { "hour" => 60*60*1000, "day" => 24*60*60*1000, "week" => 7*24*60*60*1000, _ => 30*24*60*60*1000 };
+        (end - duration, end)
     };
-    let Ok(row) = query else {
+    let step = match range { "hour" => 60_000, "day" => 3_600_000, "week" | "month" => 86_400_000, _ => ((end-start)/100).max(60_000) };
+    let breakdowns: Vec<&str> = query.breakdowns.as_deref().unwrap_or("").split(',').map(str::trim).filter(|v| !v.is_empty()).collect();
+    if breakdowns.iter().any(|v| !matches!(*v, "provider" | "modelAlias" | "apiKey" | "status")) || breakdowns.len() > 3 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Unsupported or excessive breakdown"}))).into_response();
+    }
+    let limit = query.breakdown_limit.unwrap_or(10);
+    if !(1..=50).contains(&limit) { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"breakdownLimit must be an integer between 1 and 50"}))).into_response(); }
+    let Some(pool) = &state.inner.database else {
+        return Json(summary_empty(range)).into_response();
+    };
+    let aggregate_sql = "SELECT count(*)::bigint requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint errors, coalesce(sum(tokens_input),0)::bigint input_tokens, coalesce(sum(tokens_output),0)::bigint output_tokens, coalesce(sum(tokens_reasoning),0)::bigint reasoning_tokens, coalesce(sum(tokens_cached),0)::bigint cached_tokens, coalesce(sum(tokens_cache_write),0)::bigint cache_write_tokens, coalesce(sum(cost_total),0)::double precision total_cost, coalesce(sum(duration_ms),0)::bigint total_duration_ms, coalesce(avg(duration_ms),0)::double precision avg_duration_ms, coalesce(sum(ttft_ms),0)::double precision total_ttft_ms, coalesce(avg(ttft_ms),0)::double precision avg_ttft_ms, coalesce(avg(tokens_per_sec),0)::double precision avg_tokens_per_sec FROM request_usage WHERE start_time >= $1 AND start_time <= $2 AND ($3::text IS NULL OR api_key = $3)";
+    let Ok(row) = sqlx::query(aggregate_sql).bind(start).bind(end).bind(scope.as_deref()).fetch_one(pool).await else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error":"Failed to read usage summary"})),
         )
             .into_response();
     };
-    Json(serde_json::json!({"requests":row.try_get::<i64,_>("requests").unwrap_or(0),"errors":row.try_get::<i64,_>("errors").unwrap_or(0),"inputTokens":row.try_get::<i64,_>("input_tokens").unwrap_or(0),"outputTokens":row.try_get::<i64,_>("output_tokens").unwrap_or(0),"totalCost":row.try_get::<f32,_>("total_cost").unwrap_or(0.0)})).into_response()
+    let n = |name| row.try_get::<i64,_>(name).unwrap_or(0);
+    let f = |name| row.try_get::<f64,_>(name).unwrap_or(0.0);
+    let requests=n("requests"); let errors=n("errors");
+    let total_tokens=n("input_tokens")+n("output_tokens")+n("reasoning_tokens")+n("cached_tokens")+n("cache_write_tokens");
+    let stats=serde_json::json!({"totalRequests":requests,"totalErrors":errors,"totalTokens":total_tokens,"inputTokens":n("input_tokens"),"outputTokens":n("output_tokens"),"reasoningTokens":n("reasoning_tokens"),"cachedTokens":n("cached_tokens"),"cacheWriteTokens":n("cache_write_tokens"),"totalCost":f("total_cost"),"avgDurationMs":f("avg_duration_ms"),"totalDurationMs":n("total_duration_ms"),"avgTtftMs":f("avg_ttft_ms"),"avgTokensPerSec":f("avg_tokens_per_sec"),"successRate":if requests > 0 {(requests-errors) as f64 * 100.0 / requests as f64} else {0.0}});
+    let series_rows = sqlx::query("SELECT (floor(start_time::double precision / $4) * $4)::bigint bucket, count(*)::bigint requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint errors, coalesce(sum(tokens_input),0)::bigint input_tokens, coalesce(sum(tokens_output),0)::bigint output_tokens, coalesce(sum(tokens_reasoning),0)::bigint reasoning_tokens, coalesce(sum(tokens_cached),0)::bigint cached_tokens, coalesce(sum(tokens_cache_write),0)::bigint cache_write_tokens, coalesce(sum(cost_total),0)::double precision total_cost, coalesce(avg(duration_ms),0)::double precision avg_duration_ms, coalesce(avg(ttft_ms),0)::double precision avg_ttft_ms, coalesce(avg(tokens_per_sec),0)::double precision avg_tokens_per_sec FROM request_usage WHERE start_time >= $1 AND start_time <= $2 AND ($3::text IS NULL OR api_key = $3) GROUP BY bucket ORDER BY bucket").bind(start).bind(end).bind(scope.as_deref()).bind(step).fetch_all(pool).await.unwrap_or_default();
+    let series: Vec<Value> = series_rows.iter().map(|r| { let i=|x|r.try_get::<i64,_>(x).unwrap_or(0); let x=|x|r.try_get::<f64,_>(x).unwrap_or(0.0); serde_json::json!({"bucketStartMs":i("bucket"),"requests":i("requests"),"errors":i("errors"),"inputTokens":i("input_tokens"),"outputTokens":i("output_tokens"),"reasoningTokens":i("reasoning_tokens"),"cachedTokens":i("cached_tokens"),"cacheWriteTokens":i("cache_write_tokens"),"tokens":i("input_tokens")+i("output_tokens")+i("reasoning_tokens")+i("cached_tokens")+i("cache_write_tokens"),"totalCost":x("total_cost"),"avgDurationMs":x("avg_duration_ms"),"avgTtftMs":x("avg_ttft_ms"),"avgTokensPerSec":x("avg_tokens_per_sec")}) }).collect();
+    let today_start = chrono::Local::now().date_naive().and_hms_opt(0,0,0).unwrap().and_utc().timestamp_millis();
+    let today_row = sqlx::query(aggregate_sql).bind(today_start).bind(end).bind(scope.as_deref()).fetch_one(pool).await.ok();
+    let today = today_row.map(|r| serde_json::json!({"requests":r.try_get::<i64,_>("requests").unwrap_or(0),"inputTokens":r.try_get::<i64,_>("input_tokens").unwrap_or(0),"outputTokens":r.try_get::<i64,_>("output_tokens").unwrap_or(0),"reasoningTokens":r.try_get::<i64,_>("reasoning_tokens").unwrap_or(0),"cachedTokens":r.try_get::<i64,_>("cached_tokens").unwrap_or(0),"cacheWriteTokens":r.try_get::<i64,_>("cache_write_tokens").unwrap_or(0),"totalCost":r.try_get::<f64,_>("total_cost").unwrap_or(0.0)})).unwrap_or_else(|| summary_empty(range)["today"].clone());
+    Json(serde_json::json!({"range":range,"series":series,"stats":stats,"today":today})).into_response()
 }
 
 async fn delete_usage(
