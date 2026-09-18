@@ -113,7 +113,7 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let mut active_time = 0i64;
 
     if let Some(pool) = &state.inner.database {
-        if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(cost_total),0)::double precision AS cost, coalesce(sum(duration_ms),0)::bigint AS duration, coalesce(avg(duration_ms),0)::double precision AS average FROM request_usage").fetch_one(pool).await {
+        if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(cost_total),0)::double precision AS cost, coalesce(sum(duration_ms),0)::bigint AS duration, coalesce(avg(duration_ms),0)::double precision AS average FROM request_usage").fetch_one(pool).await {
             total = row.try_get("requests").unwrap_or(0); errors = row.try_get("errors").unwrap_or(0);
             input = row.try_get("input").unwrap_or(0); output = row.try_get("output").unwrap_or(0);
             cached = row.try_get("cached").unwrap_or(0); cache_write = row.try_get("cache_write").unwrap_or(0);
@@ -127,14 +127,13 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .earliest()
             .map(|midnight| midnight.timestamp_millis())
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
-        if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(cost_total),0)::double precision AS cost FROM request_usage WHERE start_time >= $1").bind(midnight).fetch_one(pool).await {
+        if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(cost_total),0)::double precision AS cost, coalesce(sum(duration_ms),0)::bigint AS duration FROM request_usage WHERE start_time >= $1").bind(midnight).fetch_one(pool).await {
             today = (row.try_get("requests").unwrap_or(0), row.try_get("errors").unwrap_or(0), row.try_get("input").unwrap_or(0), row.try_get("output").unwrap_or(0), row.try_get("reasoning").unwrap_or(0), row.try_get("cached").unwrap_or(0), row.try_get("cache_write").unwrap_or(0), row.try_get("duration").unwrap_or(0)); today_cost = row.try_get("cost").unwrap_or(0.0);
         }
         if let Ok(rows) = sqlx::query("SELECT start_time, coalesce(duration_ms,0)::bigint AS duration FROM request_usage WHERE duration_ms IS NOT NULL ORDER BY start_time").fetch_all(pool).await {
             let windows: Vec<_> = rows.into_iter().filter_map(|r| Some((r.try_get("start_time").ok()?, r.try_get("duration").ok()?))).collect();
             active_time = compute_active_time_ms(&windows, 15 * 60 * 1000);
         }
-        body.push_str(&dimension_metrics(pool).await);
         body.push_str(&performance_metrics(pool).await);
     }
     body.push_str(&cooldown_metrics(&state));
@@ -212,6 +211,9 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
         "Request cost in USD since local midnight.",
     ));
     body.push_str(&line("plexus_cost_today_usd", &[], today_cost));
+    if let Some(pool) = &state.inner.database {
+        body.push_str(&dimension_metrics(pool).await);
+    }
     body.push_str("\n");
     (
         StatusCode::OK,
@@ -378,6 +380,22 @@ async fn dimension_metrics(pool: &sqlx::PgPool) -> String {
         for (name, col) in [("plexus_provider_avg_latency_ms", "avg_latency"), ("plexus_provider_avg_ttft_ms", "avg_ttft"), ("plexus_provider_avg_tokens_per_sec", "avg_tps")] { body.push_str(&line(name, &labels, row.try_get::<f64, _>(col).unwrap_or(0.0))); }
         body.push_str(&line("plexus_provider_duration_ms_total", &labels, row.try_get::<i64, _>("duration").unwrap_or(0)));
     }
+    let Ok(rows) = sqlx::query("SELECT coalesce(incoming_model_alias,'unknown') AS model_alias, count(*)::bigint AS requests, coalesce(sum(tokens_input),0)::bigint + coalesce(sum(tokens_output),0)::bigint + coalesce(sum(tokens_cached),0)::bigint + coalesce(sum(tokens_cache_write),0)::bigint AS tokens, coalesce(sum(duration_ms),0)::bigint AS duration FROM request_usage WHERE incoming_model_alias IS NOT NULL GROUP BY incoming_model_alias ORDER BY incoming_model_alias").fetch_all(pool).await else { return body };
+    for (name, kind, help) in [
+        ("plexus_model_alias_requests_total", "counter", "Total requests received per incoming model alias (the model name the client sent)."),
+        ("plexus_model_alias_tokens_total", "counter", "Total tokens (input + output + cached + cache_write) per incoming model alias."),
+        ("plexus_model_alias_duration_ms_total", "counter", "Total inference duration in milliseconds per incoming model alias."),
+    ] { body.push_str(&block(name, kind, help)); }
+    for row in rows { let model: String = row.try_get("model_alias").unwrap_or_else(|_| "unknown".into()); let l=[("model_alias",model.as_str())]; body.push_str(&line("plexus_model_alias_requests_total",&l,row.try_get::<i64,_>("requests").unwrap_or(0))); body.push_str(&line("plexus_model_alias_tokens_total",&l,row.try_get::<i64,_>("tokens").unwrap_or(0))); body.push_str(&line("plexus_model_alias_duration_ms_total",&l,row.try_get::<i64,_>("duration").unwrap_or(0))); }
+    let Ok(rows) = sqlx::query("SELECT coalesce(api_key,'unknown') AS api_key, count(*)::bigint AS requests, coalesce(sum(tokens_input),0)::bigint + coalesce(sum(tokens_output),0)::bigint + coalesce(sum(tokens_cached),0)::bigint + coalesce(sum(tokens_cache_write),0)::bigint AS tokens FROM request_usage WHERE api_key IS NOT NULL GROUP BY api_key ORDER BY api_key").fetch_all(pool).await else { return body };
+    for (name, help) in [("plexus_api_key_requests_total", "Total requests per API key (hashed or named key identifier)."), ("plexus_api_key_tokens_total", "Total tokens per API key.")] { body.push_str(&block(name,"counter",help)); }
+    for row in rows { let key:String=row.try_get("api_key").unwrap_or_else(|_|"unknown".into()); let l=[("api_key",key.as_str())]; body.push_str(&line("plexus_api_key_requests_total",&l,row.try_get::<i64,_>("requests").unwrap_or(0))); body.push_str(&line("plexus_api_key_tokens_total",&l,row.try_get::<i64,_>("tokens").unwrap_or(0))); }
+    let Ok(rows) = sqlx::query("SELECT coalesce(api_key,'unknown') AS api_key, coalesce(attribution,'') AS attribution, count(*)::bigint AS requests, coalesce(sum(tokens_input),0)::bigint + coalesce(sum(tokens_output),0)::bigint + coalesce(sum(tokens_cached),0)::bigint + coalesce(sum(tokens_cache_write),0)::bigint AS tokens, coalesce(sum(cost_total),0)::double precision AS cost, count(*) FILTER (WHERE response_status != 'success')::bigint AS errors FROM request_usage WHERE api_key IS NOT NULL GROUP BY api_key, attribution ORDER BY api_key, attribution").fetch_all(pool).await else { return body };
+    for (name, help) in [("plexus_api_key_attribution_requests_total", "Total requests per API key and attribution suffix (the part after the colon in the key, e.g. \"mysecret:copilot\" → attribution=\"copilot\")."), ("plexus_api_key_attribution_tokens_total", "Total tokens per API key and attribution suffix."), ("plexus_api_key_attribution_cost_usd_total", "Cumulative cost in USD per API key and attribution suffix."), ("plexus_api_key_attribution_errors_total", "Total non-success responses per API key and attribution suffix.")] { body.push_str(&block(name,"counter",help)); }
+    for row in rows { let key:String=row.try_get("api_key").unwrap_or_else(|_|"unknown".into()); let attr:String=row.try_get("attribution").unwrap_or_default(); let l=[("api_key",key.as_str()),("attribution",attr.as_str())]; body.push_str(&line("plexus_api_key_attribution_requests_total",&l,row.try_get::<i64,_>("requests").unwrap_or(0))); body.push_str(&line("plexus_api_key_attribution_tokens_total",&l,row.try_get::<i64,_>("tokens").unwrap_or(0))); body.push_str(&line("plexus_api_key_attribution_cost_usd_total",&l,row.try_get::<f64,_>("cost").unwrap_or(0.0))); body.push_str(&line("plexus_api_key_attribution_errors_total",&l,row.try_get::<i64,_>("errors").unwrap_or(0))); }
+    for (name, help) in [("plexus_in_flight_requests", "Number of requests currently in-flight (started but not yet completed), per provider."), ("plexus_in_flight_requests_by_model", "Number of requests currently in-flight, per canonical model name.")] { body.push_str(&block(name,"gauge",help)); }
+    if let Ok(rows)=sqlx::query("SELECT coalesce(provider,'unknown') AS provider, count(*)::bigint AS count FROM request_usage WHERE duration_ms IS NULL AND start_time >= $1 GROUP BY provider ORDER BY provider").bind(chrono::Utc::now().timestamp_millis()-3_600_000).fetch_all(pool).await { for row in rows { let p:String=row.try_get("provider").unwrap_or_else(|_|"unknown".into()); body.push_str(&line("plexus_in_flight_requests",&[("provider",p.as_str())],row.try_get::<i64,_>("count").unwrap_or(0))); } }
+    if let Ok(rows)=sqlx::query("SELECT coalesce(canonical_model_name,'unknown') AS model, count(*)::bigint AS count FROM request_usage WHERE duration_ms IS NULL AND start_time >= $1 GROUP BY canonical_model_name ORDER BY model").bind(chrono::Utc::now().timestamp_millis()-3_600_000).fetch_all(pool).await { for row in rows { let m:String=row.try_get("model").unwrap_or_else(|_|"unknown".into()); body.push_str(&line("plexus_in_flight_requests_by_model",&[("model",m.as_str())],row.try_get::<i64,_>("count").unwrap_or(0))); } }
     body
 }
 
