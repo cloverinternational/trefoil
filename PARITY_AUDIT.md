@@ -87,7 +87,7 @@ one call per verb. Not an actual gap.
 | MCP local process lifecycle | Implemented | Spawn/stop/restart with launcher allowlist, env/arg parsing, process-log capture (`mcp.rs`) — recently added (latest commit), matches Plexus's `mcp-process-manager.ts` at a route level; sandboxing/resource-limit depth not independently verified. |
 | MCP admin-shim (`/mcp/plexus`) | Route-present | `mcp_plexus.rs` dispatches configuration (including MCP enablement, timeout, compaction, failover/cooldown, tracing, stall, vision fallthrough, background exploration, and trusted proxies), gateway lifecycle, quota, logging, and system-log operations through management handlers. Broader tool depth remains thinner than Plexus. |
 | OAuth (MCP client) | Implemented | Authorization-code + PKCE S256, protected-resource metadata, resource-bound access tokens, `mcp:read`/`mcp:write` enforcement, refresh-token rotation, and DB-backed authorization-code consumption (`oauth_server.rs`, `mcp_proxy.rs`). Legacy unscoped tokens and MCP API-key credentials remain accepted by the proxy. |
-| Backup/restore | Implemented | Table list (`TABLES` in `backup.rs`) is an exact match to Plexus's `OPERATIONAL_TABLES` (13 tables). Gzip+tar archive format, admin-only, size-capped. |
+| Backup/restore | Implemented, parity-covered | The 13-table `TABLES` list in `backup.rs` matches Plexus's `OPERATIONAL_TABLES`. Config-only JSON and full gzip+tar export are admin-only and size-capped; the differential harness registers eight backup/restore cases covering export auth/modes and restore auth, malformed JSON, and missing configuration data. |
 | Migrations | Near 1:1 | 84 SQL files in Trefoil vs 83 in Plexus's `migrations_pg` (imported history, +1 Trefoil-specific). |
 | Frontend | Partial | Trefoil includes configuration, detailed usage, request Logs, custom quota checkers, system logs, MCP, debug, Errors, Models, MyKey, Playground, and Metrics; remaining browser/e2e coverage and exact UI depth remain. |
 | Rust test suite | 238/238 passing | Green, fast (<1s), including MCP configuration validation, gateway forwarding, and system-log level/module round trips. |
@@ -143,6 +143,12 @@ includes hashes and revisions needed to detect drift.
 - [x] 238/238 Rust tests pass (`cargo test --all-targets`, <1s), including generic non-chat and speech failover, custom-checker runtime coverage, and MCP system-log round trips.
 - [historical] 156 route entries confirmed live in `lib.rs`/module routers.
 - [x] Backup table list is an exact 13-table match to Plexus.
+- [x] Backup/restore parity cases cover config-only and full export responses,
+      admin/limited/missing-credential authorization, restore content-type
+      comparison, malformed JSON, and a config envelope missing `data`
+      (`parity/differential.ts#BACKUP_CASES`). The Rust backup unit tests also
+      cover archive path/type/duplicate/size validation and the JSON error
+      envelope (`backend/src/backup.rs#tests`).
 - [historical] Migration count was 84 (Trefoil) vs 83 (Plexus), consistent history.
 - [x] OAuth (MCP-client) authorization-code + PKCE + refresh rotation is
       real, DB-backed, and resource-bound. Protected-resource metadata

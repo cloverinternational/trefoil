@@ -105,6 +105,27 @@ known wire-shape mismatch, not evidence that the remaining registered cases
 passed. Provider-backed success and SSE cases still require an explicitly
 configured disposable upstream as described above.
 
+### Backup and restore parity coverage
+
+`BACKUP_CASES` in `parity/differential.ts` is the authoritative live parity
+inventory for `/v0/management/backup` and `/v0/management/restore` (eight
+registered cases). It covers config-only JSON export and full archive export,
+including admin-only access, limited-key rejection, and missing-credential
+rejection. Restore cases cover the same authorization failures, malformed JSON,
+and a JSON envelope without `data`; the runner compares status and response
+content type for both backup and restore requests. These cases intentionally
+stop before a successful restore, so they do not prove database round-trip or
+operational-table restoration.
+
+The implementation accepts a config JSON envelope or a full gzip/tar archive.
+Config restore replaces providers, models, and keys; archive restore validates
+the manifest and entries, replaces the listed operational tables, then applies
+the config. Both paths require an admin credential and enforce the request-size
+limits in `backend/src/backup.rs`. Deterministic Rust tests in
+`backend/src/backup.rs#tests` additionally cover archive traversal/link,
+duplicate, and size rejection plus the JSON error envelope. They do not replace
+an end-to-end PostgreSQL backup/restore round-trip test.
+
 OAuth PKCE persistence and replay safety have deterministic backend evidence:
 `oauth::tests::pkce_verifier_is_persisted_but_not_serialized` verifies the
 verifier survives session persistence without entering the API response, and
