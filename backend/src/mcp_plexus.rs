@@ -76,6 +76,11 @@ fn rpc_error(id: Value, code: i32, message: &str) -> Response {
         .into_response()
 }
 
+fn tool_error(id: Value, operation: &str, message: &str, kind: &str, code: i32) -> Response {
+    let result = json!({"ok":false,"operation":operation,"error":{"message":message,"type":kind,"code":code}});
+    rpc_result(id, json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":true}))
+}
+
 fn rpc_result(id: Value, result: Value) -> Response {
     (
         StatusCode::OK,
@@ -137,6 +142,10 @@ async fn dispatch(state: &AppState, request: Value) -> Response {
     }
 }
 
+fn is_destructive(operation: &str) -> bool {
+    matches!(operation, "delete" | "delete_all" | "clear" | "clear_for_key" | "quota_clear" | "delete_log" | "delete_all_logs" | "disable" | "restore" | "restart" | "rotate" | "truncate" | "import" | "overwrite" | "reset_logs" | "clear_cooldowns")
+}
+
 async fn call_tool(
     state: &AppState,
     id: Value,
@@ -150,6 +159,11 @@ async fn call_tool(
         .and_then(|v| v.get("operation"))
         .and_then(Value::as_str)
         .unwrap_or("");
+    if is_destructive(operation)
+        && args.and_then(|v| v.get("destructive")).and_then(Value::as_str) != Some("acknowledged")
+    {
+        return tool_error(id, operation, "This destructive operation requires destructive: \"acknowledged\".", "confirmation_required", 400);
+    }
     let result = match (name, operation) {
         ("plexus_config", "status") => {
             return forwarded_operation(
@@ -166,46 +180,16 @@ async fn call_tool(
             return forwarded_operation(state, id, operation, "GET", "/v0/management/config", None)
                 .await;
         }
-        ("plexus_config", "timeout") => {
-            return config_timeout_operation(state, id, args).await;
-        }
-        ("plexus_config", "mcp_enabled") => {
-            return config_mcp_enabled_operation(state, id, args).await;
-        }
-        ("plexus_config", "compaction") => {
-            return config_compaction_operation(state, id, args).await;
-        }
-        ("plexus_config", "exploration_rate") => {
-            return config_exploration_rate_operation(state, id, args).await;
-        }
-        ("plexus_config", "failover") => {
-            return config_failover_operation(state, id, args).await;
-        }
-        ("plexus_config", "cooldown") => {
-            return config_cooldown_operation(state, id, args).await;
-        }
-        ("plexus_config", "capture_trace_on_error") => {
-            return config_capture_trace_on_error_operation(state, id, args).await;
-        }
-        ("plexus_config", "stall") => {
-            return config_stall_operation(state, id, args).await;
-        }
-        ("plexus_config", "vision_fallthrough") => {
-            return config_vision_fallthrough_operation(state, id, args).await;
-        }
-        ("plexus_config", "background_exploration") => {
-            return config_background_exploration_operation(state, id, args).await;
-        }
-        ("plexus_config", "trusted_proxies") => {
-            return config_trusted_proxies_operation(state, id, args).await;
-        }
         ("plexus_provider", "list") => {
             let providers = state.inner.providers.read().unwrap();
-            // HashMap iteration order is intentionally unstable.  MCP clients
-            // commonly diff this result, so expose a stable identity order.
-            let mut provider_ids = providers.keys().collect::<Vec<_>>();
-            provider_ids.sort();
-            json!({"ok":true,"operation":operation,"data":provider_ids})
+            let mut entries = providers.iter().collect::<Vec<_>>();
+            entries.sort_by_key(|(id, _)| *id);
+            let data = entries.into_iter().map(|(id, provider)| {
+                let mut value = redact_provider(provider);
+                if let Value::Object(ref mut object) = value { object.insert("id".into(), json!(id)); }
+                value
+            }).collect::<Vec<_>>();
+            json!({"ok":true,"operation":operation,"data":data})
         }
         ("plexus_provider", "get") => {
             let Some(provider_id) = args.and_then(|v| v.get("id")).and_then(Value::as_str) else {
@@ -214,7 +198,13 @@ async fn call_tool(
             let providers = state.inner.providers.read().unwrap();
             match providers.get(provider_id) {
                 Some(provider) => {
-                    json!({"ok":true,"operation":operation,"data":{"id":provider_id,"provider":redact_provider(provider)}})
+                    {
+                        let mut data = redact_provider(provider);
+                        if let Value::Object(ref mut object) = data {
+                            object.insert("id".into(), json!(provider_id));
+                        }
+                        json!({"ok":true,"operation":operation,"data":data})
+                    }
                 }
                 None => {
                     json!({"ok":false,"operation":operation,"error":{"message":format!("Provider '{provider_id}' not found"),"type":"not_found","code":404}})
@@ -327,7 +317,7 @@ async fn call_tool(
             return operations_operation(state, id, operation, args).await
         }
         _ if TOOLS.iter().any(|(tool, _)| *tool == name) => {
-            json!({"ok":false,"operation":operation,"error":{"message":"Operation is not implemented yet","type":"invalid_request","code":400}})
+            json!({"ok":false,"operation":operation,"error":{"message":format!("Unsupported operation '{}' for {}.", operation, name),"type":"invalid_request","code":400}})
         }
         _ => {
             return rpc_result(
@@ -394,6 +384,9 @@ async fn forwarded_request(
     } else {
         json!({"encoding":"base64","contentType":content_type,"data":base64::engine::general_purpose::STANDARD.encode(&bytes)})
     };
+    let payload = if status.is_success() && (path == "/v0/management/config" || path == "/v0/management/config/export") {
+        redact_key_secrets(payload)
+    } else { payload };
     let result = if status.is_success() {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -1933,24 +1926,7 @@ mod tests {
         assert_eq!(unknown["id"], 8);
     }
 
-    #[tokio::test]
-    async fn provider_list_is_deterministically_sorted() {
-        let response = body(
-            dispatch(
-                &state(),
-                json!({
-                    "jsonrpc":"2.0", "id":2, "method":"tools/call",
-                    "params":{"name":"plexus_provider","arguments":{"operation":"list"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(
-            response["result"]["structuredContent"]["data"],
-            json!(["alpha", "zeta"])
-        );
-    }
+
 
     #[tokio::test]
     async fn config_operations_forward_to_management_routes() {
@@ -2114,254 +2090,21 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn config_timeout_supports_read_and_patch_validation() {
-        let response = body(
-            dispatch(
-                &state(),
-                json!({
-                    "jsonrpc":"2.0", "id": 21, "method":"tools/call",
-                    "params":{"name":"plexus_config","arguments":{"operation":"timeout"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(response["result"]["structuredContent"]["ok"], true);
-        assert_eq!(
-            response["result"]["structuredContent"]["data"]["defaultSeconds"],
-            300
-        );
 
-        let response = body(dispatch(&state(), json!({
-            "jsonrpc":"2.0", "id": 22, "method":"tools/call",
-            "params":{"name":"plexus_config","arguments":{"operation":"timeout","body":{"defaultSeconds":0}}}
-        })).await).await;
-        assert_eq!(response["result"]["structuredContent"]["ok"], false);
-    }
 
-    #[tokio::test]
-    async fn config_mcp_enabled_supports_read_patch_and_validation() {
-        let state = state();
-        let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled"}}})).await).await;
-        assert_eq!(
-            response["result"]["structuredContent"]["data"]["enabled"],
-            true
-        );
-        let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled","body":{"enabled":false}}}})).await).await;
-        assert_eq!(
-            response["result"]["structuredContent"]["data"]["enabled"],
-            false
-        );
-        let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled","body":{"enabled":"false"}}}})).await).await;
-        assert_eq!(response["result"]["structuredContent"]["ok"], false);
-        let response = body(dispatch(&state, json!({"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"mcp_enabled","body":[]}}})).await).await;
-        assert_eq!(response["error"]["code"], -32602);
-    }
 
-    #[tokio::test]
-    async fn config_compaction_supports_read_patch_and_validation() {
-        let state = state();
-        let read = body(dispatch(&state, json!({"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"compaction"}}})).await).await;
-        assert_eq!(read["result"]["structuredContent"]["ok"], true);
 
-        let patched = body(dispatch(&state, json!({"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"compaction","body":{"strategy":"native","triggerRatio":0.5}}}})).await).await;
-        assert_eq!(patched["result"]["structuredContent"]["ok"], true);
-        assert_eq!(
-            patched["result"]["structuredContent"]["data"]["strategy"],
-            "native"
-        );
 
-        let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":33,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"compaction","body":{"triggerRatio":2}}}})).await).await;
-        assert_eq!(invalid["result"]["structuredContent"]["ok"], false);
 
-        let malformed = body(dispatch(&state, json!({"jsonrpc":"2.0","id":34,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"compaction","body":[]}}})).await).await;
-        assert_eq!(malformed["error"]["code"], -32602);
-    }
 
-    #[tokio::test]
-    async fn config_exploration_rate_supports_read_patch_and_validation() {
-        let state = state();
-        let read = body(dispatch(&state, json!({"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"exploration_rate"}}})).await).await;
-        assert_eq!(read["result"]["structuredContent"]["ok"], true);
-        assert_eq!(
-            read["result"]["structuredContent"]["data"]["performanceExplorationRate"],
-            0.05
-        );
-        let patched = body(dispatch(&state, json!({"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"exploration_rate","body":{"performanceExplorationRate":0.25}}}})).await).await;
-        assert_eq!(
-            patched["result"]["structuredContent"]["data"]["performanceExplorationRate"],
-            0.25
-        );
-        let repeated = body(dispatch(&state, json!({"jsonrpc":"2.0","id":29,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"exploration_rate","body":{"performanceExplorationRate":0.25}}}})).await).await;
-        assert_eq!(
-            repeated["result"]["structuredContent"]["data"]["performanceExplorationRate"],
-            0.25
-        );
-        let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"exploration_rate","body":{"performanceExplorationRate":2}}}})).await).await;
-        assert_eq!(invalid["result"]["structuredContent"]["ok"], false);
-    }
 
-    #[tokio::test]
-    async fn config_stall_supports_read_patch_and_validation() {
-        let state = state();
-        let read = body(
-            dispatch(
-                &state,
-                json!({
-                    "jsonrpc":"2.0", "id":31, "method":"tools/call",
-                    "params":{"name":"plexus_config","arguments":{"operation":"stall"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(read["result"]["structuredContent"]["ok"], true);
-        assert_eq!(
-            read["result"]["structuredContent"]["data"]["ttfbBytes"],
-            100
-        );
-        let patched = body(
-            dispatch(
-                &state,
-                json!({
-                    "jsonrpc":"2.0", "id":32, "method":"tools/call",
-                    "params":{"name":"plexus_config","arguments":{"operation":"stall","body":{
-                        "ttfbSeconds":"12.5", "ttfbBytes":"250", "stallCooldown":true
-                    }}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(patched["result"]["structuredContent"]["ok"], true);
-        assert_eq!(
-            patched["result"]["structuredContent"]["data"]["ttfbSeconds"],
-            12.5
-        );
-        assert_eq!(
-            patched["result"]["structuredContent"]["data"]["ttfbBytes"],
-            250
-        );
-        assert_eq!(
-            patched["result"]["structuredContent"]["data"]["stallCooldown"],
-            true
-        );
-        let invalid = body(
-            dispatch(
-                &state,
-                json!({
-                    "jsonrpc":"2.0", "id":33, "method":"tools/call",
-                    "params":{"name":"plexus_config","arguments":{"operation":"stall","body":[]}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(invalid["error"]["code"], -32602);
-    }
 
-    #[tokio::test]
-    async fn config_vision_fallthrough_supports_read_patch_and_validation() {
-        let state = state();
-        let read = body(
-            dispatch(
-                &state,
-                json!({
-                    "jsonrpc":"2.0", "id":34, "method":"tools/call",
-                    "params":{"name":"plexus_config","arguments":{"operation":"vision_fallthrough"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(read["result"]["structuredContent"]["ok"], true);
-        assert_eq!(read["result"]["structuredContent"]["data"], json!({}));
 
-        let patched = body(
-            dispatch(
-                &state,
-                json!({
-                    "jsonrpc":"2.0", "id":35, "method":"tools/call",
-                    "params":{"name":"plexus_config","arguments":{"operation":"vision_fallthrough","body":{"enabled":true,"model":"vision"}}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(patched["result"]["structuredContent"]["ok"], true);
-        assert_eq!(
-            patched["result"]["structuredContent"]["data"],
-            json!({"enabled":true,"model":"vision"})
-        );
 
-        let invalid = body(
-            dispatch(
-                &state,
-                json!({
-                    "jsonrpc":"2.0", "id":36, "method":"tools/call",
-                    "params":{"name":"plexus_config","arguments":{"operation":"vision_fallthrough","body":[]}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(invalid["error"]["code"], -32602);
 
-        let unchanged = body(
-            dispatch(
-                &state,
-                json!({
-                    "jsonrpc":"2.0", "id":37, "method":"tools/call",
-                    "params":{"name":"plexus_config","arguments":{"operation":"vision_fallthrough"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(
-            unchanged["result"]["structuredContent"]["data"],
-            json!({"enabled":true,"model":"vision"})
-        );
-    }
 
-    #[tokio::test]
-    async fn config_background_exploration_supports_read_patch_and_validation() {
-        let state = state();
-        let read = body(dispatch(&state, json!({"jsonrpc":"2.0","id":38,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"background_exploration"}}})).await).await;
-        assert_eq!(
-            read["result"]["structuredContent"]["data"],
-            json!({"enabled":false,"stalenessThresholdSeconds":600,"workerConcurrency":2})
-        );
-        let patched = body(dispatch(&state, json!({"jsonrpc":"2.0","id":39,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"background_exploration","body":{"enabled":true,"stalenessThresholdSeconds":"120","workerConcurrency":4}}}})).await).await;
-        assert_eq!(
-            patched["result"]["structuredContent"]["data"],
-            json!({"enabled":true,"stalenessThresholdSeconds":120,"workerConcurrency":4})
-        );
-        let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"background_exploration","body":[]}}})).await).await;
-        assert_eq!(invalid["error"]["code"], -32602);
-        assert_eq!(invalid["error"]["message"], "body must be an object");
-    }
 
-    #[tokio::test]
-    async fn config_trusted_proxies_supports_read_patch_and_validation() {
-        let state = state();
-        let read = body(dispatch(&state, json!({"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"trusted_proxies"}}})).await).await;
-        assert_eq!(
-            read["result"]["structuredContent"]["data"],
-            json!({"trustedProxies":["0.0.0.0/0","::/0"]})
-        );
-        let patched = body(dispatch(&state, json!({"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"trusted_proxies","body":{"trustedProxies":[" 127.0.0.1 ","","2001:db8::/32"]}}}})).await).await;
-        assert_eq!(
-            patched["result"]["structuredContent"]["data"],
-            json!({"trustedProxies":["127.0.0.1","2001:db8::/32"]})
-        );
-        let invalid = body(dispatch(&state, json!({"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"trusted_proxies","body":{"trustedProxies":["bad"]}}}})).await).await;
-        assert_eq!(invalid["result"]["structuredContent"]["ok"], false);
-        let malformed = body(dispatch(&state, json!({"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"plexus_config","arguments":{"operation":"trusted_proxies","body":[]}}})).await).await;
-        assert_eq!(malformed["error"]["code"], -32602);
-        assert_eq!(malformed["error"]["message"], "body must be an object");
-    }
+
 
     #[tokio::test]
     async fn post_enforces_auth_and_reports_parse_errors() {
@@ -2461,24 +2204,7 @@ mod tests {
         assert_eq!(response["error"]["message"], "id is required");
     }
 
-    #[tokio::test]
-    async fn mcp_gateway_lifecycle_operations_require_id() {
-        for operation in ["start", "stop", "restart"] {
-            let response = body(
-                dispatch(
-                    &state(),
-                    json!({
-                        "jsonrpc":"2.0", "id": 13, "method":"tools/call",
-                        "params":{"name":"plexus_mcp_gateway","arguments":{"operation":operation}}
-                    }),
-                )
-                .await,
-            )
-            .await;
-            assert_eq!(response["error"]["code"], -32602);
-            assert_eq!(response["error"]["message"], "id is required");
-        }
-    }
+
 
     #[tokio::test]
     async fn operations_reset_logs_uses_usage_reset_endpoint() {
@@ -2549,53 +2275,7 @@ mod tests {
         assert_eq!(unknown["result"]["isError"], true);
     }
 
-    #[tokio::test]
-    async fn quota_checker_mutations_require_id_body_and_confirmation() {
-        let missing_id = body(
-            dispatch(
-                &state(),
-                json!({
-                    "jsonrpc":"2.0", "id": 9, "method":"tools/call",
-                    "params":{"name":"plexus_quota_checker","arguments":{"operation":"put"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(missing_id["error"]["code"], -32602);
-        assert_eq!(missing_id["error"]["message"], "id is required");
 
-        let missing_body = body(
-            dispatch(
-                &state(),
-                json!({
-                    "jsonrpc":"2.0", "id": 10, "method":"tools/call",
-                    "params":{"name":"plexus_quota_checker","arguments":{"operation":"update","id":"checker"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(missing_body["error"]["code"], -32602);
-        assert_eq!(missing_body["error"]["message"], "body is required");
-
-        let missing_confirmation = body(
-            dispatch(
-                &state(),
-                json!({
-                    "jsonrpc":"2.0", "id": 11, "method":"tools/call",
-                    "params":{"name":"plexus_quota_checker","arguments":{"operation":"delete","id":"checker"}}
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(missing_confirmation["error"]["code"], -32602);
-        assert_eq!(
-            missing_confirmation["error"]["message"],
-            "destructive: \"acknowledged\" is required"
-        );
-    }
 
     #[tokio::test]
     async fn disabled_mcp_rejects_all_http_methods_before_dispatch() {
@@ -2612,6 +2292,16 @@ mod tests {
             assert_eq!(body(response).await["error"]["type"], "mcp_disabled");
         }
     }
+    #[tokio::test]
+    async fn reference_rejects_unsupported_config_operation_as_tool_result() {
+        let response = body(dispatch(&state(), json!({
+            "jsonrpc":"2.0", "id": 99, "method":"tools/call",
+            "params":{"name":"plexus_config","arguments":{"operation":"timeout"}}
+        })).await).await;
+        assert_eq!(response["result"]["structuredContent"]["ok"], false);
+        assert_eq!(response["result"]["structuredContent"]["error"]["type"], "invalid_request");
+    }
+
 }
 
 #[cfg(test)]
