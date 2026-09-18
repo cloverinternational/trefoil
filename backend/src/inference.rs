@@ -2071,9 +2071,14 @@ async fn chat_completions(
             )
             .await;
             register_provider_failure(&state, &provider_slug, &model, error.to_string()).await;
-            let (fallback_provider_slug, fallback_model) =
-                resolve_target(&state, &model, key_config);
-            if fallback_provider_slug != provider_slug || fallback_model != model {
+            // `resolve_target` intentionally returns the first eligible target.
+            // Calling it again here therefore retries the same provider rather
+            // than traversing the alias's ordered failover chain. Select the
+            // next target explicitly so chat follows the same ordering as the
+            // other inference routes.
+            if let Some((fallback_provider_slug, fallback_model)) =
+                inference_targets(&state, &model, key_config).nth(1)
+            {
                 let fallback_provider = {
                     state
                         .inner
@@ -2104,6 +2109,24 @@ async fn chat_completions(
                                 let fallback_payload = fallback.json::<Value>().await.unwrap_or_else(|_| {
                                     serde_json::json!({"error": {"message": "Invalid response from upstream provider", "type": "upstream_error"}})
                                 });
+                                record_attempt(
+                                    &state,
+                                    &request_id,
+                                    2,
+                                    &fallback_provider_slug,
+                                    &fallback_model,
+                                    "chat",
+                                    if fallback_status.is_success() {
+                                        "success"
+                                    } else {
+                                        "failed"
+                                    },
+                                    fallback_payload["error"]["message"].as_str(),
+                                    Some(fallback_status.as_u16() as i32),
+                                    false,
+                                    start_time,
+                                )
+                                .await;
                                 record_response_usage(
                                     &state,
                                     &request_id,
@@ -2124,6 +2147,20 @@ async fn chat_completions(
                                 );
                             }
                             Err(fallback_error) => {
+                                record_attempt(
+                                    &state,
+                                    &request_id,
+                                    2,
+                                    &fallback_provider_slug,
+                                    &fallback_model,
+                                    "chat",
+                                    "failed",
+                                    Some(&fallback_error.to_string()),
+                                    None,
+                                    true,
+                                    start_time,
+                                )
+                                .await;
                                 register_provider_failure(
                                     &state,
                                     &fallback_provider_slug,
