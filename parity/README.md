@@ -123,8 +123,20 @@ the manifest and entries, replaces the listed operational tables, then applies
 the config. Both paths require an admin credential and enforce the request-size
 limits in `backend/src/backup.rs`. Deterministic Rust tests in
 `backend/src/backup.rs#tests` additionally cover archive traversal/link,
-duplicate, and size rejection plus the JSON error envelope. They do not replace
-an end-to-end PostgreSQL backup/restore round-trip test.
+duplicate, and size rejection plus the JSON error envelope and its message
+field. The differential runner also compares restore response content types.
+They do not replace an end-to-end PostgreSQL backup/restore round-trip test.
+
+### Frontend management API parity coverage
+
+`frontend/src/lib/api.test.ts` contains 37 passing wire-level Vitest tests for
+the management adapter. Coverage includes authentication and decoded reads,
+OAuth session/account flows, MCP server/key management, logging, debug and
+inference-error management, key/self-service and quota operations,
+custom-checker operations, metrics text responses, encoded path parameters,
+JSON mutation bodies, HTTP failures, transport failures, and malformed OAuth
+responses. This verifies frontend-to-backend request/response contracts; it
+does not claim browser/e2e or complete UI parity.
 
 OAuth PKCE persistence and replay safety have deterministic backend evidence:
 `oauth::tests::pkce_verifier_is_persisted_but_not_serialized` verifies the
