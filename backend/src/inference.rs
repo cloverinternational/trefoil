@@ -3584,6 +3584,167 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn non_chat_failover_preserves_configured_order() {
+        let (first, first_request) = inference_mock_with_capture(
+            "500 Internal Server Error",
+            "application/json",
+            r#"{"error":{"message":"first failed"}}"#,
+        );
+        let (second, second_request) = inference_mock_with_capture(
+            "200 OK",
+            "application/json",
+            r#"{"object":"list","data":[]}"#,
+        );
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "model".to_owned(),
+            crate::state::ModelConfig {
+                target_groups: vec![crate::state::ModelTargetGroup {
+                    name: "fallback".into(),
+                    selector: "sequential".into(),
+                    targets: vec![
+                        crate::state::ModelTarget {
+                            provider: Some("first".into()),
+                            model: Some("model-a".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                        crate::state::ModelTarget {
+                            provider: Some("second".into()),
+                            model: Some("model-b".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        *state.inner.aliases.write().unwrap() = aliases;
+        state.inner.providers.write().unwrap().extend([
+            (
+                "first".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: first,
+                    ..Default::default()
+                },
+            ),
+            (
+                "second".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: second,
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::post("/v1/embeddings")
+                    .header("x-api-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"model","input":"hello"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            first_request.lock().unwrap().as_ref().unwrap()["model"],
+            "model-a"
+        );
+        assert_eq!(
+            second_request.lock().unwrap().as_ref().unwrap()["model"],
+            "model-b"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_chat_failover_exhaustion_returns_last_error_without_extra_attempt() {
+        let (first, first_request) = inference_mock_with_capture(
+            "500 Internal Server Error",
+            "application/json",
+            r#"{"error":{"message":"first failed"}}"#,
+        );
+        let (second, second_request) = inference_mock_with_capture(
+            "500 Internal Server Error",
+            "application/json",
+            r#"{"error":{"message":"last failed"}}"#,
+        );
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "model".to_owned(),
+            crate::state::ModelConfig {
+                target_groups: vec![crate::state::ModelTargetGroup {
+                    name: "fallback".into(),
+                    selector: "sequential".into(),
+                    targets: vec![
+                        crate::state::ModelTarget {
+                            provider: Some("first".into()),
+                            model: Some("model-a".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                        crate::state::ModelTarget {
+                            provider: Some("second".into()),
+                            model: Some("model-b".into()),
+                            alias: None,
+                            enabled: true,
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        let state = AppState::new(Some("admin".into()), HashMap::new());
+        *state.inner.aliases.write().unwrap() = aliases;
+        state.inner.providers.write().unwrap().extend([
+            (
+                "first".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: first,
+                    ..Default::default()
+                },
+            ),
+            (
+                "second".into(),
+                crate::state::ProviderConfig {
+                    api_base_url: second,
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::post("/v1/embeddings")
+                    .header("x-api-key", "admin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"model","input":"hello"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+
+        assert_eq!(body["error"]["message"], "last failed");
+        assert_eq!(
+            first_request.lock().unwrap().as_ref().unwrap()["model"],
+            "model-a"
+        );
+        assert_eq!(
+            second_request.lock().unwrap().as_ref().unwrap()["model"],
+            "model-b"
+        );
+    }
+
+    #[tokio::test]
     async fn chat_failover_advances_through_every_candidate_after_transport_failures() {
         let third = inference_mock(
             "200 OK",
