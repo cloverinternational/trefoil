@@ -233,6 +233,10 @@ async fn start_copilot_session(state: AppState, account: String) -> Response {
                 Err(message)=>{let _=oauth_failed(&state,&id,&message,StatusCode::BAD_GATEWAY).await;break;}
             }
         }
+        let expired={let mut sessions=state.inner.oauth_sessions.write().unwrap();sessions.get_mut(&id).and_then(|session| {
+            if session.status=="waiting" && session.expires_at<=now_ms() {session.status="expired".into();session.auth_info=None;session.error=Some("Device authorization expired".into());Some(session.clone())} else {None}
+        })};
+        if let (Some(session),Some(pool))=(expired,state.inner.database.as_ref()){let _=crate::database::upsert_oauth_session(pool,&session).await;}
     });
     session_response(session)
 }
