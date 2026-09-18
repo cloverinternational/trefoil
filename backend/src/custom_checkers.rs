@@ -226,6 +226,12 @@ async fn put(
     if let Err(r) = valid_text(name, "displayName").and(valid_text(code, "code")) {
         return r;
     }
+    if !validate_code(code) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Checker code contains forbidden operations",
+        );
+    }
     let Some(pool) = &state.inner.database else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "PostgreSQL is required");
     };
@@ -272,6 +278,12 @@ async fn patch(
         .unwrap_or_else(|| existing.try_get("code").unwrap_or(""));
     if let Err(r) = valid_text(name, "displayName").and(valid_text(code, "code")) {
         return r;
+    }
+    if !validate_code(code) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Checker code contains forbidden operations",
+        );
     }
     let enabled = body
         .enabled
@@ -563,5 +575,19 @@ mod tests {
         let error = run_checker("return { key: 'balance' };", &serde_json::json!({})).await;
 
         assert_eq!(error.unwrap_err(), "checker must return an array");
+    }
+
+    #[test]
+    fn checker_code_validation_rejects_runtime_escape_hatches() {
+        for code in [
+            "return require('fs');",
+            "return process.env.SECRET;",
+            "return eval('[]');",
+            "return globalThis;",
+            "return ({ }).constructor;",
+        ] {
+            assert!(!validate_code(code), "accepted unsafe checker code: {code}");
+        }
+        assert!(validate_code("return [{ key: 'balance', status: 'ok' }];"));
     }
 }
