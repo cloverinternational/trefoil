@@ -134,6 +134,8 @@ async fn reset_logs(State(state): State<AppState>, headers: HeaderMap) -> Respon
             "DELETE FROM request_usage",
             "DELETE FROM inference_errors",
             "DELETE FROM debug_logs",
+            "DELETE FROM mcp_debug_logs",
+            "DELETE FROM mcp_request_usage",
         ] {
             if sqlx::query(statement)
                 .execute(&mut *transaction)

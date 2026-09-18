@@ -1777,7 +1777,7 @@ async function main() {
   failures += await runCases(PERFORMANCE_CASES);
   failures += await runCases(CONFIG_SNAPSHOT_CASES);
   failures += await runCases(CONFIG_EXPORT_CASES);
-  failures += await runCases(BACKUP_CASES);
+  failures += await runCases(BACKUP_CASES.filter(testCase => testCase.method !== 'POST'));
   // A malformed restore may partially replace reference configuration before
   // rejecting. Re-provision shared auth explicitly so later cases test their
   // own contract rather than depending on a previous destructive probe.
@@ -1831,6 +1831,9 @@ async function main() {
   }
   failures += await runCases(selfRestCases);
 
+  // Restore validation can mutate reference settings even when rejecting.
+  // Execute these probes after all state-dependent cases, never copy that bug.
+  failures += await runCases(BACKUP_CASES.filter(testCase => testCase.method === 'POST'));
   const registeredNames = registeredCaseNames();
   reconcileCaseInventory(caseResults.map((result) => result.name), registeredNames);
   reconcileCaseCount(caseResults.length);
