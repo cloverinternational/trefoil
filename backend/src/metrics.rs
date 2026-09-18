@@ -83,19 +83,17 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let mut errors = 0i64;
     let mut input = 0i64;
     let mut output = 0i64;
-    let mut reasoning = 0i64;
     let mut cached = 0i64;
     let mut cache_write = 0i64;
     let mut duration = 0i64;
     let mut average = 0f64;
-    let mut cost = 0f64;
     let mut today_cost = 0f64;
     let mut today = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
 
     if let Some(pool) = &state.inner.database {
         if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(cost_total),0)::double precision AS cost, coalesce(sum(duration_ms),0)::bigint AS duration, coalesce(avg(duration_ms),0)::double precision AS average FROM request_usage").fetch_one(pool).await {
             total = row.try_get("requests").unwrap_or(0); errors = row.try_get("errors").unwrap_or(0);
-            input = row.try_get("input").unwrap_or(0); output = row.try_get("output").unwrap_or(0); reasoning = row.try_get("reasoning").unwrap_or(0); cost = row.try_get("cost").unwrap_or(0.0);
+            input = row.try_get("input").unwrap_or(0); output = row.try_get("output").unwrap_or(0);
             cached = row.try_get("cached").unwrap_or(0); cache_write = row.try_get("cache_write").unwrap_or(0);
             duration = row.try_get("duration").unwrap_or(0); average = row.try_get("average").unwrap_or(0.0);
         }
@@ -103,8 +101,10 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .date_naive()
             .and_hms_opt(0, 0, 0)
             .unwrap()
-            .and_utc()
-            .timestamp_millis();
+            .and_local_timezone(chrono::Local)
+            .earliest()
+            .map(|midnight| midnight.timestamp_millis())
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
         if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(cost_total),0)::double precision AS cost FROM request_usage WHERE start_time >= $1").bind(midnight).fetch_one(pool).await {
             today = (row.try_get("requests").unwrap_or(0), row.try_get("errors").unwrap_or(0), row.try_get("input").unwrap_or(0), row.try_get("output").unwrap_or(0), row.try_get("reasoning").unwrap_or(0), row.try_get("cached").unwrap_or(0), row.try_get("cache_write").unwrap_or(0)); today_cost = row.try_get("cost").unwrap_or(0.0);
         }
@@ -133,7 +133,6 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
     for (kind, value) in [
         ("input", input),
         ("output", output),
-        ("reasoning", reasoning),
         ("cached", cached),
         ("cache_write", cache_write),
     ] {
@@ -177,12 +176,6 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
         "Average inference duration in milliseconds.",
     ));
     body.push_str(&line("plexus_avg_duration_ms", &[], average));
-    body.push_str(&block(
-        "plexus_cost_usd_total",
-        "counter",
-        "Cumulative request cost in USD.",
-    ));
-    body.push_str(&line("plexus_cost_usd_total", &[], cost));
     body.push_str(&block(
         "plexus_cost_today_usd",
         "gauge",
@@ -358,5 +351,72 @@ mod tests {
     #[test]
     fn prometheus_label_escaping_is_spec_compliant() {
         assert_eq!(escape("a\\b\"c\nd"), "a\\\\b\\\"c\\nd");
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn metrics_exposes_live_cooldowns_and_excludes_expired_or_disabled() {
+        let state = AppState::new(Some("admin".into()), Default::default());
+        state.inner.providers.write().unwrap().insert(
+            "disabled".into(),
+            crate::state::ProviderConfig {
+                disable_cooldown: true,
+                ..Default::default()
+            },
+        );
+        let now = chrono::Utc::now().timestamp_millis();
+        for (provider, expiry_ms) in [
+            ("active", now + 60_000),
+            ("expired", now - 1),
+            ("disabled", now + 60_000),
+        ] {
+            state.inner.cooldowns.write().unwrap().insert(
+                (provider.into(), "model".into()),
+                crate::state::CooldownEntry {
+                    expiry_ms,
+                    consecutive_failures: 3,
+                    last_error: None,
+                },
+            );
+        }
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v0/management/metrics")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/plain"));
+        let text = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(text.contains("plexus_cooldown_active{provider=\"active\",model=\"model\"} 1"));
+        assert!(text.contains(
+            "plexus_cooldown_consecutive_failures{provider=\"active\",model=\"model\"} 3"
+        ));
+        assert!(!text.contains("provider=\"expired\"") && !text.contains("provider=\"disabled\""));
+        assert!(text.contains("plexus_cost_today_usd 0"));
     }
 }
