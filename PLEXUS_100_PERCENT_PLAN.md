@@ -372,8 +372,8 @@ Plexus `31b09cebac35338ce4ff2a07035a3ae2062d3920`, and the current Trefoil tree.
 
 | Gate | Result |
 |---|---|
-| `cargo test --all-targets` | 289 unit + 4 integration tests pass |
-| OAuth encrypted-storage integration | 3 disposable PostgreSQL tests pass |
+| `cargo test --all-targets` | 291 unit + 4 integration tests pass |
+| OAuth storage / dispatch integration | 4 disposable PostgreSQL tests pass |
 | Frontend Vitest | 45 tests across 8 files pass |
 | Frontend typecheck | pass |
 | Frontend production build | pass |
@@ -548,3 +548,22 @@ JSON refresh/exchange bodies and required state; payload tests cover those
 contracts. This does not finish its fixed-port callback-server flow. Copilot's
 client-ID transcription was also corrected. Remaining provider device flows,
 callback listeners and live provider acceptance remain unverified/open.
+
+## Latest dispatch correctness pass
+
+Chat transport and HTTP-status failover now use the same candidate-chain helper.
+Streaming requests retry retryable HTTP failures and preserve the fallback SSE
+body instead of parsing it as JSON. Disabled failover does not contact fallback
+targets, and configured nonretryable transport errors stop iteration. Reqwest
+connection/timeout errors are mapped to the policy's error codes.
+
+Attempt numbering is contiguous; a real PostgreSQL test dispatches through two
+503 providers then success and asserts `[1,2,3]` in `inference_attempts`.
+Streaming tests assert SSE terminal preservation and no leaked concurrency
+permits. Live concurrency records now include reference timestamps.
+
+Latest full gate: 291 backend unit + 4 stdio integration, **4 executed disposable
+PostgreSQL integration tests**, 45 frontend unit, 3 browser, 12 harness tests
+pass; live comparison remains **406/407**. Shared entry-point extraction and
+uniform semantics for all nine APIs are still open; this is consolidation and
+verified bug-fixing, not completion of section 2.
