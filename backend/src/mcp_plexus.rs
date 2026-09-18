@@ -270,7 +270,10 @@ async fn call_tool(
         ("plexus_system_logs", "recent")
         | ("plexus_system_logs", "level")
         | ("plexus_system_logs", "set_level")
-        | ("plexus_system_logs", "reset_level") => {
+        | ("plexus_system_logs", "reset_level")
+        | ("plexus_system_logs", "modules")
+        | ("plexus_system_logs", "set_modules")
+        | ("plexus_system_logs", "reset_modules") => {
             return system_logs_operation(state, id, operation, args).await;
         }
         ("plexus_debug", "state") => return debug_operation(state, id).await,
@@ -958,6 +961,28 @@ async fn system_logs_operation(
             )
         }
         "reset_level" => ("DELETE", "/v0/management/logging/level".into(), None, false),
+        "modules" => ("GET", "/v0/management/logging/modules".into(), None, false),
+        "set_modules" => {
+            let Some(modules) = args
+                .get("modules")
+                .or_else(|| args.get("body").and_then(|body| body.get("modules")))
+                .and_then(Value::as_array)
+            else {
+                return rpc_error(id, -32602, "modules is required");
+            };
+            (
+                "PUT",
+                "/v0/management/logging/modules".into(),
+                Some(json!({"modules":modules})),
+                false,
+            )
+        }
+        "reset_modules" => (
+            "DELETE",
+            "/v0/management/logging/modules".into(),
+            None,
+            false,
+        ),
         _ => unreachable!(),
     };
     let mut req = Request::builder().method(method).uri(path).header(
