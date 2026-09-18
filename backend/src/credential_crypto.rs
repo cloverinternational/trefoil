@@ -50,7 +50,13 @@ impl CredentialKey {
 }
 
 fn aad(provider: &str, account: &str, field: &str) -> Vec<u8> {
-    format!("trefoil/oauth/{provider}/{account}/{field}").into_bytes()
+    // Length prefixes avoid collisions when identifiers contain separators.
+    let mut output = b"trefoil/oauth/v1".to_vec();
+    for component in [provider, account, field] {
+        output.extend_from_slice(&(component.len() as u64).to_be_bytes());
+        output.extend_from_slice(component.as_bytes());
+    }
+    output
 }
 
 pub fn encrypt(
@@ -149,5 +155,16 @@ mod tests {
         let a = encrypt(&k, "p", "a", "f", "x").unwrap();
         let b = encrypt(&k, "p", "a", "f", "x").unwrap();
         assert_ne!(a, b);
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    #[test]
+    fn slash_containing_account_names_cannot_alias_aad() {
+        let key = CredentialKey::from_hex(&"11".repeat(32)).unwrap();
+        let cipher = encrypt(&key, "a/b", "c", "access_token", "secret").unwrap();
+        assert!(decrypt(&key, "a", "b/c", "access_token", &cipher).is_err());
     }
 }

@@ -150,6 +150,20 @@ fn session_id() -> String {
         .collect()
 }
 
+fn openrouter_authorization_url(origin: &str, session_id: &str, verifier: &str) -> Option<String> {
+    let mut callback = url::Url::parse(origin).ok()?;
+    if !matches!(callback.scheme(), "http" | "https") || callback.host_str().is_none() || !callback.username().is_empty() || callback.password().is_some() { return None; }
+    callback.set_path(&format!("/v0/management/oauth/sessions/{session_id}/callback"));
+    callback.set_query(None);
+    callback.query_pairs_mut().append_pair("state", session_id);
+    callback.set_fragment(None);
+    let mut authorize = url::Url::parse("https://openrouter.ai/auth").ok()?;
+    authorize.query_pairs_mut().append_pair("callback_url", callback.as_str())
+        .append_pair("code_challenge", &URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())))
+        .append_pair("code_challenge_method", "S256");
+    Some(authorize.into())
+}
+
 fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option<String> {
     let endpoint = match provider {
         "anthropic" => "https://console.anthropic.com/oauth/authorize",
@@ -160,6 +174,10 @@ fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option
         "xai" => "https://accounts.x.ai/oauth/authorize",
         _ => return None,
     };
+    if provider == "openrouter" {
+        let origin = std::env::var("TREFOIL_PUBLIC_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{}", std::env::var("PORT").unwrap_or_else(|_| "8080".into())));
+        return openrouter_authorization_url(&origin, session_id, verifier);
+    }
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let mut url = url::Url::parse(endpoint).ok()?;
     let redirect = format!("/v0/management/oauth/sessions/{session_id}/callback");
@@ -202,7 +220,9 @@ async fn create_session(
         .take(64)
         .map(char::from)
         .collect();
-    let auth_url = authorization_url(&body.provider_id, &id, &verifier).unwrap();
+    let Some(auth_url) = authorization_url(&body.provider_id, &id, &verifier) else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Invalid OAuth public callback URL configuration"}))).into_response();
+    };
     let session = OAuthSession {
         id: id.clone(),
         provider_id: body.provider_id.clone(),
@@ -249,14 +269,32 @@ async fn create_session(
 fn claim_exchange(state: &AppState, id: &str) -> Result<(OAuthSession, String), Response> {
     let mut sessions = state.inner.oauth_sessions.write().unwrap();
     let Some(session) = sessions.get_mut(id) else {
-        return Err((StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"OAuth session not found"}))).into_response());
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error":"OAuth session not found"})),
+        )
+            .into_response());
     };
     if session.status != "waiting" || session.expires_at <= now_ms() {
-        return Err((StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response());
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error":"OAuth session is no longer active"})),
+        )
+            .into_response());
     }
-    let verifier = state.inner.oauth_pkce_verifiers.write().unwrap().remove(id).or_else(|| session.pkce_verifier.take());
+    let verifier = state
+        .inner
+        .oauth_pkce_verifiers
+        .write()
+        .unwrap()
+        .remove(id)
+        .or_else(|| session.pkce_verifier.take());
     let Some(verifier) = verifier else {
-        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"OAuth verifier unavailable"}))).into_response());
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"OAuth verifier unavailable"})),
+        )
+            .into_response());
     };
     session.pkce_verifier = None;
     session.status = "exchanging".into();
@@ -310,7 +348,7 @@ async fn callback(
                 .into_response()
         }
     };
-    if !capabilities(&session.provider_id).is_some_and(|caps| caps.callback) {
+    if session.provider_id != "openrouter" && !capabilities(&session.provider_id).is_some_and(|caps| caps.callback) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error":"OAuth callback flow is not supported by this provider"})),
@@ -324,8 +362,17 @@ async fn callback(
     // Persist consumption before contacting the provider so process restart
     // cannot replay a code whose exchange has already started.
     if let Some(pool) = &state.inner.database {
-        if crate::database::upsert_oauth_session(pool, &session).await.is_err() {
-            return oauth_failed(&state, &id, "Unable to persist OAuth session", StatusCode::INTERNAL_SERVER_ERROR).await;
+        if crate::database::upsert_oauth_session(pool, &session)
+            .await
+            .is_err()
+        {
+            return oauth_failed(
+                &state,
+                &id,
+                "Unable to persist OAuth session",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+            .await;
         }
     }
     let redirect = format!("/v0/management/oauth/sessions/{id}/callback");
@@ -359,9 +406,20 @@ async fn callback(
             .await
         }
     };
+    if !state.inner.oauth_sessions.read().unwrap().get(&id)
+        .is_some_and(|current| current.status == "exchanging" && current.expires_at > now_ms()) {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response();
+    }
+    if state.inner.database.is_none() {
+        return oauth_failed(&state, &id, "PostgreSQL is required to persist OAuth credentials", StatusCode::SERVICE_UNAVAILABLE).await;
+    }
     let access = token.access_token;
     let refresh = token.refresh_token;
-    let expires = if session.provider_id == "openrouter" && token.expires_in == 0 { i64::MAX } else { now_ms().saturating_add(token.expires_in.saturating_mul(1000)) };
+    let expires = if session.provider_id == "openrouter" && token.expires_in == 0 {
+        i64::MAX
+    } else {
+        now_ms().saturating_add(token.expires_in.saturating_mul(1000))
+    };
     if let Some(pool) = &state.inner.database {
         if crate::database::upsert_oauth_credential(
             pool,
@@ -568,6 +626,14 @@ async fn manual_code(
             Json(serde_json::json!({"error":"OAuth manual-code flow is not supported by this provider"})),
         )
             .into_response();
+    }
+    let provider = state.inner.oauth_sessions.read().unwrap().get(&id).map(|s|s.provider_id.clone());
+    if provider.as_deref() == Some("openrouter") {
+        let code = match url::Url::parse(body.value.trim()) {
+            Ok(url) => url.query_pairs().find(|(key,_)|key == "code").map(|(_,value)|value.into_owned()),
+            Err(_) => Some(body.value.trim().to_owned()),
+        };
+        return callback(State(state), Path(id.clone()), Query(CallbackQuery { code, state:Some(id), error:None })).await;
     }
     (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error":"Manual provider code exchange is not implemented; no credentials were saved"}))).into_response()
 }
@@ -793,17 +859,44 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_authorization_uses_callback_url_and_pkce_without_fake_client_id() {
+        let url = url::Url::parse(&openrouter_authorization_url("https://gateway.example/base?discard=yes", "session", "verifier").unwrap()).unwrap();
+        let query: HashMap<_,_> = url.query_pairs().into_owned().collect();
+        assert_eq!(query["callback_url"], "https://gateway.example/v0/management/oauth/sessions/session/callback?state=session");
+        assert_eq!(query["code_challenge_method"], "S256");
+        assert!(!query.contains_key("client_id"));
+        assert!(!query.contains_key("redirect_uri"));
+        assert!(openrouter_authorization_url("file:///private", "session", "verifier").is_none());
+    }
+
+    #[test]
     fn exchange_claim_is_atomic_and_consumes_persisted_verifier() {
         let state = fixture();
-        state.inner.oauth_sessions.write().unwrap().insert("claim".into(), OAuthSession {
-            id:"claim".into(),provider_id:"openrouter".into(),account_id:"default".into(),status:"waiting".into(),
-            auth_info:None,prompt:None,progress:vec![],error:None,created_at:now_ms(),updated_at:now_ms(),expires_at:now_ms()+60000,pkce_verifier:Some("verifier".into())
-        });
+        state.inner.oauth_sessions.write().unwrap().insert(
+            "claim".into(),
+            OAuthSession {
+                id: "claim".into(),
+                provider_id: "openrouter".into(),
+                account_id: "default".into(),
+                status: "waiting".into(),
+                auth_info: None,
+                prompt: None,
+                progress: vec![],
+                error: None,
+                created_at: now_ms(),
+                updated_at: now_ms(),
+                expires_at: now_ms() + 60000,
+                pkce_verifier: Some("verifier".into()),
+            },
+        );
         let (session, verifier) = claim_exchange(&state, "claim").unwrap();
         assert_eq!(verifier, "verifier");
         assert_eq!(session.status, "exchanging");
         assert!(session.pkce_verifier.is_none());
-        assert_eq!(claim_exchange(&state, "claim").unwrap_err().status(), StatusCode::CONFLICT);
+        assert_eq!(
+            claim_exchange(&state, "claim").unwrap_err().status(),
+            StatusCode::CONFLICT
+        );
     }
 
     #[test]
