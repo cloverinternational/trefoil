@@ -321,18 +321,57 @@ async fn test(
     let Some(provider) = body.provider.as_deref().filter(|p| !p.trim().is_empty()) else {
         return error(StatusCode::BAD_REQUEST, "provider is required");
     };
-    let code = if let Some(code) = body.code.as_deref() {
+    let code = if let Some(code) = body.code {
         code
     } else {
         let Some(pool) = &state.inner.database else {
             return error(StatusCode::NOT_FOUND, "Custom checker not found");
         };
-        match sqlx::query_scalar::<_, String>("SELECT code FROM custom_checkers WHERE id=$1").bind(&id).fetch_optional(pool).await { Ok(Some(code)) => return Json(serde_json::json!({"success":true,"provider":provider,"meters":[],"codeValid":validate_code(&code)})).into_response(), Ok(None) => return error(StatusCode::NOT_FOUND, "Custom checker not found"), Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to retrieve custom checker") }
+        match sqlx::query_scalar::<_, String>("SELECT code FROM custom_checkers WHERE id=$1")
+            .bind(&id)
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(Some(code)) => code,
+            Ok(None) => return error(StatusCode::NOT_FOUND, "Custom checker not found"),
+            Err(_) => {
+                return error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to retrieve custom checker",
+                )
+            }
+        }
     };
-    if let Err(r) = valid_text(code, "code") {
+    if let Err(r) = valid_text(&code, "code") {
         return r;
     }
-    Json(serde_json::json!({"success":true,"provider":provider,"meters":[],"codeValid":validate_code(code)})).into_response()
+    if !validate_code(&code) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "Checker code contains forbidden operations",
+        );
+    }
+    let input = serde_json::json!({
+        "provider": provider,
+        "options": body.options.unwrap_or(Value::Null),
+    });
+    match run_checker(&code, &input).await {
+        Ok(meters) => Json(serde_json::json!({
+            "success": true,
+            "provider": provider,
+            "meters": meters,
+            "codeValid": true,
+        }))
+        .into_response(),
+        Err(message) => Json(serde_json::json!({
+            "success": false,
+            "provider": provider,
+            "meters": [],
+            "codeValid": true,
+            "error": message,
+        }))
+        .into_response(),
+    }
 }
 
 async fn check(
@@ -495,4 +534,34 @@ fn validate_code(code: &str) -> bool {
         && !trimmed.contains("globalThis")
         && !trimmed.contains("__proto__")
         && !trimmed.contains("prototype")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn checker_runtime_receives_provider_and_options_and_returns_meters() {
+        let code = r#"
+            return [{ key: provider, used: options.used, status: 'ok' }];
+        "#;
+        let input = serde_json::json!({
+            "provider": "acme",
+            "options": { "used": 42 }
+        });
+
+        let result = run_checker(code, &input).await.unwrap();
+
+        assert_eq!(
+            result,
+            serde_json::json!([{ "key": "acme", "used": 42, "status": "ok" }])
+        );
+    }
+
+    #[tokio::test]
+    async fn checker_runtime_rejects_non_array_results() {
+        let error = run_checker("return { key: 'balance' };", &serde_json::json!({})).await;
+
+        assert_eq!(error.unwrap_err(), "checker must return an array");
+    }
 }
