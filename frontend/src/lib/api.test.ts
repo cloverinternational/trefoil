@@ -373,3 +373,9 @@ describe('frontend management API wire contracts', () => {
     expect(fetchMock.mock.calls.some(([url]) => url === '/v0/management/quota/clear')).toBe(true);
   });
 });
+
+it('adapts reference usage summary stats for dashboard consumers', async () => {
+  vi.stubGlobal('localStorage', { getItem: () => 'fixture-admin' });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ range: 'day', series: [], stats: { totalRequests: 12, totalErrors: 2, inputTokens: 100, totalCost: 1.5 }, today: {} }) }));
+  await expect(getUsageSummary()).resolves.toMatchObject({ requests: 12, errors: 2, inputTokens: 100, totalCost: 1.5 });
+});

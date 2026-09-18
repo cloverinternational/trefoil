@@ -111,7 +111,12 @@ export async function deleteDebugLogs(): Promise<void> { const r = await fetch('
 export async function getUsageSummary(): Promise<Record<string, number>> {
   const response = await fetch('/v0/management/usage/summary', { headers: authHeaders() });
   if (!response.ok) throw new Error('Unable to load usage summary');
-  return response.json();
+  const payload = await response.json();
+  if (payload?.stats && typeof payload.stats === 'object') {
+    const stats = payload.stats;
+    return { ...stats, requests: stats.totalRequests ?? 0, errors: stats.totalErrors ?? 0 };
+  }
+  return payload;
 }
 
 export async function getMetrics(): Promise<string> {

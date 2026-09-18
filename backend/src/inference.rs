@@ -147,6 +147,9 @@ impl Drop for AccountingGuard {
         if self.finished.swap(true, Ordering::AcqRel) {
             return;
         }
+        // Release the permit synchronously on client body drop, even when no
+        // runtime is left to flush durable accounting.
+        if let Ok(mut accounting) = self.state.try_lock() { accounting.permit.take(); }
         let state = self.state.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
@@ -3551,6 +3554,17 @@ mod tests {
             stream_success: true,
             finalized: false,
         }
+    }
+
+    #[tokio::test]
+    async fn dropping_stream_body_releases_concurrency_without_waiting_for_flush() {
+        let state = AppState::new(None, HashMap::new());
+        let mut accounting = test_stream_accounting();
+        accounting.permit = Some(crate::concurrency::acquire(&state, "provider", "model"));
+        let body = accounted_sse_body(futures_util::stream::pending::<Result<Bytes, reqwest::Error>>(), accounting);
+        assert_eq!(crate::concurrency::snapshot(&state).len(), 1);
+        drop(body);
+        assert!(crate::concurrency::snapshot(&state).is_empty());
     }
 
     #[test]
