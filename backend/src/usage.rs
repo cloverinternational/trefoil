@@ -212,9 +212,9 @@ async fn list_usage(
             .unwrap_or(0)
     };
     let rows = if let Some(key) = &scope {
-        sqlx::query("SELECT request_id, date, api_key, provider, incoming_model_alias, response_status, start_time, duration_ms, tokens_input, tokens_output, cost_total FROM request_usage WHERE api_key = $1 ORDER BY start_time DESC LIMIT $2 OFFSET $3").bind(key).bind(limit).bind(offset).fetch_all(pool).await
+        sqlx::query("SELECT request_id, date, api_key, provider, incoming_model_alias, response_status, start_time, duration_ms, tokens_input, tokens_output, cost_total, ttft_ms, tokens_per_sec, e2e_tokens_per_sec FROM request_usage WHERE api_key = $1 ORDER BY start_time DESC LIMIT $2 OFFSET $3").bind(key).bind(limit).bind(offset).fetch_all(pool).await
     } else {
-        sqlx::query("SELECT request_id, date, api_key, provider, incoming_model_alias, response_status, start_time, duration_ms, tokens_input, tokens_output, cost_total FROM request_usage ORDER BY start_time DESC LIMIT $1 OFFSET $2").bind(limit).bind(offset).fetch_all(pool).await
+        sqlx::query("SELECT request_id, date, api_key, provider, incoming_model_alias, response_status, start_time, duration_ms, tokens_input, tokens_output, cost_total, ttft_ms, tokens_per_sec, e2e_tokens_per_sec FROM request_usage ORDER BY start_time DESC LIMIT $1 OFFSET $2").bind(limit).bind(offset).fetch_all(pool).await
     };
     let Ok(rows) = rows else {
         return (
@@ -228,7 +228,7 @@ async fn list_usage(
         "apiKey": row.try_get::<Option<String>, _>("api_key").unwrap_or(None), "provider": row.try_get::<Option<String>, _>("provider").unwrap_or(None),
         "incomingModelAlias": row.try_get::<Option<String>, _>("incoming_model_alias").unwrap_or(None), "responseStatus": row.try_get::<Option<String>, _>("response_status").unwrap_or(None),
         "startTime": row.try_get::<i64, _>("start_time").unwrap_or_default(), "durationMs": row.try_get::<Option<i64>, _>("duration_ms").unwrap_or(None),
-        "tokensInput": row.try_get::<Option<i32>, _>("tokens_input").unwrap_or(None), "tokensOutput": row.try_get::<Option<i32>, _>("tokens_output").unwrap_or(None), "costTotal": row.try_get::<Option<f32>, _>("cost_total").unwrap_or(None)
+        "tokensInput": row.try_get::<Option<i32>, _>("tokens_input").unwrap_or(None), "tokensOutput": row.try_get::<Option<i32>, _>("tokens_output").unwrap_or(None), "costTotal": row.try_get::<Option<f32>, _>("cost_total").unwrap_or(None), "ttftMs": row.try_get::<Option<f32>, _>("ttft_ms").unwrap_or(None), "tokensPerSec": row.try_get::<Option<f32>, _>("tokens_per_sec").unwrap_or(None), "e2eTokensPerSec": row.try_get::<Option<f32>, _>("e2e_tokens_per_sec").unwrap_or(None)
     })).collect();
     Json(serde_json::json!({"data":data,"total":total,"limit":limit,"offset":offset}))
         .into_response()
@@ -264,10 +264,6 @@ struct SummaryQuery {
     breakdowns: Option<String>,
     #[serde(rename = "breakdownLimit")]
     breakdown_limit: Option<i64>,
-}
-
-fn summary_empty(range: &str) -> Value {
-    serde_json::json!({"range":range,"series":[],"stats":{"totalRequests":0,"totalErrors":0,"totalTokens":0,"inputTokens":0,"outputTokens":0,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"totalCost":0.0,"avgDurationMs":0.0,"totalDurationMs":0,"avgTtftMs":0.0,"avgTokensPerSec":0.0,"successRate":0.0},"today":{"requests":0,"inputTokens":0,"outputTokens":0,"reasoningTokens":0,"cachedTokens":0,"cacheWriteTokens":0,"totalCost":0.0}})
 }
 
 async fn summary_usage(
@@ -312,9 +308,9 @@ async fn summary_usage(
     let limit = query.breakdown_limit.unwrap_or(10);
     if !(1..=50).contains(&limit) { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"breakdownLimit must be an integer between 1 and 50"}))).into_response(); }
     let Some(pool) = &state.inner.database else {
-        return Json(summary_empty(range)).into_response();
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"Database unavailable"}))).into_response();
     };
-    let aggregate_sql = "SELECT count(*)::bigint requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint errors, coalesce(sum(tokens_input),0)::bigint input_tokens, coalesce(sum(tokens_output),0)::bigint output_tokens, coalesce(sum(tokens_reasoning),0)::bigint reasoning_tokens, coalesce(sum(tokens_cached),0)::bigint cached_tokens, coalesce(sum(tokens_cache_write),0)::bigint cache_write_tokens, coalesce(sum(cost_total),0)::double precision total_cost, coalesce(sum(duration_ms),0)::bigint total_duration_ms, coalesce(avg(duration_ms),0)::double precision avg_duration_ms, coalesce(sum(ttft_ms),0)::double precision total_ttft_ms, coalesce(avg(ttft_ms),0)::double precision avg_ttft_ms, coalesce(avg(tokens_per_sec),0)::double precision avg_tokens_per_sec FROM request_usage WHERE start_time >= $1 AND start_time <= $2 AND ($3::text IS NULL OR api_key = $3)";
+    let aggregate_sql = "SELECT count(*)::bigint requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint errors, coalesce(sum(tokens_input),0)::bigint input_tokens, coalesce(sum(tokens_output),0)::bigint output_tokens, coalesce(sum(tokens_reasoning),0)::bigint reasoning_tokens, coalesce(sum(tokens_cached),0)::bigint cached_tokens, coalesce(sum(tokens_cache_write),0)::bigint cache_write_tokens, coalesce(sum(cost_total),0)::double precision total_cost, coalesce(sum(duration_ms),0)::bigint total_duration_ms, coalesce(avg(duration_ms),0)::double precision avg_duration_ms, coalesce(sum(ttft_ms),0)::double precision total_ttft_ms, coalesce(avg(ttft_ms),0)::double precision avg_ttft_ms, coalesce(avg(tokens_per_sec),0)::double precision avg_tokens_per_sec, count(ttft_ms)::bigint ttft_samples, count(tokens_per_sec)::bigint tps_samples FROM request_usage WHERE start_time >= $1 AND start_time <= $2 AND ($3::text IS NULL OR api_key = $3)";
     let Ok(row) = sqlx::query(aggregate_sql).bind(start).bind(end).bind(scope.as_deref()).fetch_one(pool).await else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -326,12 +322,18 @@ async fn summary_usage(
     let f = |name| row.try_get::<f64,_>(name).unwrap_or(0.0);
     let requests=n("requests"); let errors=n("errors");
     let total_tokens=n("input_tokens")+n("output_tokens")+n("reasoning_tokens")+n("cached_tokens")+n("cache_write_tokens");
-    let stats=serde_json::json!({"totalRequests":requests,"totalErrors":errors,"totalTokens":total_tokens,"inputTokens":n("input_tokens"),"outputTokens":n("output_tokens"),"reasoningTokens":n("reasoning_tokens"),"cachedTokens":n("cached_tokens"),"cacheWriteTokens":n("cache_write_tokens"),"totalCost":f("total_cost"),"avgDurationMs":f("avg_duration_ms"),"totalDurationMs":n("total_duration_ms"),"avgTtftMs":f("avg_ttft_ms"),"avgTokensPerSec":f("avg_tokens_per_sec"),"successRate":if requests > 0 {(requests-errors) as f64 * 100.0 / requests as f64} else {0.0}});
-    let series_rows = sqlx::query("SELECT (floor(start_time::double precision / $4) * $4)::bigint bucket, count(*)::bigint requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint errors, coalesce(sum(tokens_input),0)::bigint input_tokens, coalesce(sum(tokens_output),0)::bigint output_tokens, coalesce(sum(tokens_reasoning),0)::bigint reasoning_tokens, coalesce(sum(tokens_cached),0)::bigint cached_tokens, coalesce(sum(tokens_cache_write),0)::bigint cache_write_tokens, coalesce(sum(cost_total),0)::double precision total_cost, coalesce(avg(duration_ms),0)::double precision avg_duration_ms, coalesce(avg(ttft_ms),0)::double precision avg_ttft_ms, coalesce(avg(tokens_per_sec),0)::double precision avg_tokens_per_sec FROM request_usage WHERE start_time >= $1 AND start_time <= $2 AND ($3::text IS NULL OR api_key = $3) GROUP BY bucket ORDER BY bucket").bind(start).bind(end).bind(scope.as_deref()).bind(step).fetch_all(pool).await.unwrap_or_default();
-    let series: Vec<Value> = series_rows.iter().map(|r| { let i=|x|r.try_get::<i64,_>(x).unwrap_or(0); let x=|x|r.try_get::<f64,_>(x).unwrap_or(0.0); serde_json::json!({"bucketStartMs":i("bucket"),"requests":i("requests"),"errors":i("errors"),"inputTokens":i("input_tokens"),"outputTokens":i("output_tokens"),"reasoningTokens":i("reasoning_tokens"),"cachedTokens":i("cached_tokens"),"cacheWriteTokens":i("cache_write_tokens"),"tokens":i("input_tokens")+i("output_tokens")+i("reasoning_tokens")+i("cached_tokens")+i("cache_write_tokens"),"totalCost":x("total_cost"),"avgDurationMs":x("avg_duration_ms"),"avgTtftMs":x("avg_ttft_ms"),"avgTokensPerSec":x("avg_tokens_per_sec")}) }).collect();
+    let stats=serde_json::json!({"totalRequests":requests,"totalErrors":errors,"totalTokens":total_tokens,"inputTokens":n("input_tokens"),"outputTokens":n("output_tokens"),"reasoningTokens":n("reasoning_tokens"),"cachedTokens":n("cached_tokens"),"cacheWriteTokens":n("cache_write_tokens"),"totalCost":f("total_cost"),"avgDurationMs":f("avg_duration_ms"),"totalDurationMs":n("total_duration_ms"),"avgTtftMs":f("avg_ttft_ms"),"avgTokensPerSec":f("avg_tokens_per_sec"),"ttftSamples":n("ttft_samples"),"tpsSamples":n("tps_samples"),"successRate":if requests > 0 {(requests-errors) as f64 * 100.0 / requests as f64} else {0.0}});
+    let series_rows = sqlx::query("SELECT (floor(start_time::double precision / $4) * $4)::bigint bucket, count(*)::bigint requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint errors, coalesce(sum(tokens_input),0)::bigint input_tokens, coalesce(sum(tokens_output),0)::bigint output_tokens, coalesce(sum(tokens_reasoning),0)::bigint reasoning_tokens, coalesce(sum(tokens_cached),0)::bigint cached_tokens, coalesce(sum(tokens_cache_write),0)::bigint cache_write_tokens, coalesce(sum(cost_total),0)::double precision total_cost, coalesce(avg(duration_ms),0)::double precision avg_duration_ms, coalesce(avg(ttft_ms),0)::double precision avg_ttft_ms, coalesce(avg(tokens_per_sec),0)::double precision avg_tokens_per_sec, count(ttft_ms)::bigint ttft_samples, count(tokens_per_sec)::bigint tps_samples FROM request_usage WHERE start_time >= $1 AND start_time <= $2 AND ($3::text IS NULL OR api_key = $3) GROUP BY bucket ORDER BY bucket").bind(start).bind(end).bind(scope.as_deref()).bind(step).fetch_all(pool).await;
+    let Ok(series_rows) = series_rows else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to read usage series"}))).into_response();
+    };
+    let series: Vec<Value> = series_rows.iter().map(|r| { let i=|x|r.try_get::<i64,_>(x).unwrap_or(0); let x=|x|r.try_get::<f64,_>(x).unwrap_or(0.0); serde_json::json!({"bucketStartMs":i("bucket"),"requests":i("requests"),"errors":i("errors"),"inputTokens":i("input_tokens"),"outputTokens":i("output_tokens"),"reasoningTokens":i("reasoning_tokens"),"cachedTokens":i("cached_tokens"),"cacheWriteTokens":i("cache_write_tokens"),"tokens":i("input_tokens")+i("output_tokens")+i("reasoning_tokens")+i("cached_tokens")+i("cache_write_tokens"),"totalCost":x("total_cost"),"avgDurationMs":x("avg_duration_ms"),"avgTtftMs":x("avg_ttft_ms"),"avgTokensPerSec":x("avg_tokens_per_sec"),"ttftSamples":i("ttft_samples"),"tpsSamples":i("tps_samples")}) }).collect();
     let today_start = chrono::Local::now().date_naive().and_hms_opt(0,0,0).unwrap().and_local_timezone(chrono::Local).earliest().map(|dt|dt.timestamp_millis()).unwrap_or_else(||chrono::Utc::now().timestamp_millis());
-    let today_row = sqlx::query(aggregate_sql).bind(today_start).bind(end).bind(scope.as_deref()).fetch_one(pool).await.ok();
-    let today = today_row.map(|r| serde_json::json!({"requests":r.try_get::<i64,_>("requests").unwrap_or(0),"inputTokens":r.try_get::<i64,_>("input_tokens").unwrap_or(0),"outputTokens":r.try_get::<i64,_>("output_tokens").unwrap_or(0),"reasoningTokens":r.try_get::<i64,_>("reasoning_tokens").unwrap_or(0),"cachedTokens":r.try_get::<i64,_>("cached_tokens").unwrap_or(0),"cacheWriteTokens":r.try_get::<i64,_>("cache_write_tokens").unwrap_or(0),"totalCost":r.try_get::<f64,_>("total_cost").unwrap_or(0.0)})).unwrap_or_else(|| summary_empty(range)["today"].clone());
+    let today_row = sqlx::query(aggregate_sql).bind(today_start).bind(end).bind(scope.as_deref()).fetch_one(pool).await;
+    let Ok(today_row) = today_row else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to read today's usage"}))).into_response();
+    };
+    let today = serde_json::json!({"requests":today_row.try_get::<i64,_>("requests").unwrap_or(0),"inputTokens":today_row.try_get::<i64,_>("input_tokens").unwrap_or(0),"outputTokens":today_row.try_get::<i64,_>("output_tokens").unwrap_or(0),"reasoningTokens":today_row.try_get::<i64,_>("reasoning_tokens").unwrap_or(0),"cachedTokens":today_row.try_get::<i64,_>("cached_tokens").unwrap_or(0),"cacheWriteTokens":today_row.try_get::<i64,_>("cache_write_tokens").unwrap_or(0),"totalCost":today_row.try_get::<f64,_>("total_cost").unwrap_or(0.0)});
     Json(serde_json::json!({"range":range,"series":series,"stats":stats,"today":today})).into_response()
 }
 

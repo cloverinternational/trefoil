@@ -31,7 +31,7 @@ pub async fn load_oauth_sessions(pool: &PgPool) -> Result<Vec<OAuthSession>, sql
                 status: row.try_get("status")?,
                 auth_info: row.try_get("auth_info")?,
                 prompt: row.try_get("prompt")?,
-                progress: row.try_get("progress")?,
+                progress: serde_json::from_value(row.try_get::<Value, _>("progress")?).unwrap_or_default(),
                 error: row.try_get("error")?,
                 created_at: row.try_get("created_at")?,
                 updated_at: row.try_get("updated_at")?,
@@ -48,7 +48,7 @@ pub async fn upsert_oauth_session(
 ) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT INTO oauth_login_sessions (id,provider_id,account_id,status,auth_info,prompt,progress,error,created_at,updated_at,expires_at,pkce_verifier) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status,auth_info=EXCLUDED.auth_info,prompt=EXCLUDED.prompt,progress=EXCLUDED.progress,error=EXCLUDED.error,updated_at=EXCLUDED.updated_at,expires_at=EXCLUDED.expires_at,pkce_verifier=EXCLUDED.pkce_verifier WHERE oauth_login_sessions.status NOT IN ('complete','cancelled','failed','expired')")
         .bind(&session.id).bind(&session.provider_id).bind(&session.account_id).bind(&session.status).bind(&session.auth_info)
-        .bind(&session.prompt).bind(&session.progress).bind(&session.error).bind(session.created_at).bind(session.updated_at).bind(session.expires_at).bind(&session.pkce_verifier)
+        .bind(&session.prompt).bind(serde_json::to_value(&session.progress).unwrap_or_else(|_| serde_json::json!([]))).bind(&session.error).bind(session.created_at).bind(session.updated_at).bind(session.expires_at).bind(&session.pkce_verifier)
         .execute(pool).await.map(|_| ())
 }
 
@@ -180,7 +180,7 @@ pub async fn load_keys(pool: &PgPool) -> Result<HashMap<String, KeyConfig>, sqlx
     let rows = sqlx::query(
         "SELECT name, secret, comment, quota_names, quota_name, allowed_models,
                 allowed_providers, excluded_models, excluded_providers,
-                allow_raw_passthrough, allowed_ips, expires_at, disabled_at
+                allow_raw_passthrough, allowed_ips, expires_at, disabled_at, permission_group
            FROM api_keys",
     )
     .fetch_all(pool)
@@ -203,6 +203,7 @@ pub async fn load_keys(pool: &PgPool) -> Result<HashMap<String, KeyConfig>, sqlx
             row.try_get("name")?,
             KeyConfig {
                 secret: row.try_get("secret")?,
+                permission_group: row.try_get("permission_group")?,
                 comment: row.try_get("comment")?,
                 quota_names: quotas,
                 allowed_models: json_string_list(row.try_get("allowed_models")?),
@@ -232,8 +233,8 @@ pub async fn upsert_key(pool: &PgPool, name: &str, config: &KeyConfig) -> Result
         "INSERT INTO api_keys
           (name, secret, comment, quota_names, allowed_models, allowed_providers,
            excluded_models, excluded_providers, allow_raw_passthrough, allowed_ips,
-           expires_at, disabled_at, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+           expires_at, disabled_at, created_at, updated_at, permission_group)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14)
          ON CONFLICT (name) DO UPDATE SET
            secret=EXCLUDED.secret, comment=EXCLUDED.comment,
            quota_names=EXCLUDED.quota_names, allowed_models=EXCLUDED.allowed_models,
@@ -242,7 +243,8 @@ pub async fn upsert_key(pool: &PgPool, name: &str, config: &KeyConfig) -> Result
            excluded_providers=EXCLUDED.excluded_providers,
            allow_raw_passthrough=EXCLUDED.allow_raw_passthrough,
            allowed_ips=EXCLUDED.allowed_ips, expires_at=EXCLUDED.expires_at,
-           disabled_at=EXCLUDED.disabled_at, updated_at=EXCLUDED.updated_at",
+           disabled_at=EXCLUDED.disabled_at, updated_at=EXCLUDED.updated_at,
+           permission_group=EXCLUDED.permission_group",
     )
     .bind(name)
     .bind(&config.secret)
@@ -257,6 +259,7 @@ pub async fn upsert_key(pool: &PgPool, name: &str, config: &KeyConfig) -> Result
     .bind(config.expires_at)
     .bind(config.disabled_at)
     .bind(now)
+    .bind(&config.permission_group)
     .execute(pool)
     .await
     .map(|_| ())
@@ -278,7 +281,7 @@ pub async fn delete_all_keys(pool: &PgPool) -> Result<(), sqlx::Error> {
 }
 
 pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderConfig>, sqlx::Error> {
-    let rows = sqlx::query("SELECT slug, display_name, api_base_url, api_key, oauth_provider_type, oauth_account, enabled, disable_cooldown, stall_cooldown, allow_100_percent_utilization, discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled, auto_compat, adapter, model_autosync_enabled, model_autosync_interval, raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled, quota_checker_interval, quota_checker_options, retry_policy FROM providers")
+    let rows = sqlx::query("SELECT slug, version, display_name, api_base_url, api_base_urls, models, api_key, oauth_provider_type, oauth_account, enabled, disable_cooldown, stall_cooldown, allow_100_percent_utilization, discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled, auto_compat, adapter, model_autosync_enabled, model_autosync_interval, raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled, quota_checker_interval, quota_checker_options, retry_policy FROM providers")
         .fetch_all(pool).await?;
     let mut result = HashMap::new();
     for row in rows {
@@ -288,8 +291,11 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
         result.insert(
             row.try_get("slug")?,
             ProviderConfig {
+                version: row.try_get("version")?,
                 display_name: row.try_get("display_name")?,
                 api_base_url: base.as_str().unwrap_or_default().to_string(),
+                api_base_urls: row.try_get::<Option<Value>, _>("api_base_urls")?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+                models: row.try_get::<Option<Value>, _>("models")?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
                 api_key: row.try_get("api_key")?,
                 oauth_provider: row.try_get("oauth_provider_type")?,
                 oauth_account: row.try_get("oauth_account")?,
@@ -320,7 +326,13 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
                             enabled: row.try_get("quota_checker_enabled")?,
                             interval: row.try_get::<i32, _>("quota_checker_interval")? as u64,
                             options: row
-                                .try_get::<Option<serde_json::Value>, _>("quota_checker_options")?
+                                .try_get::<Option<String>, _>("quota_checker_options")?
+                                .map(|text| serde_json::from_str::<Value>(&text).map_err(|e| {
+                                    sqlx::Error::Protocol(format!(
+                                        "providers.quota_checker_options is not valid JSON: {e}"
+                                    ))
+                                }))
+                                .transpose()?
                                 .unwrap_or(Value::Null),
                         })
                     })
@@ -335,6 +347,12 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
     Ok(result)
 }
 
+/// Read one persisted provider through the existing JSONB/text decoder.
+/// This avoids serving a stale process-local config after another instance edits it.
+pub async fn load_provider(pool: &PgPool, slug: &str) -> Result<Option<ProviderConfig>, sqlx::Error> {
+    Ok(load_providers(pool).await?.remove(slug))
+}
+
 pub async fn upsert_provider(
     pool: &PgPool,
     slug: &str,
@@ -346,15 +364,16 @@ pub async fn upsert_provider(
         .as_millis() as i64;
     sqlx::query(
         "INSERT INTO providers
-          (slug, display_name, api_base_url, api_key, oauth_provider_type, enabled,
+          (slug, display_name, api_base_url, api_base_urls, models, api_key, oauth_provider_type, enabled,
            disable_cooldown, stall_cooldown, allow_100_percent_utilization,
            discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled,
            auto_compat, adapter, model_autosync_enabled, model_autosync_interval,
            raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled,
            quota_checker_interval, quota_checker_options, retry_policy, created_at, updated_at, oauth_account)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
          ON CONFLICT (slug) DO UPDATE SET
            display_name=EXCLUDED.display_name, api_base_url=EXCLUDED.api_base_url,
+           api_base_urls=EXCLUDED.api_base_urls, models=EXCLUDED.models,
            api_key=EXCLUDED.api_key, oauth_provider_type=EXCLUDED.oauth_provider_type, oauth_account=EXCLUDED.oauth_account,
            enabled=EXCLUDED.enabled, disable_cooldown=EXCLUDED.disable_cooldown,
            stall_cooldown=EXCLUDED.stall_cooldown,
@@ -372,11 +391,14 @@ pub async fn upsert_provider(
            quota_checker_interval=EXCLUDED.quota_checker_interval,
            quota_checker_options=EXCLUDED.quota_checker_options,
            retry_policy=EXCLUDED.retry_policy,
+           version=providers.version+1,
            updated_at=EXCLUDED.updated_at",
     )
     .bind(slug)
     .bind(&config.display_name)
     .bind(serde_json::Value::String(config.api_base_url.clone()))
+    .bind(serde_json::to_value(&config.api_base_urls).unwrap())
+    .bind(serde_json::to_value(&config.models).unwrap())
     .bind(&config.api_key)
     .bind(&config.oauth_provider)
     .bind(config.enabled)
@@ -396,7 +418,7 @@ pub async fn upsert_provider(
     .bind(config.quota_checker.as_ref().and_then(|q| q.id.clone()))
     .bind(config.quota_checker.as_ref().map(|q| q.enabled).unwrap_or(true))
     .bind(config.quota_checker.as_ref().map(|q| q.interval as i32).unwrap_or(30))
-    .bind(config.quota_checker.as_ref().map(|q| q.options.clone()))
+    .bind(config.quota_checker.as_ref().map(|q| q.options.to_string()))
     .bind(serde_json::to_value(&config.retry_policy).unwrap())
     .bind(now)
     .bind(now)
@@ -404,6 +426,89 @@ pub async fn upsert_provider(
     .execute(pool)
     .await
     .map(|_| ())
+}
+
+pub async fn create_provider_if_absent(
+    pool: &PgPool,
+    slug: &str,
+    config: &ProviderConfig,
+) -> Result<bool, sqlx::Error> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_millis() as i64;
+    sqlx::query(
+        "INSERT INTO providers
+          (slug, display_name, api_base_url, api_base_urls, models, api_key, oauth_provider_type, enabled,
+           disable_cooldown, stall_cooldown, allow_100_percent_utilization,
+           discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled,
+           auto_compat, adapter, model_autosync_enabled, model_autosync_interval,
+           raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled,
+           quota_checker_interval, quota_checker_options, retry_policy, created_at, updated_at, oauth_account)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+         ON CONFLICT (slug) DO NOTHING",
+    )
+    .bind(slug)
+    .bind(&config.display_name)
+    .bind(serde_json::Value::String(config.api_base_url.clone()))
+    .bind(serde_json::to_value(&config.api_base_urls).unwrap())
+    .bind(serde_json::to_value(&config.models).unwrap())
+    .bind(&config.api_key)
+    .bind(&config.oauth_provider)
+    .bind(config.enabled)
+    .bind(config.disable_cooldown)
+    .bind(config.stall_cooldown)
+    .bind(config.allow_100_percent_utilization)
+    .bind(config.discount)
+    .bind(config.estimate_tokens)
+    .bind(config.use_claude_masking)
+    .bind(config.gemini_thinking_enabled)
+    .bind(config.auto_compat)
+    .bind(serde_json::to_value(&config.adapter).unwrap())
+    .bind(config.model_autosync.enabled)
+    .bind(config.model_autosync.interval_minutes as i32)
+    .bind(serde_json::to_value(&config.raw_passthrough).unwrap())
+    .bind(config.quota_checker.as_ref().and_then(|q| q.checker_type.clone()))
+    .bind(config.quota_checker.as_ref().and_then(|q| q.id.clone()))
+    .bind(config.quota_checker.as_ref().map(|q| q.enabled).unwrap_or(true))
+    .bind(config.quota_checker.as_ref().map(|q| q.interval as i32).unwrap_or(30))
+    .bind(config.quota_checker.as_ref().map(|q| q.options.to_string()))
+    .bind(serde_json::to_value(&config.retry_policy).unwrap())
+    .bind(now)
+    .bind(now)
+    .bind(&config.oauth_account)
+    .execute(pool)
+    .await
+    .map(|result| result.rows_affected() == 1)
+}
+
+/// Conditional full-record update; one SQL statement wins or returns a conflict.
+/// All editable fields and the revision change atomically in PostgreSQL.
+pub async fn update_provider_if_version(
+    pool: &PgPool, slug: &str, config: &ProviderConfig, expected_version: i64,
+) -> Result<Option<i64>, sqlx::Error> {
+    let row = sqlx::query("UPDATE providers SET display_name=$2,api_base_url=$3,api_base_urls=$4,models=$5,api_key=$6,oauth_provider_type=$7,oauth_account=$8,enabled=$9,disable_cooldown=$10,stall_cooldown=$11,allow_100_percent_utilization=$12,discount=$13,estimate_tokens=$14,use_claude_masking=$15,gemini_thinking_enabled=$16,auto_compat=$17,adapter=$18,model_autosync_enabled=$19,model_autosync_interval=$20,raw_passthrough=$21,quota_checker_type=$22,quota_checker_id=$23,quota_checker_enabled=$24,quota_checker_interval=$25,quota_checker_options=$26,retry_policy=$27,updated_at=$28,version=version+1 WHERE slug=$1 AND version=$29 RETURNING version")
+        .bind(slug).bind(&config.display_name)
+        .bind(serde_json::Value::String(config.api_base_url.clone()))
+        .bind(serde_json::to_value(&config.api_base_urls).unwrap())
+        .bind(serde_json::to_value(&config.models).unwrap())
+        .bind(&config.api_key).bind(&config.oauth_provider).bind(&config.oauth_account)
+        .bind(config.enabled).bind(config.disable_cooldown).bind(config.stall_cooldown)
+        .bind(config.allow_100_percent_utilization).bind(config.discount)
+        .bind(config.estimate_tokens).bind(config.use_claude_masking)
+        .bind(config.gemini_thinking_enabled).bind(config.auto_compat)
+        .bind(serde_json::to_value(&config.adapter).unwrap())
+        .bind(config.model_autosync.enabled).bind(config.model_autosync.interval_minutes as i32)
+        .bind(serde_json::to_value(&config.raw_passthrough).unwrap())
+        .bind(config.quota_checker.as_ref().and_then(|q| q.checker_type.clone()))
+        .bind(config.quota_checker.as_ref().and_then(|q| q.id.clone()))
+        .bind(config.quota_checker.as_ref().map(|q| q.enabled).unwrap_or(true))
+        .bind(config.quota_checker.as_ref().map(|q| q.interval as i32).unwrap_or(30))
+        .bind(config.quota_checker.as_ref().map(|q| q.options.to_string()))
+        .bind(serde_json::to_value(&config.retry_policy).unwrap())
+        .bind(chrono::Utc::now().timestamp_millis()).bind(expected_version)
+        .fetch_optional(pool).await?;
+    Ok(row.map(|row| sqlx::Row::get::<i64,_>(&row, "version")))
 }
 
 pub async fn delete_provider(pool: &PgPool, slug: &str) -> Result<(), sqlx::Error> {
@@ -809,8 +914,9 @@ pub async fn record_request_usage(
     sqlx::query(
         "INSERT INTO request_usage
           (request_id, date, api_key, provider, incoming_model_alias,
-           incoming_api_type, response_status, is_streamed, start_time, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+           incoming_api_type, response_status, is_streamed, start_time, created_at, permission_group)
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$9,
+                (SELECT permission_group FROM api_keys WHERE name = $3)
          ON CONFLICT (request_id) DO UPDATE SET response_status=EXCLUDED.response_status",
     )
     .bind(request_id)
@@ -842,9 +948,18 @@ pub async fn update_request_usage_metrics(
     output_tokens: Option<i32>,
     total_cost: Option<f32>,
     duration_ms: i64,
+    ttft_ms: Option<i64>,
+    tokens_per_sec: Option<f32>,
+    e2e_tokens_per_sec: Option<f32>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE request_usage SET tokens_input = $2, tokens_output = $3, cost_total = $4, duration_ms = $5 WHERE request_id = $1")
-        .bind(request_id).bind(input_tokens).bind(output_tokens).bind(total_cost).bind(duration_ms)
+    sqlx::query("UPDATE request_usage SET tokens_input = $2, tokens_output = $3, cost_total = $4, duration_ms = $5, ttft_ms = $6, tokens_per_sec = $7, e2e_tokens_per_sec = $8 WHERE request_id = $1")
+        .bind(request_id).bind(input_tokens).bind(output_tokens).bind(total_cost).bind(duration_ms).bind(ttft_ms.map(|v| v as f32)).bind(tokens_per_sec).bind(e2e_tokens_per_sec)
+        .execute(pool).await.map(|_| ())
+}
+
+pub async fn record_provider_performance(pool: &PgPool, provider: &str, model: &str, request_id: &str, ttft_ms: Option<i64>, tokens_per_sec: Option<f32>, e2e_tokens_per_sec: Option<f32>, duration_ms: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO provider_performance (provider,model,request_id,time_to_first_token_ms,tokens_per_sec,e2e_tokens_per_sec,duration_ms,total_tokens,created_at,success_count,failure_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,1,0)")
+        .bind(provider).bind(model).bind(request_id).bind(ttft_ms.map(|v| v as f32)).bind(tokens_per_sec).bind(e2e_tokens_per_sec).bind(duration_ms as f32).bind(Option::<i32>::None).bind(chrono::Utc::now().timestamp_millis())
         .execute(pool).await.map(|_| ())
 }
 

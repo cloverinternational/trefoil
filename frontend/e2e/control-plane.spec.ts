@@ -19,8 +19,11 @@ async function fixture(page: Page, options: { auth?: boolean; failModels?: boole
       if (options.failModels) return route.fulfill({ status: 503, json: { error: 'fixture unavailable' } });
       return route.fulfill({ json: models });
     }
-    if (path.endsWith('/usage/summary')) return route.fulfill({ json: { requests: 1, errors: 0, inputTokens: 3, outputTokens: 5, totalCost: 0.12 } });
+    if (path.endsWith('/usage/summary')) return route.fulfill({ json: { stats: { totalRequests: 1, totalErrors: 0, inputTokens: 3, outputTokens: 5, totalCost: 0.12 }, today: { requests: 1, totalCost: 0.12 }, series: [] } });
     if (path.endsWith('/usage')) return route.fulfill({ json: usage });
+    if (path.endsWith('/concurrency')) return route.fulfill({ json: { data: [] } });
+    if (path.endsWith('/cooldowns')) return route.fulfill({ json: [] });
+    if (path.endsWith('/metrics')) return route.fulfill({ contentType: 'text/plain', body: 'plexus_requests_total 1\n' });
     if (path.endsWith('/config/status')) return route.fulfill({ json: { providerCount: Object.keys(providers).length, modelAliasCount: 1, keyCount: 0, quotaCount: 0, mcpServerCount: 0 } });
     if (path.endsWith('/providers') && method === 'GET') return route.fulfill({ json: providers });
     if (path.includes('/providers/') && method === 'PUT') {
@@ -39,7 +42,7 @@ async function fixture(page: Page, options: { auth?: boolean; failModels?: boole
 test('auth boundaries, navigation, and model search', async ({ page }) => {
   await fixture(page, { auth: false });
   await page.goto('/models');
-  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  await expect(page.getByText('Sign in', { exact: true })).toBeVisible();
   await page.getByLabel(/admin key/i).fill('bad');
   await page.getByRole('button', { name: /access dashboard/i }).click();
   await expect(page.getByText(/Invalid key/)).toBeVisible();
@@ -49,7 +52,7 @@ test('auth boundaries, navigation, and model search', async ({ page }) => {
   await page.getByRole('button', { name: /access dashboard/i }).click();
   await expect(page).toHaveURL(/\/models$/);
   await page.getByRole('link', { name: 'Models' }).click();
-  await expect(page.getByRole('heading', { name: 'fast' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: /fast/ })).toBeVisible();
   await page.getByLabel('Search models').fill('missing');
   await expect(page.getByText('No models match your search')).toBeVisible();
 });
@@ -73,6 +76,7 @@ test('provider CRUD state and ordered SSE stream', async ({ page }) => {
   await page.getByRole('button', { name: /add provider/i }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: /API key provider/i }).click();
   await dialog.getByLabel('Provider ID').fill('new-provider');
   await dialog.getByLabel('API base URL').fill('https://new.invalid');
   await dialog.getByLabel(/API key/).fill('secret');
@@ -82,9 +86,38 @@ test('provider CRUD state and ordered SSE stream', async ({ page }) => {
   await page.goto('/system-logs');
   await expect(page.getByText('first')).toBeVisible();
   await expect(page.getByText('second')).toBeVisible();
-  const ordered = await page.getByText('first', { exact: false }).evaluate(first => {
-    const second = [...document.querySelectorAll('div')].find(node => node.textContent?.includes('second') && node.querySelector('b')?.textContent === 'INFO:' && node.children.length === 2);
-    return !!second && !!(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
-  });
-  expect(ordered).toBe(true);
+  const first = page.getByText('first', { exact: false }).last();
+  const second = page.getByText('second', { exact: false }).last();
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
+  expect(await first.evaluate((node, other) => !!(node.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING), await second.elementHandle())).toBe(true);
+});
+
+test('dashboard shell collapses persistently and dashboard links reach real pages', async ({ page }) => {
+  await fixture(page);
+  await page.addInitScript(() => localStorage.setItem('trefoil_admin_key', 'fixture-admin'));
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Live Metrics' })).toBeVisible();
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
+  await page.getByRole('link', { name: 'Usage Analytics' }).click();
+  await expect(page).toHaveURL(/\/usage$/);
+  await page.goto('/');
+  await page.getByRole('link', { name: 'Performance' }).click();
+  await expect(page).toHaveURL(/\/metrics$/);
+});
+
+test('dashboard navigation remains usable in mobile drawer', async ({ page }) => {
+  await fixture(page);
+  await page.addInitScript(() => localStorage.setItem('trefoil_admin_key', 'fixture-admin'));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Open navigation' }).click();
+  await expect(page.getByRole('button', { name: 'Close navigation' })).toBeVisible();
+  await page.getByRole('link', { name: 'Providers' }).last().click();
+  await expect(page).toHaveURL(/\/providers$/);
+  await expect(page.getByRole('button', { name: 'Close navigation' })).toBeHidden();
 });

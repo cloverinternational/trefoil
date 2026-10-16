@@ -402,6 +402,98 @@ pub fn search(source: &str, query: &str, limit: usize) -> Vec<ModelMetadata> {
         .collect()
 }
 
+/// Admin-only preview of automatic model identity, metadata and API selection.
+pub async fn resolve_metadata(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Json(body): axum::extract::Json<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse, Json};
+    use crate::auth::{resolve_principal, Principal};
+
+    match resolve_principal(&state, headers.get("x-admin-key").and_then(|v| v.to_str().ok())) {
+        Some(Principal::Admin) => (),
+        Some(Principal::Limited { .. }) => return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error":{"message":"Admin privileges required","type":"forbidden","code":403}}))).into_response(),
+        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error":{"message":"Unauthorized","type":"auth_error","code":401}}))).into_response(),
+    }
+
+    let Some(alias_id) = body.get("alias_id").and_then(serde_json::Value::as_str) else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"alias_id is required"}))).into_response();
+    };
+    let parsed: crate::state::ModelConfig = match serde_json::from_value(body.get("model").cloned().unwrap_or(serde_json::Value::Null)) {
+        Ok(config) => config,
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Validation failed","details":[{"message":error.to_string()}]}))).into_response(),
+    };
+
+    let providers = state.inner.providers.read().unwrap();
+    let identity = automatic_identity(alias_id, &parsed, &providers);
+    let resolved = resolve_catalog_metadata(&identity, parsed.metadata.as_ref());
+    let preferred_api = parsed.preferred_api.clone().or_else(|| {
+        if parsed.model_type.as_deref().is_some_and(|t| t != "text") { return None; }
+        let provider = identity.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+        let model = identity.get("model").and_then(|v| v.as_str()).unwrap_or("").rsplit('/').next().unwrap_or("").to_lowercase();
+        Some(if provider.contains("anthropic") || model.contains("claude") { vec!["messages"] }
+        else if regex::Regex::new(r"^(gpt|o[134])(?:-|$)").unwrap().is_match(&model) { vec!["responses"] }
+        else if regex::Regex::new(r"^gemini(?:-|$)").unwrap().is_match(&model) { vec!["gemini"] }
+        else { vec!["chat_completions"] }.into_iter().map(str::to_string).collect())
+    });
+    let pi_model = identity.get("provider").and_then(|p| p.as_str()).and_then(|provider| {
+        let model = identity.get("model")?.as_str()?;
+        [format!("{provider}.{model}"), format!("{provider}/{model}")].iter().find_map(|key| {
+            ["models.dev", "openrouter", "catwalk"].iter().find_map(|source| lookup(source,key)).map(|m| serde_json::json!({"provider":provider,"model_id":model,"name":m.name}))
+        })
+    }).unwrap_or(serde_json::Value::Null);
+    let metadata = resolved.map(|(source, path, name)| serde_json::json!({"source":source,"source_path":path,"name":name})).unwrap_or(serde_json::Value::Null);
+    Json(serde_json::json!({"canonical_model":identity,"pi_model":pi_model,"metadata":metadata,"preferred_api":preferred_api})).into_response()
+}
+
+fn infer_provider(model: &str) -> Option<String> {
+    let name = model.rsplit('/').next().unwrap_or(model).to_lowercase();
+    if name.contains("claude") { Some("anthropic".into()) }
+    else if name.starts_with("gpt") || ["o1", "o3", "o4", "text-embedding", "dall-e"].iter().any(|p| name.starts_with(p)) { Some("openai".into()) }
+    else if name.contains("gemini") || name.contains("imagen") { Some("google".into()) }
+    else if name.contains("mistral") || name.contains("codestral") { Some("mistralai".into()) } else { None }
+}
+
+fn automatic_identity(alias: &str, config: &crate::state::ModelConfig, providers: &std::collections::HashMap<String, crate::state::ProviderConfig>) -> serde_json::Value {
+    if let Some(pi) = config.pi_model.as_ref().filter(|v| v.is_object()) {
+        if let (Some(provider), Some(model)) = (pi["provider"].as_str(), pi["model_id"].as_str()) {
+            let normalized = match provider { "openai-codex" => "openai", _ => provider };
+            return serde_json::json!({"provider":normalized,"model":model,"basis":"pi_model"});
+        }
+    }
+    let mut identities = Vec::new();
+    for target in config.target_groups.iter().flat_map(|g| &g.targets).filter(|t| t.enabled && t.alias.is_none()) {
+        if let (Some(provider_id), Some(model)) = (target.provider.as_deref(), target.model.as_deref()) {
+            let provider = providers.get(provider_id);
+            let provider_name = provider.and_then(|p| p.oauth_provider.clone()).or_else(|| infer_provider(model)).unwrap_or_else(|| provider_id.to_string());
+            let normalized = if provider_name == "openai-codex" { "openai".to_string() } else { provider_name };
+            identities.push((normalized, model.to_string()));
+        }
+    }
+    identities.sort(); identities.dedup();
+    if identities.len() == 1 { let (provider, model)=identities.remove(0); serde_json::json!({"provider":provider,"model":model,"basis":"target"}) }
+    else { serde_json::json!({"provider":infer_provider(alias),"model":alias,"basis":"alias"}) }
+}
+
+fn resolve_catalog_metadata(identity: &serde_json::Value, configured: Option<&serde_json::Value>) -> Option<(String,String,String)> {
+    if configured.and_then(|v|v["source"].as_str()) == Some("disabled") { return None; }
+    let provider = identity["provider"].as_str(); let model = identity["model"].as_str()?;
+    if let Some(source) = configured.and_then(|v|v["source"].as_str()) {
+        if source == "custom" { return configured.and_then(|v|v["overrides"]["name"].as_str()).map(|name|("heuristic".into(),String::new(),name.into())); }
+        if let Some(path) = configured.and_then(|v|v["source_path"].as_str()) {
+            if let Some(found)=lookup(source,path) { return Some((source.into(),path.into(),configured.and_then(|v|v["overrides"]["name"].as_str()).unwrap_or(&found.name).into())); }
+        }
+        return None;
+    }
+    if let Some(provider)=provider {
+        for (source,path) in [("models.dev",format!("{provider}.{model}")),("openrouter",format!("{provider}/{model}")),("catwalk",format!("{provider}.{model}"))] {
+            if let Some(found)=lookup(source,&path) { return Some((source.into(),path,found.name)); }
+        }
+    }
+    Some(("heuristic".into(),String::new(),model.rsplit('/').next().unwrap_or(model).split(['-','_','.']).filter(|s|!s.is_empty()).map(|s| { let mut c=s.chars(); c.next().map(|f|f.to_uppercase().to_string()+c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(" ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

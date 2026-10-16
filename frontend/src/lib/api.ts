@@ -119,6 +119,15 @@ export async function getUsageSummary(): Promise<Record<string, number>> {
   return payload;
 }
 
+export interface UsageBucket { bucketStartMs: number; requests: number; errors: number; inputTokens: number; outputTokens: number; tokens: number; totalCost: number; ttftSamples?: number; tpsSamples?: number; avgTtftMs?: number; avgTokensPerSec?: number; }
+export async function getUsageSeries(range: 'day' | 'week' | 'month'): Promise<UsageBucket[]> {
+  const response = await fetch(`/v0/management/usage/summary?range=${range}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load usage series');
+  const payload = await response.json();
+  const series = payload?.series ?? payload?.n;
+  return Array.isArray(series) ? series as UsageBucket[] : [];
+}
+
 export async function getMetrics(): Promise<string> {
   const response = await fetch('/v0/management/metrics', { headers: authHeaders() });
   if (!response.ok) throw new Error(response.status === 403 ? 'Administrator access required' : 'Unable to load metrics');
@@ -148,9 +157,64 @@ export interface UsageRecord {
   responseStatus: string | null;
   startTime: number;
   durationMs: number | null;
+  /** Time to first token in milliseconds; null/absent when unavailable or non-streaming. */
+  ttftMs?: number | null;
+  /** Output throughput in tokens per second; null/absent when unavailable or non-streaming. */
+  tokensPerSec?: number | null;
+  /** End-to-end throughput in tokens per second when reported by the backend. */
+  e2eTokensPerSec?: number | null;
   tokensInput: number | null;
   tokensOutput: number | null;
   costTotal: number | null;
+}
+
+export interface ProviderPerformanceRow {
+  provider: string;
+  model: string;
+  avg_ttft_ms: number;
+  avg_tokens_per_sec: number;
+  avg_e2e_tokens_per_sec: number;
+  sample_count: number;
+  ttft_sample_count: number;
+  tps_sample_count: number;
+  e2e_sample_count: number;
+}
+export async function getProviderPerformance(provider = '', model = ''): Promise<ProviderPerformanceRow[]> {
+  const query = new URLSearchParams();
+  if (provider) query.set('provider', provider);
+  if (model) query.set('model', model);
+  const response = await fetch(`/v0/management/performance?${query}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error(response.status === 403 ? 'Administrator access required' : 'Unable to load provider performance');
+  const data = await response.json();
+  if (!Array.isArray(data)) throw new Error('Invalid provider performance response');
+  return data as ProviderPerformanceRow[];
+}
+
+export interface UsageSummaryFull {
+  stats: { totalRequests: number; totalErrors: number; totalTokens: number; totalCost: number; avgDurationMs: number; avgTtftMs: number; avgTokensPerSec: number; ttftSamples: number; tpsSamples: number; successRate: number };
+  today: { requests: number; totalCost: number };
+  series: UsageBucket[];
+}
+export async function getUsageSummaryFull(range: 'hour' | 'day' | 'week' | 'month' = 'day'): Promise<UsageSummaryFull> {
+  const response = await fetch(`/v0/management/usage/summary?range=${range}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load usage summary');
+  return response.json();
+}
+
+export interface ConcurrencyEntry { provider: string; model: string | null; count: number; timestamp: number; }
+export async function getConcurrencyLive(): Promise<ConcurrencyEntry[]> {
+  const response = await fetch('/v0/management/concurrency?mode=live&groupBy=provider', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load concurrency');
+  const payload = await response.json() as { data?: ConcurrencyEntry[] };
+  return Array.isArray(payload.data) ? payload.data : [];
+}
+
+export interface CooldownEntry { [key: string]: unknown; }
+export async function getCooldowns(): Promise<CooldownEntry[]> {
+  const response = await fetch('/v0/management/cooldowns', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load cooldowns');
+  const payload = await response.json();
+  return Array.isArray(payload) ? payload : [];
 }
 
 export async function getRecentUsage(limit = 8): Promise<UsageRecord[]> {
@@ -181,22 +245,50 @@ export async function deleteError(id: string): Promise<void> { const r = await f
 export async function deleteErrors(): Promise<void> { const r = await fetch('/v0/management/errors', { method: 'DELETE', headers: authHeaders() }); if (!r.ok) throw new Error('Unable to clear inference errors'); }
 
 export interface ProviderConfig {
+  version?: number;
   display_name?: string;
   api_base_url: string;
+  api_base_urls?: Record<string, string>;
+  models?: Record<string, { type?: string; access_via?: string[]; upstream_id?: string }>;
   api_key?: string;
   oauth_provider?: string;
   oauth_account?: string;
   enabled: boolean;
   disable_cooldown: boolean;
   stall_cooldown: boolean;
+  estimateTokens?: boolean;
+  useClaudeMasking?: boolean;
+  auto_compat?: boolean;
+  quota_checker?: { id?: string; type?: string; enabled?: boolean; intervalMinutes?: number; options?: unknown };
   discount?: number;
   adapter?: { name: string; enabled: boolean }[];
+}
+
+export interface QuotaCheckerType { type: string; displayName: string }
+export async function getQuotaCheckerTypes(): Promise<QuotaCheckerType[]> {
+  const response = await fetch('/v0/management/quota-checker-types', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load quota checker types');
+  const body = await response.json() as { types?: QuotaCheckerType[] };
+  if (!Array.isArray(body.types)) throw new Error('Invalid quota checker types response');
+  return body.types.filter(item => typeof item.type === 'string' && typeof item.displayName === 'string');
 }
 
 export async function getProviders(): Promise<Record<string, ProviderConfig>> {
   const response = await fetch('/v0/management/providers', { headers: authHeaders() });
   if (!response.ok) throw new Error('Unable to load providers');
   return response.json();
+}
+
+export async function discoverProviderModels(url: string, apiKey?: string, signal?: AbortSignal): Promise<string[]> {
+  const response = await fetch('/v0/management/providers/fetch-models', {
+    method: 'POST', headers: { ...authHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify({ url, ...(apiKey ? { apiKey } : {}) }),
+    signal,
+  });
+  if (!response.ok) throw new Error(response.status === 400 ? 'Model discovery URL is not allowed' : 'Unable to fetch provider models');
+  const body = await response.json() as { data?: { id?: unknown }[] };
+  if (!Array.isArray(body.data)) throw new Error('Invalid provider model response');
+  return [...new Set(body.data.map(item => item?.id).filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 200))].slice(0, 200);
 }
 
 export async function saveProvider(name: string, provider: Record<string, unknown>): Promise<void> {
@@ -206,6 +298,33 @@ export async function saveProvider(name: string, provider: Record<string, unknow
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { error?: string } | null;
     throw new Error(body?.error || 'Unable to save provider');
+  }
+}
+
+export interface ProviderPreset {
+  id: string;
+  name: string;
+  description?: string;
+  suggestedProviderId?: string;
+  suggestedName?: string;
+  apiBaseUrl: string | Record<string, string>;
+  autoCompat?: boolean;
+}
+
+export async function getProviderPresets(): Promise<ProviderPreset[]> {
+  const response = await fetch('/v0/management/provider-presets', { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load provider presets');
+  const body = await response.json() as { data?: ProviderPreset[] };
+  return Array.isArray(body.data) ? body.data : [];
+}
+
+export async function updateProvider(name: string, provider: Record<string, unknown>): Promise<void> {
+  const response = await fetch(`/v0/management/providers/${encodeURIComponent(name)}`, {
+    method: 'PATCH', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(provider),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || 'Unable to update provider');
   }
 }
 
@@ -316,6 +435,7 @@ export async function deleteAlias(slug: string): Promise<void> {
 }
 
 export interface ApiKeyConfig {
+  permissionGroup?: string | null;
   secret?: string;
   comment?: string | null;
   quotas?: string[];

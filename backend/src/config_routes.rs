@@ -101,6 +101,10 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(refresh_metadata),
         )
         .route(
+            "/v0/management/models/metadata/resolve",
+            axum::routing::post(crate::metadata::resolve_metadata),
+        )
+        .route(
             "/v0/management/config/compaction",
             axum::routing::get(get_compaction).patch(patch_compaction),
         )

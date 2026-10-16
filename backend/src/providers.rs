@@ -144,7 +144,14 @@ async fn probe_request(
         .get(provider_name)
         .cloned()
         .ok_or_else(|| format!("Provider '{provider_name}' not found"))?;
-    let base = url::Url::parse(&provider.api_base_url)
+    if !provider.models.is_empty() && !provider.models.contains_key(model) {
+        return Err("Model is not in the provider's configured inventory".to_string());
+    }
+    let upstream_model = provider.models.get(model)
+        .and_then(|entry| entry.upstream_id.as_deref())
+        .filter(|id| !id.is_empty())
+        .unwrap_or(model);
+    let base = url::Url::parse(provider.api_url_for(api_type))
         .map_err(|_| "Provider API base URL is invalid".to_string())?;
     if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
         return Err("Provider API base URL is invalid".into());
@@ -152,7 +159,7 @@ async fn probe_request(
     let (path, payload) = match api_type {
         "messages" => (
             "/messages",
-            serde_json::json!({"model":model,"max_tokens":100,"system":"You are a helpful assistant.","messages":[{"role":"user","content":"Just respond with the word acknowledged"}]}),
+            serde_json::json!({"model":upstream_model,"max_tokens":100,"system":"You are a helpful assistant.","messages":[{"role":"user","content":"Just respond with the word acknowledged"}]}),
         ),
         "gemini" => (
             "/v1beta/models/{model}:generateContent",
@@ -160,26 +167,26 @@ async fn probe_request(
         ),
         "responses" => (
             "/responses",
-            serde_json::json!({"model":model,"input":"Just respond with the word acknowledged","instructions":"You are a helpful assistant."}),
+            serde_json::json!({"model":upstream_model,"input":"Just respond with the word acknowledged","instructions":"You are a helpful assistant."}),
         ),
         "embeddings" => (
             "/embeddings",
-            serde_json::json!({"model":model,"input":["Hello world"]}),
+            serde_json::json!({"model":upstream_model,"input":["Hello world"]}),
         ),
         "images" => (
             "/images/generations",
-            serde_json::json!({"model":model,"prompt":"A tiny red square","n":1}),
+            serde_json::json!({"model":upstream_model,"prompt":"A tiny red square","n":1}),
         ),
         "speech" => (
             "/audio/speech",
-            serde_json::json!({"model":model,"input":"Hello world"}),
+            serde_json::json!({"model":upstream_model,"input":"Hello world"}),
         ),
         _ => (
             "/chat/completions",
-            serde_json::json!({"model":model,"messages":[{"role":"user","content":"Just respond with the word acknowledged"}],"max_tokens":100}),
+            serde_json::json!({"model":upstream_model,"messages":[{"role":"user","content":"Just respond with the word acknowledged"}],"max_tokens":100}),
         ),
     };
-    let path = path.replace("{model}", model);
+    let path = path.replace("{model}", upstream_model);
     let endpoint = format!("{}{}", base.as_str().trim_end_matches('/'), path);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -245,6 +252,22 @@ fn probe_response_text(response: &Value, api_type: &str) -> String {
         .unwrap_or_else(|| "Success".into())
 }
 
+fn public_discovery_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0 || a == 10 || a == 127 || a >= 224 || a == 169 && b == 254
+                || a == 172 && (16..=31).contains(&b) || a == 192 && b == 168
+                || a == 100 && (64..=127).contains(&b) || a == 192 && b == 0 && c == 0
+                || a == 198 && (b == 18 || b == 19) || a == 198 && b == 51 && c == 100
+                || a == 203 && b == 0 && c == 113)
+        }
+        // Do not support IPv6 here until transition/tunnel address ranges are
+        // reviewed end to end (e.g. 6to4 can encode a private IPv4 target).
+        std::net::IpAddr::V6(_) => false,
+    }
+}
+
 async fn fetch_models(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -256,31 +279,76 @@ async fn fetch_models(
     let Some(url) = body.get("url").and_then(Value::as_str) else {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":{"message":"Invalid request body","type":"validation_error","code":400}}))).into_response();
     };
+    // Never forward a caller-supplied credential to a caller-supplied host.
+    // Credentialed discovery needs a separately verified saved-provider flow.
+    if body.get("apiKey").is_some() {
+        return ApiError::Simple(StatusCode::BAD_REQUEST, "Credentialed model discovery is unavailable".into()).into_response();
+    }
     let Ok(parsed) = url::Url::parse(url) else {
         return ApiError::Simple(StatusCode::BAD_REQUEST, "Invalid URL".into()).into_response();
     };
-    if !matches!(parsed.scheme(), "http" | "https")
-        || parsed.host_str().is_none()
-        || matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1"))
+    // Credential-free discovery is limited to a reviewed public catalog.
+    // Saved-provider credential discovery requires a separate scoped design.
+    if parsed.scheme() != "https" || parsed.host_str().is_none()
+        || !parsed.username().is_empty() || parsed.password().is_some()
+        || parsed.port().is_some_and(|port| port != 443)
+        || parsed.query().is_some() || parsed.fragment().is_some()
+        || parsed.host_str() != Some("openrouter.ai")
+        || parsed.path() != "/api/v1/models"
     {
         return ApiError::Simple(StatusCode::BAD_REQUEST, "URL is not allowed".into())
             .into_response();
     }
-    let mut request = reqwest::Client::new().get(url);
-    if let Some(key) = body.get("apiKey").and_then(Value::as_str) {
-        request = request.bearer_auth(key);
+    let host = parsed.host_str().unwrap();
+    let Ok(Ok(addresses)) = tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::lookup_host((host, 443))).await else {
+        return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to resolve provider host".into()).into_response();
+    };
+    let addresses: Vec<_> = addresses.collect();
+    let approved = addresses.iter().find(|address| public_discovery_ip(address.ip()) && address.is_ipv4()).copied();
+    if approved.is_none() || addresses.iter().any(|address| address.is_ipv4() && !public_discovery_ip(address.ip())) {
+        return ApiError::Simple(StatusCode::BAD_REQUEST, "URL is not allowed".into()).into_response();
     }
+    let Ok(client) = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
+        .resolve(host, approved.unwrap()).timeout(std::time::Duration::from_secs(10)).build() else {
+        return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to configure provider request".into()).into_response();
+    };
+    let request = client.get(url);
     match request
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await
     {
         Ok(response) if response.status().is_success() => {
-            let payload = response
-                .json::<Value>()
-                .await
-                .unwrap_or_else(|_| serde_json::json!({"data":[]}));
-            Json(payload).into_response()
+            if response.content_length().is_some_and(|size| size > 2_000_000) {
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Model catalog is too large".into()).into_response();
+            }
+            let mut response = response;
+            let mut bytes = Vec::new();
+            loop {
+                let chunk = match response.chunk().await {
+                    Ok(Some(chunk)) => chunk,
+                    Ok(None) => break,
+                    Err(_) => return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to read model catalog".into()).into_response(),
+                };
+                if bytes.len().saturating_add(chunk.len()) > 2_000_000 {
+                    return ApiError::Simple(StatusCode::BAD_GATEWAY, "Model catalog is too large".into()).into_response();
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            if bytes.is_empty() {
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to read model catalog".into()).into_response();
+            }
+            let Ok(payload) = serde_json::from_slice::<Value>(&bytes) else {
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into()).into_response();
+            };
+            let Some(data) = payload.get("data").and_then(Value::as_array) else {
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into()).into_response();
+            };
+            if data.len() > 20_000 || data.iter().any(|model| model.get("id").and_then(Value::as_str).is_none_or(|id| id.is_empty() || id.len() > 200)) {
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into()).into_response();
+            }
+            let sanitized: Vec<Value> = data.iter().map(|model| serde_json::json!({"id":model["id"]})).collect();
+            Json(serde_json::json!({"data":sanitized})).into_response()
         }
         Ok(_) => ApiError::Simple(StatusCode::BAD_GATEWAY, "Provider request failed".into())
             .into_response(),
@@ -289,7 +357,7 @@ async fn fetch_models(
             "Request timed out after 10 seconds".into(),
         )
         .into_response(),
-        Err(error) => ApiError::Simple(StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
+        Err(_) => ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to fetch provider models".into()).into_response(),
     }
 }
 
@@ -379,8 +447,14 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> 
 /// of `ProviderConfigSchema`.
 #[derive(Debug, Deserialize, Default)]
 struct ProviderBody {
+    #[serde(rename = "expectedVersion")]
+    expected_version: Option<i64>,
     display_name: Option<String>,
     api_base_url: Option<String>,
+    #[serde(default)]
+    api_base_urls: Option<HashMap<String, String>>,
+    #[serde(default)]
+    models: Option<HashMap<String, crate::state::ProviderModel>>,
     api_key: Option<String>,
     oauth_provider: Option<String>,
     oauth_account: Option<String>,
@@ -460,7 +534,7 @@ fn is_valid_url_or_oauth(value: &str) -> bool {
     if ProviderConfig::is_oauth_placeholder_url(value) {
         return true;
     }
-    url::Url::parse(value).is_ok()
+    url::Url::parse(value).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some() && u.username().is_empty() && u.password().is_none())
 }
 
 /// Validates a `ProviderBody` against the load-bearing subset of
@@ -472,6 +546,19 @@ fn validate_and_build(
 ) -> Result<ProviderConfig, Vec<ValidationIssue>> {
     let mut issues = Vec::new();
 
+    let api_base_urls = body.api_base_urls.clone().or_else(|| existing.map(|e| e.api_base_urls.clone())).unwrap_or_default();
+    for (kind, url) in &api_base_urls {
+        if !matches!(kind.as_str(), "chat" | "completions" | "messages" | "responses" | "gemini" | "embeddings" | "transcriptions" | "speech" | "openai-images" | "openrouter-images" | "codex-images" | "systemone" | "ollama") {
+            issues.push(ValidationIssue::at("api_base_urls", format!("Unsupported API type: {kind}")));
+        }
+        if !is_valid_url_or_oauth(url) || ProviderConfig::is_oauth_placeholder_url(url) {
+            issues.push(ValidationIssue::at("api_base_urls", format!("Invalid HTTP(S) URL for {kind}; credentials are not allowed")));
+        }
+    }
+    let models = body.models.clone().or_else(|| existing.map(|e| e.models.clone())).unwrap_or_default();
+    if models.keys().any(|model| model.trim().is_empty()) {
+        issues.push(ValidationIssue::at("models", "Model identifiers must not be empty"));
+    }
     let api_base_url = body
         .api_base_url
         .clone()
@@ -549,10 +636,13 @@ fn validate_and_build(
     };
 
     Ok(ProviderConfig {
+        version: existing.map(|provider| provider.version).unwrap_or(1),
         display_name: body
             .display_name
             .or_else(|| existing.and_then(|e| e.display_name.clone())),
         api_base_url,
+        api_base_urls,
+        models,
         api_key,
         oauth_provider,
         oauth_account,
@@ -626,6 +716,12 @@ async fn list_providers(State(state): State<AppState>, headers: HeaderMap) -> Re
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
     }
+    if let Some(pool) = &state.inner.database {
+        let Ok(current) = crate::database::load_providers(pool).await else {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to read providers".into()).into_response();
+        };
+        *state.inner.providers.write().unwrap() = current;
+    }
     let providers = state.inner.providers.read().unwrap();
     Json(providers.clone()).into_response()
 }
@@ -637,6 +733,14 @@ async fn get_provider(
 ) -> Response {
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
+    }
+    if let Some(pool) = &state.inner.database {
+        let current = match crate::database::load_provider(pool, &slug).await {
+            Ok(Some(config)) => config,
+            Ok(None) => return ApiError::Simple(StatusCode::NOT_FOUND, "Provider not found".into()).into_response(),
+            Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to read provider".into()).into_response(),
+        };
+        state.inner.providers.write().unwrap().insert(slug.clone(), current);
     }
     let providers = state.inner.providers.read().unwrap();
     match providers.get(&slug) {
@@ -670,11 +774,13 @@ async fn put_provider(
         return e.into_response();
     }
 
-    if let Some(pool) = &state.inner.database {
-        if let Err(error) = crate::database::upsert_provider(pool, &slug, &config).await {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                .into_response();
-        }
+    let Some(pool) = &state.inner.database else {
+        return ApiError::Simple(StatusCode::SERVICE_UNAVAILABLE, "Database unavailable".into()).into_response();
+    };
+    match crate::database::create_provider_if_absent(pool, &slug, &config).await {
+        Ok(true) => {},
+        Ok(false) => return ApiError::Simple(StatusCode::CONFLICT, "Provider already exists; edit it instead".into()).into_response(),
+        Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create provider".into()).into_response(),
     }
     state
         .inner
@@ -702,18 +808,20 @@ async fn patch_provider(
         .into_response();
     }
 
-    let Some(existing) = state.inner.providers.read().unwrap().get(&slug).cloned() else {
-        return ApiError::Simple(
-            StatusCode::NOT_FOUND,
-            format!("Provider '{slug}' not found"),
-        )
-        .into_response();
+    let Some(pool) = &state.inner.database else {
+        return ApiError::Simple(StatusCode::SERVICE_UNAVAILABLE, "Database unavailable".into()).into_response();
+    };
+    let existing = match crate::database::load_provider(pool, &slug).await {
+        Ok(Some(provider)) => provider,
+        Ok(None) => return ApiError::Simple(StatusCode::NOT_FOUND, "Provider not found".into()).into_response(),
+        Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to read provider".into()).into_response(),
     };
 
     let body: ProviderBody = match serde_json::from_value(raw) {
         Ok(b) => b,
         Err(_) => return ApiError::validation(vec![]).into_response(),
     };
+    let expected_version = body.expected_version;
     let merged = match validate_and_build(body, Some(&existing)) {
         Ok(c) => c,
         Err(issues) => return ApiError::validation(issues).into_response(),
@@ -722,12 +830,15 @@ async fn patch_provider(
         return e.into_response();
     }
 
-    if let Some(pool) = &state.inner.database {
-        if let Err(error) = crate::database::upsert_provider(pool, &slug, &merged).await {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                .into_response();
-        }
-    }
+    // Legacy callers can omit expectedVersion, but their read/merge/write is
+    // still conditional on the revision that was actually read. They may see
+    // a 409 and retry rather than silently clobbering a newer provider.
+    let next_version = match crate::database::update_provider_if_version(pool, &slug, &merged, expected_version.unwrap_or(existing.version)).await {
+        Ok(Some(version)) => version,
+        Ok(None) => return ApiError::Simple(StatusCode::CONFLICT, "Provider changed; reload before saving".into()).into_response(),
+        Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to update provider".into()).into_response(),
+    };
+    let merged = ProviderConfig { version: next_version, ..merged };
     state
         .inner
         .providers

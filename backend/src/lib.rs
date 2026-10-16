@@ -1,4 +1,5 @@
 pub mod aliases;
+pub mod analytics;
 pub mod anthropic_masking;
 pub mod auth;
 pub mod backup;
@@ -7,6 +8,7 @@ pub mod codex_oauth;
 pub mod concurrency;
 pub mod copilot_oauth;
 pub mod config_routes;
+pub mod catalog_organization;
 pub mod cooldowns;
 pub mod credential_crypto;
 pub mod custom_checkers;
@@ -33,6 +35,8 @@ pub mod oauth_server;
 pub mod oauth_transport;
 pub mod openapi;
 pub mod performance;
+pub mod pi_resolve;
+pub mod provider_presets;
 pub mod providers;
 pub mod quota_management;
 pub mod raw;
@@ -55,8 +59,10 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .merge(auth::router())
         .merge(aliases::router())
+        .merge(analytics::router())
         .merge(backup::router())
         .merge(config_routes::router())
+        .merge(catalog_organization::router())
         .merge(concurrency::router())
         .merge(custom_checkers::router())
         .merge(cooldowns::router())
@@ -75,7 +81,9 @@ pub fn app(state: AppState) -> Router {
         .merge(oauth_server::router())
         .merge(openapi::router())
         .merge(performance::router())
+        .merge(pi_resolve::router())
         .merge(keys::router())
+        .merge(provider_presets::router())
         .merge(providers::router())
         .merge(restart::router())
         .merge(raw::router())

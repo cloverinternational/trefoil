@@ -129,7 +129,6 @@ async fn get_server(
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
-    lifecycle_log(&state, format!("MCP local start requested for '{name}'"));
     let Some(pool) = &state.inner.database else {
         return not_found(&name);
     };

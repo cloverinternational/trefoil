@@ -178,9 +178,16 @@ fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option
         let origin = std::env::var("TREFOIL_PUBLIC_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{}", std::env::var("PORT").unwrap_or_else(|_| "8080".into())));
         return openrouter_authorization_url(&origin, session_id, verifier);
     }
+    let origin = std::env::var("TREFOIL_PUBLIC_URL").ok().filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("PUBLIC_URL").ok().filter(|value| !value.trim().is_empty()))?;
+    let mut callback = url::Url::parse(&origin).ok()?;
+    if !matches!(callback.scheme(), "http" | "https") || callback.host_str().is_none() || !callback.username().is_empty() || callback.password().is_some() { return None; }
+    callback.set_path(&format!("/v0/management/oauth/sessions/{session_id}/callback"));
+    callback.set_query(None);
+    callback.set_fragment(None);
+    let redirect = callback.to_string();
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let mut url = url::Url::parse(endpoint).ok()?;
-    let redirect = format!("/v0/management/oauth/sessions/{session_id}/callback");
     url.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", crate::oauth_transport::provider_spec(provider)?.client_id)
@@ -327,10 +334,8 @@ async fn create_session(
         .unwrap()
         .insert(session.id.clone(), verifier);
     if let Some(pool) = &state.inner.database {
-        if crate::database::upsert_oauth_session(pool, &session)
-            .await
-            .is_err()
-        {
+        if let Err(error) = crate::database::upsert_oauth_session(pool, &session).await {
+            eprintln!("oauth session persistence failed: {error}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error":"Unable to persist OAuth session"})),
@@ -443,7 +448,9 @@ async fn callback(
             Err(_) => return oauth_failed(&state, &id, "Unable to persist OAuth session", StatusCode::INTERNAL_SERVER_ERROR).await,
         }
     }
-    let redirect = format!("/v0/management/oauth/sessions/{id}/callback");
+    let Some(redirect) = callback_redirect_uri(&id) else {
+        return oauth_failed(&state, &id, "OAuth public callback URL is not configured", StatusCode::SERVICE_UNAVAILABLE).await;
+    };
     let transport = crate::oauth_transport::ReqwestTransport;
     let token = match crate::oauth_transport::exchange_with_state(
         &transport,
@@ -511,6 +518,17 @@ async fn callback(
 async fn oauth_failed(state: &AppState, id: &str, message: &str, status: StatusCode) -> Response {
     let _ = update_session(state, id, "fail", Some(message.to_string())).await;
     (status, Json(serde_json::json!({"error":message}))).into_response()
+}
+
+fn callback_redirect_uri(id: &str) -> Option<String> {
+    let origin = std::env::var("TREFOIL_PUBLIC_URL").ok().filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("PUBLIC_URL").ok().filter(|value| !value.trim().is_empty()))?;
+    let mut callback = url::Url::parse(&origin).ok()?;
+    if !matches!(callback.scheme(), "http" | "https") || callback.host_str().is_none() || !callback.username().is_empty() || callback.password().is_some() { return None; }
+    callback.set_path(&format!("/v0/management/oauth/sessions/{id}/callback"));
+    callback.set_query(None);
+    callback.set_fragment(None);
+    Some(callback.to_string())
 }
 
 async fn get_session(
@@ -694,7 +712,42 @@ async fn manual_code(
         };
         return callback(State(state), Path(id.clone()), Query(CallbackQuery { code, state:Some(id), error:None })).await;
     }
-    (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error":"Manual provider code exchange is not implemented; no credentials were saved"}))).into_response()
+    let Some(provider) = provider else {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"OAuth session not found"}))).into_response();
+    };
+    let Some(pool) = state.inner.database.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"PostgreSQL is required to persist OAuth credentials"}))).into_response();
+    };
+    if crate::credential_crypto::CredentialKey::from_env().is_err() {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"OAuth credential encryption is not configured"}))).into_response();
+    }
+    if !matches!(crate::database::claim_oauth_exchange(pool, &id).await, Ok(true)) {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response();
+    }
+    let (account, result) = {
+        let session = state.inner.oauth_sessions.read().unwrap().get(&id).cloned();
+        let Some(session) = session else { return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"OAuth session not found"}))).into_response(); };
+        if let Some(current) = state.inner.oauth_sessions.write().unwrap().get_mut(&id) { current.status = "exchanging".into(); }
+        let account = session.account_id;
+        let result = match provider.as_str() {
+            "github-copilot" => match crate::copilot_oauth::poll(body.value.trim(), Duration::from_secs(5)).await {
+                Ok(crate::copilot_oauth::Poll::Complete(token)) => crate::copilot_oauth::exchange(&token).await.map(|(access, expires)| (access, token, expires)),
+                Ok(_) => Err("Device authorization is still pending".into()),
+                Err(error) => Err(error),
+            },
+            "kimi-coding" => crate::kimi_oauth::poll(body.value.trim(), Duration::from_secs(5)).await.and_then(|poll| match poll { crate::kimi_oauth::Poll::Complete{access,refresh,expires} => Ok((access,refresh,expires)), crate::kimi_oauth::Poll::Pending|crate::kimi_oauth::Poll::SlowDown(_) => Err("Device authorization is still pending".into()) }),
+            "xai" => crate::xai_oauth::poll(body.value.trim(), Duration::from_secs(5)).await.and_then(|poll| match poll { crate::xai_oauth::Poll::Complete{access,refresh,expires} => Ok((access,refresh,expires)), crate::xai_oauth::Poll::Pending|crate::xai_oauth::Poll::SlowDown(_) => Err("Device authorization is still pending".into()) }),
+            _ => Err("Manual code exchange is unsupported for this provider".into()),
+        };
+        (account, result)
+    };
+    match result {
+        Ok((access, refresh, expires)) => match crate::database::complete_oauth_exchange(pool, &id, &provider, &account, &access, &refresh, expires).await {
+            Ok(true) => update_session(&state, &id, "manual-code", Some("complete".into())).await,
+            _ => oauth_failed(&state, &id, "Unable to persist OAuth credentials", StatusCode::INTERNAL_SERVER_ERROR).await,
+        },
+        Err(message) => oauth_failed(&state, &id, &message, StatusCode::BAD_GATEWAY).await,
+    }
 }
 
 async fn models(
@@ -1203,5 +1256,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(repeated.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn callback_redirect_requires_safe_public_origin() {
+        std::env::set_var("TREFOIL_PUBLIC_URL", "https://trefoil.lan/base?secret=no");
+        assert_eq!(callback_redirect_uri("session"), Some("https://trefoil.lan/v0/management/oauth/sessions/session/callback".into()));
+        std::env::set_var("TREFOIL_PUBLIC_URL", "file:///tmp");
+        assert!(callback_redirect_uri("session").is_none());
+        std::env::remove_var("TREFOIL_PUBLIC_URL");
     }
 }

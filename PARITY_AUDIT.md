@@ -219,3 +219,28 @@ Scores are now anchored to route/behavior evidence rather than an
 undifferentiated percentage; the categories above without a specific gap
 listed should be read as "no gap found in this pass," not "fully audited
 line-by-line."
+
+## 2026-09-29 refresh (reference 7e959ff8, trefoil working tree)
+
+- [x] Route diff re-generated mechanically against OpenAPI 179 operations:
+      previously-missing `GET /v0/management/provider-presets`,
+      `POST /v0/management/models/metadata/resolve`,
+      `POST /v0/management/pi/resolve-provider`, and
+      `POST /v0/management/quotas/:id/check` are now implemented
+      (`provider_presets.rs`, `metadata.rs`, `pi_resolve.rs`,
+      `custom_checkers.rs`). `POST /v0/management/custom-checkers/:id` in the
+      OpenAPI is a spec artifact of the `/test` route, not a real handler
+      upstream. Remaining known deviations: preset catalog serves the embedded
+      copy only (no remote refresh), pi endpoint table is a curated snapshot,
+      metadata/resolve lacks provider model overrides and heuristic fallback.
+- [x] Production migration path: `migration/plexus_to_trefoil.py` migrates a
+      Plexus SQLite snapshot (config/state tables, optional `--with-history`)
+      into Trefoil Postgres, decrypting Plexus `enc:v1:` config values and
+      re-encrypting OAuth tokens into Trefoil `v1:` AAD envelopes. Verified
+      end-to-end against the production clone (`migration/plexus-snapshot.db`):
+      row counts match exactly, migrated keys authenticate, OAuth envelopes
+      round-trip decrypt.
+- [x] Fixed during migration testing: `database.rs` decoded the TEXT column
+      `providers.quota_checker_options` as `serde_json::Value`, which fails for
+      any non-NULL value since migration 0024 changed the column to TEXT; it
+      now reads TEXT and parses JSON explicitly.

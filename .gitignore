@@ -9,3 +9,5 @@
 /frontend/playwright-report/
 /frontend/test-results/
 /frontend/*.tsbuildinfo
+
+.env

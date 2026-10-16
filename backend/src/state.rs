@@ -16,6 +16,8 @@ use sqlx::PgPool;
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct KeyConfig {
     pub secret: String,
+    #[serde(rename = "permissionGroup", skip_serializing_if = "Option::is_none")]
+    pub permission_group: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     #[serde(rename = "quotas", skip_serializing_if = "Vec::is_empty")]
@@ -112,9 +114,18 @@ fn default_auth() -> String {
 /// fields are intentionally deferred to a later parity slice.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProviderConfig {
+    /// Monotonic per-provider revision for conditional management edits.
+    #[serde(default)]
+    pub version: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub api_base_url: String,
+    /// Optional per-API endpoint overrides; missing entries retain legacy routing.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub api_base_urls: HashMap<String, String>,
+    /// Explicit inventory; empty preserves legacy unrestricted alias/direct routing.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub models: HashMap<String, ProviderModel>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,6 +159,17 @@ pub struct ProviderConfig {
     )]
     pub retry_policy: RetryPolicy,
 }
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProviderModel {
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub model_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access_via: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_id: Option<String>,
+}
+
 
 fn is_default_retry_policy(policy: &RetryPolicy) -> bool {
     *policy == RetryPolicy::default()
@@ -188,6 +210,11 @@ impl Default for ModelAutosync {
 }
 
 impl ProviderConfig {
+    /// Resolve an endpoint override, retaining the legacy scalar fallback.
+    pub fn api_url_for(&self, api_type: &str) -> &str {
+        self.api_base_urls.get(api_type).map(String::as_str).unwrap_or(&self.api_base_url)
+    }
+
     /// Mirrors `isOAuthProviderConfig`: `api_base_url` is an `oauth://`
     /// placeholder (case-insensitive, whitespace-trimmed).
     pub fn is_oauth_provider_config(&self) -> bool {

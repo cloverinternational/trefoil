@@ -21,6 +21,10 @@ import { Models } from './pages/Models';
 import { MyKey } from './pages/MyKey';
 import { Playground } from './pages/Playground';
 import { Metrics } from './pages/Metrics';
+import { AnalyticsDashboard } from './pages/AnalyticsDashboard';
+import { AppShell } from './components/layout/AppShell';
+import { ThemeProvider } from './contexts/ThemeContext';
+import { Toaster } from './components/ui/sonner';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { adminKey } = useAuth();
@@ -29,7 +33,7 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
   if (!adminKey) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
-  return <>{children}</>;
+  return <AppShell>{children}</AppShell>;
 };
 
 const AppRoutes = () => (
@@ -42,6 +46,7 @@ const AppRoutes = () => (
     <Route path="/my-key" element={<ProtectedRoute><MyKey /></ProtectedRoute>} />
     <Route path="/playground" element={<ProtectedRoute><Playground /></ProtectedRoute>} />
     <Route path="/metrics" element={<ProtectedRoute><Metrics /></ProtectedRoute>} />
+    <Route path="/analytics" element={<ProtectedRoute><AnalyticsDashboard /></ProtectedRoute>} />
     <Route path="/quotas" element={<ProtectedRoute><Quotas /></ProtectedRoute>} />
     <Route path="/usage" element={<ProtectedRoute><DetailedUsage /></ProtectedRoute>} />
     <Route path="/detailed-usage" element={<ProtectedRoute><DetailedUsage /></ProtectedRoute>} />
@@ -66,6 +71,9 @@ const AppRoutes = () => (
 
 export const App: React.FC = () => (
   <AuthProvider>
-    <AppRoutes />
+    <ThemeProvider>
+      <AppRoutes />
+      <Toaster />
+    </ThemeProvider>
   </AuthProvider>
 );

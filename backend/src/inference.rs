@@ -41,6 +41,7 @@ struct StreamAccounting {
     start_time: i64,
     input_tokens: Option<i32>,
     output_tokens: Option<i32>,
+    ttft_ms: Option<i64>,
     cost: Option<f32>,
     /// Gemini's final chunk carries usageMetadata and has no [DONE] marker.
     terminal_on_usage: bool,
@@ -75,25 +76,45 @@ impl StreamAccounting {
             self.start_time,
         )
         .await;
+        let elapsed = now_ms().saturating_sub(self.start_time);
+        let successful = outcome == "success";
+        let generation_ms = self.ttft_ms.map(|ttft| elapsed.saturating_sub(ttft));
+        let tokens_per_sec = successful.then(|| self.output_tokens.zip(generation_ms).and_then(|(tokens, ms)| (tokens > 0 && ms > 0 && self.ttft_ms.is_some()).then_some(tokens as f32 * 1000.0 / ms as f32))).flatten();
+        // End-to-end throughput includes first-token latency even when TTFT
+        // is known; generation TPS above excludes it. Both require actual
+        // successful output usage, never a guessed token count.
+        let e2e_tokens_per_sec = successful.then(|| self.output_tokens.zip((elapsed > 0).then_some(elapsed)).and_then(|(tokens, ms)| (tokens > 0 && ms > 0).then_some(tokens as f32 * 1000.0 / ms as f32))).flatten();
         let _ = crate::database::update_request_usage_metrics(
             pool,
             &self.request_id,
             self.input_tokens,
             self.output_tokens,
             self.cost,
-            now_ms().saturating_sub(self.start_time),
+            elapsed,
+            if successful { self.ttft_ms } else { None },
+            tokens_per_sec,
+            e2e_tokens_per_sec,
         )
         .await;
+        if successful && (self.ttft_ms.is_some() || e2e_tokens_per_sec.is_some()) {
+            let _ = crate::database::record_provider_performance(pool, &self.provider, &self.model, &self.request_id, self.ttft_ms, tokens_per_sec, e2e_tokens_per_sec, elapsed).await;
+        }
     }
 
     fn observe(&mut self, data: &str) -> Option<bool> {
         if data.trim() == "[DONE]" {
-            return Some(true);
+            return Some(self.stream_success);
         }
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             return None;
         };
         let gemini_usage = value.get("usageMetadata");
+        let event_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
+        let content_delta = value.pointer("/choices/0/delta/content").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+            || (event_type == "content_block_delta" && value.pointer("/delta/text").and_then(Value::as_str).is_some_and(|s| !s.is_empty()))
+            || (event_type == "response.output_text.delta" && value.pointer("/delta").and_then(Value::as_str).is_some_and(|s| !s.is_empty()))
+            || value.pointer("/candidates/0/content/parts").and_then(Value::as_array).is_some_and(|parts| parts.iter().any(|p| p.get("text").and_then(Value::as_str).is_some_and(|s| !s.is_empty())));
+        if content_delta && self.ttft_ms.is_none() { self.ttft_ms = Some(now_ms().saturating_sub(self.start_time)); }
         let usage = value
             .get("usage")
             .or(gemini_usage)
@@ -128,7 +149,7 @@ impl StreamAccounting {
             .and_then(Value::as_str)
             .unwrap_or_default();
         if event.ends_with(".completed") || event == "message_stop" || event == "completion" {
-            Some(true)
+            Some(self.stream_success)
         } else if event.ends_with(".failed") || event.ends_with(".incomplete") {
             Some(false)
         } else {
@@ -209,6 +230,15 @@ where
             }
         })
     });
+    // A clean HTTP EOF is not an inference success without an SSE terminal
+    // marker. Keep client-drop cancellation distinct from this incomplete EOF.
+    let eof_state = guard.state.clone();
+    let eof_guard = guard.clone();
+    let output = output.chain(futures_util::stream::once(async move {
+        eof_guard.finished.store(true, Ordering::Release);
+        eof_state.lock().await.finalize("error").await;
+        Ok::<Bytes, reqwest::Error>(Bytes::new())
+    }));
     Body::from_stream(output.map(move |item| {
         let _keep_guard = &guard;
         item
@@ -348,7 +378,7 @@ async fn dispatch_transcription(state: AppState, principal: Principal, mut multi
     let request_id = new_request_id();
     let start_time = now_ms();
     let mut attempted = None;
-    let targets: Vec<_> = inference_targets(&state, &model, key_config).collect();
+    let targets: Vec<_> = inference_targets(&state, &model, key_config, "transcriptions").collect();
     let mut failover_policy = RetryableFailoverPolicy::new(targets, failover_enabled(&state));
     while let Some((attempt, (provider_slug, upstream_model))) = failover_policy.next() {
         let attempt_index = (attempt + 1) as i32;
@@ -374,7 +404,7 @@ async fn dispatch_transcription(state: AppState, principal: Principal, mut multi
             Ok(provider) => provider,
             Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
         };
-        let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+        let Ok(base) = dispatch_provider_url(provider.api_url_for("transcriptions")) else {
             let reason = "Provider API base URL is invalid";
             record_attempt(
                 &state,
@@ -968,7 +998,7 @@ async fn dispatch_json(state: &AppState, principal: Principal, mut body: Value, 
     let mut attempted = None;
     // Snapshot candidates before dispatch: failed candidates enter cooldown,
     // so re-evaluating the selector while iterating would skip later targets.
-    let targets: Vec<_> = inference_targets(state, &model, key_config).collect();
+    let targets: Vec<_> = inference_targets(state, &model, key_config, api_type_for_path(path)).collect();
     let mut failover_policy = RetryableFailoverPolicy::new(targets, failover_enabled(&state));
     while let Some((attempt, (provider_slug, upstream_model))) = failover_policy.next() {
         if key_config.is_some_and(|config| !provider_allowed(config, &provider_slug)) {
@@ -993,7 +1023,8 @@ async fn dispatch_json(state: &AppState, principal: Principal, mut body: Value, 
             Ok(provider) => provider,
             Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
         };
-        let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+        let api_type = api_type_for_path(path);
+        let Ok(base) = dispatch_provider_url(provider.api_url_for(api_type)) else {
             let reason = "Provider API base URL is invalid";
             record_attempt(
                 state,
@@ -1044,6 +1075,9 @@ async fn dispatch_json(state: &AppState, principal: Principal, mut body: Value, 
                 .header("x-app", "cli")
                 .header("anthropic-dangerous-direct-browser-access", "true")
                 .json(&request_body);
+            for (name, value) in crate::anthropic_masking::headers() {
+                request = request.header(name, value);
+            }
         }
         request = copilot_headers(request, &provider);
         if let Some(key) = provider.api_key {
@@ -1098,7 +1132,7 @@ async fn dispatch_json(state: &AppState, principal: Principal, mut body: Value, 
                     record_attempt(state,&request_id,(attempt+1) as i32,&provider_slug,&upstream_model,"audio_speech","success",None,Some(status.as_u16() as i32),false,start_time).await;
                     return axum::http::Response::builder().status(status).header("content-type",content_type).header("x-request-id",&request_id)
                         .body(accounted_binary_body(response.bytes_stream(),StreamAccounting {
-                            permit:_permit.take(),pool:state.inner.database.clone(),event_sender:state.inner.usage_events.clone(),request_id:request_id.clone(),key_name:usage_key_name.map(str::to_owned),provider:provider_slug.clone(),model:model.clone(),api_type:"audio_speech".into(),start_time,input_tokens:None,output_tokens:None,cost:None,terminal_on_usage:false,stream_success:true,finalized:false
+                            permit:_permit.take(),pool:state.inner.database.clone(),event_sender:state.inner.usage_events.clone(),request_id:request_id.clone(),key_name:usage_key_name.map(str::to_owned),provider:provider_slug.clone(),model:model.clone(),api_type:"audio_speech".into(),start_time,input_tokens:None,output_tokens:None,ttft_ms:None,cost:None,terminal_on_usage:false,stream_success:true,finalized:false
                         })).unwrap().into_response();
                 }
                 if status.is_success() && original_body
@@ -1129,6 +1163,7 @@ async fn dispatch_json(state: &AppState, principal: Principal, mut body: Value, 
                                 start_time,
                                 input_tokens: None,
                                 output_tokens: None,
+                                ttft_ms: None,
                                 cost: None,
                                 terminal_on_usage: native_gemini,
                                 stream_success: status.is_success(),
@@ -1320,7 +1355,7 @@ async fn dispatch_responses(state: AppState, principal: Principal, mut body: Val
         Principal::Limited { key_name, .. } => Some(key_name.as_str()),
         Principal::Admin => None,
     };
-    let targets: Vec<_> = inference_targets(&state, &model, key_config).collect();
+    let targets: Vec<_> = inference_targets(&state, &model, key_config, "responses").collect();
     if targets.is_empty() {
         return error_response(
             axum::http::StatusCode::NOT_FOUND,
@@ -1363,7 +1398,7 @@ async fn dispatch_responses(state: AppState, principal: Principal, mut body: Val
             Ok(provider) => provider,
             Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
         };
-        let base = match dispatch_provider_url(&provider.api_base_url) {
+        let base = match dispatch_provider_url(provider.api_url_for("responses")) {
             Ok(base) => base,
             Err(_) => {
                 record_attempt(
@@ -1485,6 +1520,7 @@ async fn dispatch_responses(state: AppState, principal: Principal, mut body: Val
                                 start_time,
                                 input_tokens: None,
                                 output_tokens: None,
+                                ttft_ms: None,
                                 cost: None,
                                 terminal_on_usage: false,
                                 stream_success: status.is_success(),
@@ -1519,6 +1555,18 @@ async fn dispatch_responses(state: AppState, principal: Principal, mut body: Val
                             .execute(pool)
                             .await;
                         }
+                    }
+                }
+                let success = status.is_success() && payload.get("status").and_then(Value::as_str).is_none_or(|value| value == "completed");
+                record_basic_usage(&state, &request_id, usage_key_name, &provider_slug, &model, "responses", if success { "success" } else { "error" }, false, start_time).await;
+                if let Some(pool) = &state.inner.database {
+                    let input = payload.pointer("/usage/input_tokens").and_then(Value::as_i64).map(|value| value as i32);
+                    let output = payload.pointer("/usage/output_tokens").and_then(Value::as_i64).map(|value| value as i32);
+                    let elapsed = now_ms().saturating_sub(start_time);
+                    let e2e = output.filter(|tokens| *tokens > 0 && elapsed > 0 && success).map(|tokens| tokens as f32 * 1000.0 / elapsed as f32);
+                    let _ = crate::database::update_request_usage_metrics(pool, &request_id, input, output, None, elapsed, None, None, e2e).await;
+                    if let Some(tps) = e2e {
+                        let _ = crate::database::record_provider_performance(pool, &provider_slug, &model, &request_id, None, None, Some(tps), elapsed).await;
                     }
                 }
                 return (status, Json(payload)).into_response();
@@ -1901,7 +1949,7 @@ async fn dispatch_chat(state: AppState, principal: Principal, mut body: Value) -
     // Snapshot the eligible ordering before attempting a target. A failed
     // target is put on cooldown, so resolving the iterator again would omit
     // it and make `nth(1)` skip the actual next candidate.
-    let targets: Vec<_> = inference_targets(&state, &model, key_config).collect();
+    let targets: Vec<_> = inference_targets(&state, &model, key_config, "chat").collect();
     let Some((provider_slug, upstream_model)) = targets.first().cloned() else {
         return error_response(
             axum::http::StatusCode::NOT_FOUND,
@@ -1941,7 +1989,7 @@ async fn dispatch_chat(state: AppState, principal: Principal, mut body: Value) -
             "model_not_found",
         );
     };
-    if provider.api_base_url.is_empty() {
+    if provider.api_url_for("chat").is_empty() {
         return error_response(
             axum::http::StatusCode::BAD_GATEWAY,
             "Provider has no API base URL",
@@ -1952,7 +2000,7 @@ async fn dispatch_chat(state: AppState, principal: Principal, mut body: Value) -
         Ok(provider) => provider,
         Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
     };
-    let Ok(provider_url) = dispatch_provider_url(&provider.api_base_url) else {
+    let Ok(provider_url) = dispatch_provider_url(provider.api_url_for("chat")) else {
         return error_response(
             axum::http::StatusCode::BAD_GATEWAY,
             "Provider API base URL is invalid",
@@ -2013,6 +2061,7 @@ async fn dispatch_chat(state: AppState, principal: Principal, mut body: Value) -
                             start_time,
                             input_tokens: None,
                             output_tokens: None,
+                            ttft_ms: None,
                             cost: None,
                             terminal_on_usage: false,
                             stream_success: status.is_success(),
@@ -2102,8 +2151,15 @@ async fn dispatch_chat(state: AppState, principal: Principal, mut body: Value) -
                     output_tokens,
                     total_cost,
                     duration_ms,
+                    None,
+                    None,
+                    output_tokens.filter(|v| *v > 0).filter(|_| status.is_success() && duration_ms > 0).map(|v| v as f32 * 1000.0 / duration_ms as f32),
                 )
                 .await;
+                if status.is_success() && duration_ms > 0 && output_tokens.is_some_and(|tokens| tokens > 0) {
+                    let e2e_tps = output_tokens.unwrap_or_default() as f32 * 1000.0 / duration_ms as f32;
+                    let _ = crate::database::record_provider_performance(pool, &provider_slug, &model, &request_id, None, None, Some(e2e_tps), duration_ms).await;
+                }
             }
             let mut response = (status, Json(payload)).into_response();
             if let Ok(value) = request_id.parse() {
@@ -2181,7 +2237,7 @@ async fn chat_status_failover(
             Ok(provider) => provider,
             Err(message) => return error_response(axum::http::StatusCode::BAD_GATEWAY, message, "upstream_error"),
         };
-        let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+        let Ok(base) = dispatch_provider_url(provider.api_url_for("chat")) else {
             continue;
         };
         let mut body = original_body.clone();
@@ -2208,7 +2264,7 @@ async fn chat_status_failover(
                         .body(accounted_sse_body(response.bytes_stream(), StreamAccounting {
                             permit: _permit.take(), pool:state.inner.database.clone(), event_sender:state.inner.usage_events.clone(),
                             request_id:request_id.into(),key_name:usage_key_name.map(str::to_owned),provider:provider_slug.clone(),model:requested_model.into(),api_type:"chat".into(),start_time,
-                            input_tokens:None,output_tokens:None,cost:None,terminal_on_usage:false,stream_success:true,finalized:false,
+                            input_tokens:None,output_tokens:None,ttft_ms:None,cost:None,terminal_on_usage:false,stream_success:true,finalized:false,
                         })).unwrap().into_response();
                 }
                 let payload = response.json::<Value>().await.unwrap_or_else(
@@ -2456,15 +2512,23 @@ async fn record_response_usage(
         let total_cost = payload["usage"]["total_cost"]
             .as_f64()
             .map(|value| value as f32);
+        let duration_ms = now_ms().saturating_sub(start_time);
+        let e2e_tps = output_tokens.filter(|v| *v > 0).filter(|_| success && duration_ms > 0).map(|v| v as f32 * 1000.0 / duration_ms as f32);
         let _ = crate::database::update_request_usage_metrics(
             pool,
             request_id,
             input_tokens,
             output_tokens,
             total_cost,
-            now_ms() - start_time,
+            duration_ms,
+            None,
+            None,
+            e2e_tps,
         )
         .await;
+        if let Some(tps) = e2e_tps {
+            let _ = crate::database::record_provider_performance(pool, provider, model, request_id, None, None, Some(tps), duration_ms).await;
+        }
     }
 }
 
@@ -2612,7 +2676,7 @@ async fn apply_vision_fallthrough(
     if images.is_empty() {
         return;
     }
-    let targets: Vec<_> = inference_targets(state, descriptor_model, key).collect();
+    let targets: Vec<_> = inference_targets(state, descriptor_model, key, "chat").collect();
     let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -2646,7 +2710,7 @@ async fn apply_vision_fallthrough(
             Ok(provider) => provider,
             Err(_) => continue,
         };
-        let Ok(base) = dispatch_provider_url(&provider.api_base_url) else {
+        let Ok(base) = dispatch_provider_url(provider.api_url_for("chat")) else {
                     continue;
                 };
                 let endpoint = format!("{}/chat/completions", base.as_str().trim_end_matches('/'));
@@ -3229,10 +3293,22 @@ impl Iterator for InferenceTargetIter {
     }
 }
 
+fn api_type_for_path(path: &str) -> &'static str {
+    if path == "/messages" { "messages" }
+    else if path.starts_with("/v1beta/models/") { "gemini" }
+    else if path == "/embeddings" { "embeddings" }
+    else if path == "/completions" { "completions" }
+    else if path.starts_with("/images/") { "openai-images" }
+    else if path == "/audio/speech" { "speech" }
+    else if path.starts_with("/audio/") { "transcriptions" }
+    else { "chat" }
+}
+
 fn inference_targets(
     state: &AppState,
     model: &str,
     key_config: Option<&crate::state::KeyConfig>,
+    incoming_api_type: &str,
 ) -> InferenceTargetIter {
     let providers = state.inner.providers.read().unwrap();
     let cooldowns = state.inner.cooldowns.read().unwrap();
@@ -3269,11 +3345,19 @@ fn inference_targets(
                     continue;
                 }
                 if let (Some(provider), Some(target_model)) = (&target.provider, &target.model) {
+                    if providers.get(provider).is_some_and(|config| !config.models.is_empty() && !config.models.contains_key(target_model)) {
+                        continue;
+                    }
                     if providers.contains_key(provider)
                         && key_config.is_none_or(|config| provider_allowed(config, provider))
                         && !cooldown_is_active(cooldowns, provider, target_model, now)
                     {
-                        output.push((provider.clone(), target_model.clone()));
+                        let upstream = providers.get(provider)
+                            .and_then(|config| config.models.get(target_model))
+                            .and_then(|entry| entry.upstream_id.as_deref())
+                            .filter(|id| !id.is_empty())
+                            .unwrap_or(target_model);
+                        output.push((provider.clone(), upstream.to_owned()));
                     }
                 } else if let Some(next) = &target.alias {
                     expand(
@@ -3286,8 +3370,12 @@ fn inference_targets(
     }
 
     if let Some((provider, target_model)) = model.split_once('/') {
-        if providers.contains_key(provider) {
-            targets.push((provider.to_owned(), target_model.to_owned()));
+        if let Some(config) = providers.get(provider).filter(|config| config.models.is_empty() || config.models.contains_key(target_model)) {
+            let upstream = config.models.get(target_model)
+                .and_then(|entry| entry.upstream_id.as_deref())
+                .filter(|id| !id.is_empty())
+                .unwrap_or(target_model);
+            targets.push((provider.to_owned(), upstream.to_owned()));
         }
     } else if providers.contains_key(model) {
         targets.push((model.to_owned(), model.to_owned()));
@@ -3302,6 +3390,21 @@ fn inference_targets(
             &mut visited,
             &mut targets,
         );
+        // api_match narrows to explicitly compatible targets when available.
+        // If none advertise the incoming protocol, preserve the existing
+        // cross-format fallback and original target order.
+        if aliases.get(model).is_some_and(|alias| alias.priority == "api_match") {
+            let compatible: Vec<_> = targets.iter().filter(|(provider, upstream)| {
+                providers.get(provider).is_some_and(|config| {
+                    config.models.iter().any(|(display, entry)| {
+                        (display == upstream || entry.upstream_id.as_deref() == Some(upstream))
+                            && (entry.access_via.iter().any(|api| api == incoming_api_type)
+                                || entry.access_via.is_empty() && config.api_base_urls.contains_key(incoming_api_type))
+                    })
+                })
+            }).cloned().collect();
+            if !compatible.is_empty() { targets = compatible; }
+        }
     }
     InferenceTargetIter {
         targets: targets.into_iter(),
@@ -3553,6 +3656,7 @@ mod tests {
             start_time: 0,
             input_tokens: None,
             output_tokens: None,
+            ttft_ms: None,
             cost: None,
             terminal_on_usage: true,
             stream_success: true,
@@ -4581,6 +4685,8 @@ mod tests {
             .expect("provider request captured");
         assert!(headers.contains("user-agent: claude-cli/2.1.258 (external, cli)"));
         assert!(headers.contains("x-app: cli"));
+        assert!(headers.to_ascii_lowercase().contains("anthropic-beta: oauth-2025-04-20"));
+        assert!(headers.to_ascii_lowercase().contains("x-claude-code-session-id:"));
         assert!(
             headers
                 .to_ascii_lowercase()

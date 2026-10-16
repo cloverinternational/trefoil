@@ -105,6 +105,8 @@ fn now_ms() -> i64 {
 struct KeyBody {
     secret: Option<String>,
     comment: Option<String>,
+    #[serde(rename = "permissionGroup")]
+    permission_group: Option<String>,
     #[serde(rename = "expiresInMinutes")]
     expires_in_minutes: Option<i64>,
     /// Deprecated single-quota field, folded into `quotas` by
@@ -136,6 +138,12 @@ fn normalize_quota_field(body: &KeyBody) -> Option<Vec<String>> {
         Some(q) if !q.is_empty() => Some(vec![q.clone()]),
         _ => None,
     }
+}
+
+fn valid_permission_group(group: &str) -> bool {
+    !group.is_empty()
+        && group.len() <= 64
+        && group.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
 fn has_expiry_fields(value: &Value) -> bool {
@@ -228,6 +236,10 @@ async fn put_key(
         return ApiError::ValidationFailed.into_response();
     };
 
+    if body.permission_group.as_deref().is_some_and(|group| !valid_permission_group(group)) {
+        return ApiError::ValidationFailed.into_response();
+    }
+
     let quotas = normalize_quota_field(&body).unwrap_or_default();
     let expires_at = match &existing {
         Some(existing) => existing.expires_at,
@@ -239,6 +251,7 @@ async fn put_key(
 
     let config = KeyConfig {
         secret,
+        permission_group: body.permission_group,
         comment: body.comment,
         quota_names: quotas,
         allowed_providers: body.allowed_providers.unwrap_or_default(),
@@ -300,9 +313,14 @@ async fn patch_key(
         Err(_) => return ApiError::ValidationFailed.into_response(),
     };
 
+    if body.permission_group.as_deref().is_some_and(|group| !valid_permission_group(group)) {
+        return ApiError::ValidationFailed.into_response();
+    }
+
     let quotas = normalize_quota_field(&body).unwrap_or(existing.quota_names);
     let merged = KeyConfig {
         secret: body.secret.unwrap_or(existing.secret),
+        permission_group: body.permission_group.or(existing.permission_group),
         comment: body.comment.or(existing.comment),
         quota_names: quotas,
         allowed_providers: body.allowed_providers.unwrap_or(existing.allowed_providers),

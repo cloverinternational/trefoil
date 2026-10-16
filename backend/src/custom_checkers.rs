@@ -56,6 +56,13 @@ pub fn router() -> Router<AppState> {
             "/v0/management/custom-checkers/:id/check",
             axum::routing::post(check),
         )
+        // Plexus parity alias: the scheduler-scoped route runs the same
+        // checker execution; upstream resolves the provider from quota
+        // config, so callers here must still pass `provider` in the body.
+        .route(
+            "/v0/management/quotas/:id/check",
+            axum::routing::post(check),
+        )
 }
 
 /// Poll enabled provider custom checkers in the background.
