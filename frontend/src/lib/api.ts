@@ -226,8 +226,11 @@ export async function getRecentUsage(limit = 8): Promise<UsageRecord[]> {
   return Array.isArray(body.data) ? body.data : [];
 }
 
-export async function getUsage(limit = 25, offset = 0): Promise<{ data: UsageRecord[]; total: number }> {
-  const response = await fetch(`/v0/management/usage?limit=${limit}&offset=${offset}`, { headers: authHeaders() });
+export interface UsageFilters { apiKey?: string; incomingModelAlias?: string; provider?: string; startDate?: string; endDate?: string; }
+export async function getUsage(limit = 25, offset = 0, filters: UsageFilters = {}): Promise<{ data: UsageRecord[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
+  const response = await fetch(`/v0/management/usage?${params}`, { headers: authHeaders() });
   if (!response.ok) throw new Error('Unable to load usage records');
   const body = (await response.json()) as { data?: UsageRecord[]; total?: number };
   const total = Number(body.total ?? 0);
@@ -245,11 +248,10 @@ export async function deleteError(id: string): Promise<void> { const r = await f
 export async function deleteErrors(): Promise<void> { const r = await fetch('/v0/management/errors', { method: 'DELETE', headers: authHeaders() }); if (!r.ok) throw new Error('Unable to clear inference errors'); }
 
 export interface ProviderConfig {
-  version?: number;
+  etag?: string;
   display_name?: string;
-  api_base_url: string;
-  api_base_urls?: Record<string, string>;
-  models?: Record<string, { type?: string; access_via?: string[]; upstream_id?: string }>;
+  api_base_url: string | Record<string, string>;
+  models?: string[] | Record<string, { type?: string; access_via?: string[]; [key: string]: unknown }>;
   api_key?: string;
   oauth_provider?: string;
   oauth_account?: string;
@@ -277,6 +279,14 @@ export async function getProviders(): Promise<Record<string, ProviderConfig>> {
   const response = await fetch('/v0/management/providers', { headers: authHeaders() });
   if (!response.ok) throw new Error('Unable to load providers');
   return response.json();
+}
+
+export async function getProvider(name: string): Promise<ProviderConfig> {
+  const response = await fetch(`/v0/management/providers/${encodeURIComponent(name)}`, { headers: authHeaders() });
+  if (!response.ok) throw new Error('Unable to load provider');
+  const etag = response.headers.get('ETag');
+  if (!etag) throw new Error('Provider response omitted its revision ETag');
+  return { ...await response.json() as ProviderConfig, etag };
 }
 
 export async function discoverProviderModels(url: string, apiKey?: string, signal?: AbortSignal): Promise<string[]> {
@@ -318,9 +328,11 @@ export async function getProviderPresets(): Promise<ProviderPreset[]> {
   return Array.isArray(body.data) ? body.data : [];
 }
 
-export async function updateProvider(name: string, provider: Record<string, unknown>): Promise<void> {
+export async function updateProvider(name: string, provider: Record<string, unknown>, etag?: string): Promise<void> {
+  const revision = etag ?? (await getProvider(name)).etag;
+  if (!revision) throw new Error('Provider revision is unavailable; reload before saving');
   const response = await fetch(`/v0/management/providers/${encodeURIComponent(name)}`, {
-    method: 'PATCH', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(provider),
+    method: 'PATCH', headers: { ...authHeaders(), 'content-type': 'application/json', 'If-Match': revision }, body: JSON.stringify(provider),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { error?: string } | null;
@@ -335,9 +347,28 @@ export async function deleteProvider(name: string): Promise<void> {
   if (!response.ok) throw new Error('Unable to delete provider');
 }
 
-export interface OAuthProviderInfo { id: string; name: string; usesCallbackServer?: boolean; capabilities?: { callback: boolean; manualCode: boolean }; }
-export interface OAuthCredentialStatus { ready: boolean; }
-export interface OAuthSession { id: string; providerId: string; accountId: string; status: string; authInfo?: { url?: string; instructions?: string }; prompt?: { message: string; placeholder?: string; allowEmpty?: boolean }; progress: Array<Record<string, unknown>>; error?: string; }
+export interface OAuthProviderInfo { id: string; name: string; usesCallbackServer?: boolean; }
+/** Plexus credential status: age fields appear only for a ready credential. */
+export interface OAuthCredentialStatus { ready: boolean; connectedAt?: number; refreshedAt?: number; expiresAt?: number; }
+/** Plexus `OAuthSessionStatus` (oauth-login-session.ts). */
+export type OAuthSessionStatus = 'in_progress' | 'awaiting_auth' | 'awaiting_prompt' | 'awaiting_manual_code' | 'awaiting_select' | 'success' | 'error' | 'cancelled';
+export const OAUTH_TERMINAL_STATUSES: readonly OAuthSessionStatus[] = ['success', 'error', 'cancelled'];
+export interface OAuthSelectOption { id: string; label: string; description?: string; }
+/** Plexus `OAuthSession` (the public, `stripInternal` shape). */
+export interface OAuthSession {
+  id: string;
+  providerId: string;
+  accountId: string;
+  status: OAuthSessionStatus;
+  authInfo?: { url: string; instructions?: string };
+  prompt?: { message: string; placeholder?: string; allowEmpty?: boolean };
+  select?: { message: string; options: OAuthSelectOption[] };
+  manualCode?: { message: string; placeholder?: string };
+  progress: string[];
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
 export async function getOAuthProviders(): Promise<OAuthProviderInfo[]> {
   const response = await fetch('/v0/management/oauth/providers', { headers: authHeaders() });
   if (!response.ok) throw new Error(response.status === 403 ? 'Administrator access required' : 'Unable to load OAuth providers');
@@ -371,6 +402,7 @@ export function getOAuthSession(id: string): Promise<OAuthSession> { return oaut
 export function cancelOAuthSession(id: string): Promise<OAuthSession> { return oauthSessionRequest(`/v0/management/oauth/sessions/${encodeURIComponent(id)}/cancel`, { method: 'POST' }); }
 export function submitOAuthPrompt(id: string, value?: string): Promise<OAuthSession> { return oauthSessionRequest(`/v0/management/oauth/sessions/${encodeURIComponent(id)}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: value ?? '' }) }); }
 export function submitOAuthManualCode(id: string, value?: string): Promise<OAuthSession> { return oauthSessionRequest(`/v0/management/oauth/sessions/${encodeURIComponent(id)}/manual-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: value ?? '' }) }); }
+export function submitOAuthSelect(id: string, value: string): Promise<OAuthSession> { return oauthSessionRequest(`/v0/management/oauth/sessions/${encodeURIComponent(id)}/select`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value }) }); }
 
 export interface McpServerConfig { upstreamUrl: string; enabled: boolean; mode: string; authScheme?: string | null; launcher?: string | null; packageName?: string | null; args?: string | null; env?: string | null; startupTimeoutMs?: number | null; }
 export interface McpKey { id: number; key: string; isActive: boolean; }
