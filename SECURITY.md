@@ -39,7 +39,7 @@ separately from the database.
 
 | Secret | What it protects | If it leaks | If it is lost |
 |---|---|---|---|
-| `ADMIN_KEY` | Full control of the gateway through the `/v0` management API and admin UI, including reading provider configuration and creating API keys. | Rotate it immediately (change the value and restart the backend) and review API keys, providers and MCP servers for changes. | Set a new value and restart; nothing is encrypted with it. |
+| `ADMIN_KEY` | Full control of the gateway through the `/v0` management API and admin UI, including reading provider configuration (provider API keys are returned decrypted to admins, as in Plexus; they are encrypted at rest when `ENCRYPTION_KEY` is set) and creating API keys. | Rotate it immediately (change the value and restart the backend) and review API keys, providers and MCP servers for changes. | Set a new value and restart; nothing is encrypted with it. |
 | `TREFOIL_CREDENTIAL_KEY` | OAuth access and refresh tokens in `oauth_credentials` (AES-256-GCM; provider, account and field are bound as associated data). | Treat all stored OAuth tokens as compromised: revoke them at each provider and sign in again. | Stored OAuth credentials cannot be decrypted; every OAuth account must be re-authorized. |
 | `ENCRYPTION_KEY` | Provider API keys, API key secrets and other sensitive settings at rest (`enc:v1:` envelope, AES-256-GCM). | Rotate the provider API keys and Trefoil API keys it protected. | Encrypted values cannot be decrypted; re-enter provider keys and re-issue API keys. |
 

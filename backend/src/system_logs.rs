@@ -71,6 +71,7 @@ pub fn publish(state: &AppState, log: SystemLog) {
     if !crate::logging::enabled(&log.level) {
         return;
     }
+    println!("{}", console_line(&log));
     {
         let mut recent = state
             .inner
@@ -85,6 +86,34 @@ pub fn publish(state: &AppState, log: SystemLog) {
     if let Some(sender) = &state.inner.system_logs {
         let _ = sender.send(log);
     }
+}
+
+/// Plexus's winston Console transport line (`utils/logger.ts` consoleFormat),
+/// without ANSI colours: `timestamp [level] [module]: message {meta}`.
+fn console_line(log: &SystemLog) -> String {
+    let module = log
+        .context
+        .get("module")
+        .and_then(|v| v.as_str())
+        .map(|m| format!(" [{m}]"))
+        .unwrap_or_default();
+    let mut line = format!(
+        "{} [{}]{}: {}",
+        log.timestamp, log.level, module, log.message
+    );
+    let rest: serde_json::Map<_, _> = log
+        .context
+        .iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "module" | "functionName"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if !rest.is_empty() {
+        if let Ok(meta) = serde_json::to_string_pretty(&rest) {
+            line.push(' ');
+            line.push_str(&meta);
+        }
+    }
+    line
 }
 
 pub fn event(

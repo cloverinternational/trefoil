@@ -41,6 +41,8 @@ First public release. Trefoil is a Rust port of
   Trefoil.
 - Docker Compose deployment (PostgreSQL, backend, nginx frontend) with health
   checks.
+- System log entries are written to stdout in Plexus's console format
+  (`timestamp [level] [module]: message`), so `docker compose logs` shows them.
 - Parity tooling: differential harness, oracle suites with recording mock
   upstreams, and focused end-to-end scripts.
 - CI for formatting, linting, unit tests, frontend build and Docker images;
