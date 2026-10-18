@@ -20,7 +20,7 @@ describe('differential report', () => {
 describe('differential reconciliation', () => {
   test('exports a unique complete registered inventory', () => {
     const names = registeredCaseNames();
-    expect(names.length).toBe(407);
+    expect(names.length).toBe(428);
     expect(new Set(names).size).toBe(names.length);
   });
 

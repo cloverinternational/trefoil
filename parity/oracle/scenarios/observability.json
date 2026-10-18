@@ -1,0 +1,396 @@
+{
+ "setup": [],
+ "scenarios": [
+  {
+   "name": "usage list default",
+   "method": "GET",
+   "path": "/v0/management/usage",
+   "admin": true
+  },
+  {
+   "name": "usage list limit/offset",
+   "method": "GET",
+   "path": "/v0/management/usage?limit=3&offset=2",
+   "admin": true
+  },
+  {
+   "name": "usage list sort asc by provider",
+   "method": "GET",
+   "path": "/v0/management/usage?sortBy=provider&sortDir=asc&limit=5",
+   "admin": true
+  },
+  {
+   "name": "usage list sort bogus",
+   "method": "GET",
+   "path": "/v0/management/usage?sortBy=nope&limit=2",
+   "admin": true
+  },
+  {
+   "name": "usage list fields",
+   "method": "GET",
+   "path": "/v0/management/usage?fields=provider,%20incomingModelAlias,bogus,responseStatus&limit=4",
+   "admin": true
+  },
+  {
+   "name": "usage filter provider like",
+   "method": "GET",
+   "path": "/v0/management/usage?provider=chat",
+   "admin": true
+  },
+  {
+   "name": "usage filter alias",
+   "method": "GET",
+   "path": "/v0/management/usage?incomingModelAlias=msg",
+   "admin": true
+  },
+  {
+   "name": "usage filter apiKey like",
+   "method": "GET",
+   "path": "/v0/management/usage?apiKey=k&limit=2",
+   "admin": true
+  },
+  {
+   "name": "usage filter status",
+   "method": "GET",
+   "path": "/v0/management/usage?responseStatus=error",
+   "admin": true
+  },
+  {
+   "name": "usage filter incomingApiType",
+   "method": "GET",
+   "path": "/v0/management/usage?incomingApiType=messages",
+   "admin": true
+  },
+  {
+   "name": "usage filter outgoingApiType",
+   "method": "GET",
+   "path": "/v0/management/usage?outgoingApiType=gemini",
+   "admin": true
+  },
+  {
+   "name": "usage filter selectedModelName",
+   "method": "GET",
+   "path": "/v0/management/usage?selectedModelName=mock",
+   "admin": true
+  },
+  {
+   "name": "usage filter dates",
+   "method": "GET",
+   "path": "/v0/management/usage?startDate=2000-01-01&endDate=2100-01-01&limit=1",
+   "admin": true
+  },
+  {
+   "name": "usage filter dates empty",
+   "method": "GET",
+   "path": "/v0/management/usage?startDate=2100-01-01",
+   "admin": true
+  },
+  {
+   "name": "usage filter duration",
+   "method": "GET",
+   "path": "/v0/management/usage?minDurationMs=0&maxDurationMs=100000&limit=1",
+   "admin": true
+  },
+  {
+   "name": "usage unauth",
+   "method": "GET",
+   "path": "/v0/management/usage"
+  },
+  {
+   "name": "summary default",
+   "method": "GET",
+   "path": "/v0/management/usage/summary",
+   "admin": true
+  },
+  {
+   "name": "summary hour",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=hour",
+   "admin": true
+  },
+  {
+   "name": "summary week",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=week",
+   "admin": true
+  },
+  {
+   "name": "summary month breakdowns",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=month&breakdowns=provider,modelAlias,status",
+   "admin": true
+  },
+  {
+   "name": "summary breakdown apiKey limit 1",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?breakdowns=provider&breakdownLimit=1",
+   "admin": true
+  },
+  {
+   "name": "summary exclude",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?breakdowns=modelAlias,apiKey&exclude=directModels,probe",
+   "admin": true
+  },
+  {
+   "name": "summary bad range",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=year",
+   "admin": true
+  },
+  {
+   "name": "summary custom missing",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=custom",
+   "admin": true
+  },
+  {
+   "name": "summary custom bad date",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=custom&startDate=x&endDate=y",
+   "admin": true
+  },
+  {
+   "name": "summary custom reversed",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=custom&startDate=2026-01-02&endDate=2026-01-01",
+   "admin": true
+  },
+  {
+   "name": "summary custom future",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=custom&startDate=2026-01-01&endDate=2099-01-01",
+   "admin": true
+  },
+  {
+   "name": "summary custom too long",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=custom&startDate=2020-01-01&endDate=2026-01-01",
+   "admin": true
+  },
+  {
+   "name": "summary custom ok",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?range=custom&startDate=2026-01-01T00:00:00Z&endDate=2026-01-01T00:20:00Z",
+   "admin": true
+  },
+  {
+   "name": "summary bad breakdown",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?breakdowns=foo",
+   "admin": true
+  },
+  {
+   "name": "summary too many breakdowns",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?breakdowns=provider,modelAlias,apiKey,status",
+   "admin": true
+  },
+  {
+   "name": "summary bad exclusion",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?exclude=foo",
+   "admin": true
+  },
+  {
+   "name": "summary bad limit",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?breakdownLimit=0",
+   "admin": true
+  },
+  {
+   "name": "summary bad limit float",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?breakdownLimit=2.5",
+   "admin": true
+  },
+  {
+   "name": "errors list",
+   "method": "GET",
+   "path": "/v0/management/errors",
+   "admin": true
+  },
+  {
+   "name": "errors list paged",
+   "method": "GET",
+   "path": "/v0/management/errors?limit=2&offset=1",
+   "admin": true
+  },
+  {
+   "name": "debug state",
+   "method": "GET",
+   "path": "/v0/management/debug",
+   "admin": true
+  },
+  {
+   "name": "debug logs",
+   "method": "GET",
+   "path": "/v0/management/debug/logs",
+   "admin": true
+  },
+  {
+   "name": "debug log missing",
+   "method": "GET",
+   "path": "/v0/management/debug/logs/nope",
+   "admin": true
+  },
+  {
+   "name": "performance",
+   "method": "GET",
+   "path": "/v0/management/performance",
+   "admin": true
+  },
+  {
+   "name": "performance filtered",
+   "method": "GET",
+   "path": "/v0/management/performance?provider=up-chat&model=mock-model",
+   "admin": true
+  },
+  {
+   "name": "concurrency",
+   "method": "GET",
+   "path": "/v0/management/concurrency",
+   "admin": true
+  },
+  {
+   "name": "mcp logs",
+   "method": "GET",
+   "path": "/v0/management/mcp-logs",
+   "admin": true
+  },
+  {
+   "name": "metrics",
+   "method": "GET",
+   "path": "/v0/management/metrics",
+   "admin": true
+  },
+  {
+   "name": "usage delete missing",
+   "method": "DELETE",
+   "path": "/v0/management/usage/nope",
+   "admin": true
+  },
+  {
+   "name": "errors delete missing",
+   "method": "DELETE",
+   "path": "/v0/management/errors/nope",
+   "admin": true
+  },
+  {
+   "name": "debug log delete missing",
+   "method": "DELETE",
+   "path": "/v0/management/debug/logs/nope",
+   "admin": true
+  },
+  {
+   "name": "performance delete missing model",
+   "method": "DELETE",
+   "path": "/v0/management/performance?model=ghost",
+   "admin": true
+  },
+  {
+   "name": "limited usage list",
+   "method": "GET",
+   "path": "/v0/management/usage?apiKey=other&limit=3",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited summary",
+   "method": "GET",
+   "path": "/v0/management/usage/summary?breakdowns=apiKey",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited errors",
+   "method": "GET",
+   "path": "/v0/management/errors",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited delete usage",
+   "method": "DELETE",
+   "path": "/v0/management/usage",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited delete usage id",
+   "method": "DELETE",
+   "path": "/v0/management/usage/x",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited delete errors",
+   "method": "DELETE",
+   "path": "/v0/management/errors",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited delete error id",
+   "method": "DELETE",
+   "path": "/v0/management/errors/x",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited performance",
+   "method": "GET",
+   "path": "/v0/management/performance",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited metrics",
+   "method": "GET",
+   "path": "/v0/management/metrics",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited debug logs",
+   "method": "GET",
+   "path": "/v0/management/debug/logs",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited concurrency",
+   "method": "GET",
+   "path": "/v0/management/concurrency",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "limited mcp logs",
+   "method": "GET",
+   "path": "/v0/management/mcp-logs",
+   "headers": {
+    "x-admin-key": "sk-k"
+   }
+  },
+  {
+   "name": "bad admin key",
+   "method": "GET",
+   "path": "/v0/management/usage",
+   "headers": {
+    "x-admin-key": "nope"
+   }
+  }
+ ]
+}

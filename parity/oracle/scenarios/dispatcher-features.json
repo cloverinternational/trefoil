@@ -1,0 +1,40 @@
+{
+  "setup": [
+    ["PUT", "/v0/management/providers/up-chat", {"api_base_url": {"chat": "{{MOCK}}/v1"}, "api_key": "sk-up-chat", "models": {"mock-model": {}, "mock-tool": {}, "vision-desc": {}}}],
+    ["PUT", "/v0/management/providers/up-slow", {"api_base_url": {"chat": "{{MOCK}}/v1"}, "api_key": "sk-up-slow", "stallMinBps": 1000, "stallGracePeriodMs": 0, "stallWindowMs": 3000, "models": {"mock-slow": {}}}],
+    ["PUT", "/v0/management/providers/up-ollama", {"api_base_url": {"ollama": "{{MOCK}}"}, "api_key": "sk-up-ollama", "models": {"llama-mock": {}, "llama-tool": {}}}],
+    ["PUT", "/v0/management/aliases/slow-a", {"target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-slow", "model": "mock-slow"}]}]}],
+    ["PUT", "/v0/management/aliases/ollama-a", {"target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-ollama", "model": "llama-mock"}]}]}],
+    ["PUT", "/v0/management/aliases/ollama-tool", {"target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-ollama", "model": "llama-tool"}]}]}],
+    ["PUT", "/v0/management/aliases/desc-a", {"target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-chat", "model": "vision-desc"}]}]}],
+    ["PUT", "/v0/management/aliases/vision-a", {"use_image_fallthrough": true, "target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-chat", "model": "mock-model"}]}]}],
+    ["PUT", "/v0/management/aliases/limited-a", {"enforce_limits": true, "metadata": {"source": "custom", "overrides": {"name": "Tiny", "context_length": 200, "top_provider": {"context_length": 200, "max_completion_tokens": 50}}}, "target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-chat", "model": "mock-model"}]}]}],
+    ["PUT", "/v0/management/aliases/limited-nometa", {"enforce_limits": true, "metadata": {"source": "disabled"}, "target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-chat", "model": "mock-model"}]}]}],
+    ["PATCH", "/v0/management/config/vision-fallthrough", {"descriptor_model": "desc-a", "default_prompt": "Describe."}],
+    ["PUT", "/v0/management/keys/ip-local", {"secret": "sk-ip-local", "allowedIps": ["127.0.0.1", "::1"]}],
+    ["PUT", "/v0/management/keys/ip-remote", {"secret": "sk-ip-remote", "allowedIps": ["10.0.0.0/8"]}],
+    ["PUT", "/v0/management/keys/ip-xff", {"secret": "sk-ip-xff", "allowedIps": ["203.0.113.0/24"]}]
+  ],
+  "scenarios": [
+    {"name": "ollama unary", "path": "/v1/chat/completions", "body": {"model": "ollama-a", "max_tokens": 20, "temperature": 0.5, "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}, {"type": "text", "text": "there"}]}]}},
+    {"name": "ollama stream", "path": "/v1/chat/completions", "body": {"model": "ollama-a", "stream": true, "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "ollama tools", "path": "/v1/chat/completions", "body": {"model": "ollama-tool", "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}], "messages": [{"role": "user", "content": "weather"}]}},
+    {"name": "ollama via messages", "path": "/v1/messages", "body": {"model": "ollama-a", "max_tokens": 30, "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "ollama via responses stream", "path": "/v1/responses", "body": {"model": "ollama-a", "stream": true, "input": "hi"}},
+    {"name": "enforce limits rejects", "path": "/v1/chat/completions", "body": {"model": "limited-a", "messages": [{"role": "user", "content": "This prompt is long enough to blow past a two hundred token window once the reservation of fifty output tokens is counted. This prompt is long enough to blow past a two hundred token window once the reservation of fifty output tokens is counted. This prompt is long enough to blow past a two hundred token window once the reservation of fifty output tokens is counted. This prompt is long enough to blow past a two hundred token window once the reservation of fifty output tokens is counted. This prompt is long enough to blow past a two hundred token window once the reservation of fifty output tokens is counted. This prompt is long enough to blow past a two hundred token window once the reservation of fifty output tokens is counted."}]}},
+    {"name": "enforce limits messages rejects", "path": "/v1/messages", "body": {"model": "limited-a", "max_tokens": 10, "messages": [{"role": "user", "content": "This prompt is long enough to blow past a two hundred token window once the reservation is counted. This prompt is long enough to blow past a two hundred token window once the reservation is counted. This prompt is long enough to blow past a two hundred token window once the reservation is counted. This prompt is long enough to blow past a two hundred token window once the reservation is counted. This prompt is long enough to blow past a two hundred token window once the reservation is counted. This prompt is long enough to blow past a two hundred token window once the reservation is counted. This prompt is long enough to blow past a two hundred token window once the reservation is counted."}]}},
+    {"name": "enforce limits passes small", "path": "/v1/chat/completions", "body": {"model": "limited-a", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "enforce limits no metadata fails open", "path": "/v1/chat/completions", "body": {"model": "limited-nometa", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "vision fallthrough", "path": "/v1/chat/completions", "body": {"model": "vision-a", "messages": [{"role": "user", "content": [{"type": "text", "text": "what is this"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}]}]}},
+    {"name": "vision fallthrough anthropic image", "path": "/v1/messages", "body": {"model": "vision-a", "max_tokens": 20, "messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}}, {"type": "text", "text": "describe"}]}]}},
+    {"name": "vision fallthrough cached", "path": "/v1/chat/completions", "body": {"model": "vision-a", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}]}]}},
+    {"name": "no fallthrough on plain alias", "path": "/v1/chat/completions", "body": {"model": "desc-a", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}]}]}},
+    {"name": "ip allowlist local ok", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-ip-local"}, "body": {"model": "desc-a", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "ip allowlist remote denied", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-ip-remote"}, "body": {"model": "desc-a", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "ip allowlist forwarded allowed", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-ip-xff", "x-forwarded-for": "203.0.113.9, 10.0.0.1"}, "body": {"model": "desc-a", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "ip allowlist forwarded denied", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-ip-xff", "x-forwarded-for": "198.51.100.1"}, "body": {"model": "desc-a", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "ip allowlist cf header", "path": "/v1/messages", "headers": {"authorization": "Bearer sk-ip-xff", "cf-connecting-ip": "203.0.113.200"}, "body": {"model": "desc-a", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "ip allowlist responses denied", "path": "/v1/responses", "headers": {"authorization": "Bearer sk-ip-remote"}, "body": {"model": "desc-a", "input": "hi"}},
+    {"name": "ip allowlist stored response read denied", "method": "GET", "path": "/v1/responses/resp_missing", "headers": {"authorization": "Bearer sk-ip-remote"}}
+  ]
+}

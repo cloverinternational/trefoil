@@ -41,9 +41,18 @@ command -v docker >/dev/null || die "docker is required"
 echo "Starting PostgreSQL..."
 # Run an isolated disposable database. Do not use compose --service-ports:
 # its service mapping and -p override collide when both publish 5432.
-postgres_id=$(docker run --rm -d --tmpfs /var/lib/postgresql/data \
-  -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil \
-  -p "127.0.0.1:${POSTGRES_PORT}:5432" postgres:16-alpine)
+# POSTGRES_NETWORK=host is an opt-in for hosts whose Docker bridge is
+# unreachable; it needs an explicit free POSTGRES_PORT.
+if [[ "${POSTGRES_NETWORK:-}" == host ]]; then
+  [[ "$POSTGRES_PORT" != 0 ]] || die "POSTGRES_NETWORK=host requires POSTGRES_PORT"
+  postgres_id=$(docker run --rm -d --network host --tmpfs /var/lib/postgresql/data \
+    -e PGPORT="$POSTGRES_PORT" -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil \
+    postgres:16-alpine)
+else
+  postgres_id=$(docker run --rm -d --tmpfs /var/lib/postgresql/data \
+    -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil \
+    -p "127.0.0.1:${POSTGRES_PORT}:5432" postgres:16-alpine)
+fi
 if [[ "$POSTGRES_PORT" == 0 ]]; then
   POSTGRES_PORT=$(docker port "$postgres_id" 5432/tcp | sed -E 's/.*:([0-9]+)$/\1/')
   [[ -n "$POSTGRES_PORT" ]] || die "failed to determine PostgreSQL host port"
@@ -55,6 +64,14 @@ for attempt in {1..60}; do
   [[ "$attempt" == 60 ]] && die "PostgreSQL did not become ready"
   sleep 1
 done
+
+# PLEXUS_STORAGE=postgres runs the reference on its own database in the same
+# PostgreSQL server (default: SQLite file), so both sides share storage semantics.
+PLEXUS_DATABASE_URL="sqlite://$tmp_dir/plexus.db"
+if [[ "${PLEXUS_STORAGE:-sqlite}" == postgres ]]; then
+  docker exec "$postgres_id" psql -U trefoil -d trefoil -c "CREATE DATABASE plexus" >/dev/null
+  PLEXUS_DATABASE_URL="postgres://trefoil:trefoil@127.0.0.1:${POSTGRES_PORT}/plexus"
+fi
 
 if [[ "$SKIP_REFERENCE_BUILD" != 1 ]]; then
   echo "Building Plexus reference..."
@@ -68,7 +85,7 @@ fi
 echo "Starting Plexus and Trefoil..."
 (
   cd "$REFERENCE_DIR"
-  ADMIN_KEY="$ADMIN_KEY" DATABASE_URL="sqlite://$tmp_dir/plexus.db" PORT="$PLEXUS_PORT" \
+  ADMIN_KEY="$ADMIN_KEY" DATABASE_URL="$PLEXUS_DATABASE_URL" PORT="$PLEXUS_PORT" \
     bun run packages/backend/src/index.ts
 ) >"$plexus_log" 2>&1 & plexus_pid=$!
 (

@@ -1,0 +1,747 @@
+{
+ "setup": [
+  [
+   "PUT",
+   "/v0/management/keys/k",
+   {
+    "secret": "sk-k"
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/claude-oauth",
+   {
+    "api_base_url": "oauth://",
+    "oauth_provider": "anthropic",
+    "oauth_account": "acct",
+    "models": [
+     "claude-mock",
+     "claude-mock-echotool"
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/codex-oauth",
+   {
+    "api_base_url": "oauth://",
+    "oauth_provider": "openai-codex",
+    "oauth_account": "acct",
+    "models": [
+     "gpt-mock-codex",
+     "gpt-mock-codex-echotool"
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/meta-oauth",
+   {
+    "api_base_url": "oauth://",
+    "oauth_provider": "meta",
+    "oauth_account": "acct",
+    "models": [
+     "muse-spark"
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/xai-oauth",
+   {
+    "api_base_url": "oauth://",
+    "oauth_provider": "xai",
+    "oauth_account": "acct",
+    "models": [
+     "grok-mock"
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/kimi-oauth",
+   {
+    "api_base_url": "oauth://",
+    "oauth_provider": "kimi-coding",
+    "oauth_account": "acct",
+    "models": [
+     "kimi-mock"
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/or-oauth",
+   {
+    "api_base_url": "oauth://",
+    "oauth_provider": "openrouter",
+    "oauth_account": "acct",
+    "models": [
+     "or-mock"
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/masked",
+   {
+    "api_base_url": {
+     "messages": "https://api.anthropic.com"
+    },
+    "api_key": "sk-ant-api03-mask",
+    "useClaudeMasking": true,
+    "models": [
+     "claude-mock"
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/codex-img",
+   {
+    "api_base_url": "oauth://",
+    "oauth_provider": "openai-codex",
+    "oauth_account": "acct",
+    "models": {
+     "gpt-image-mock": {
+      "type": "image",
+      "access_via": [
+       "codex-images"
+      ]
+     }
+    }
+   }
+  ]
+ ],
+ "reset_cooldowns": true,
+ "scenarios": [
+  {
+   "name": "messages unary anthropic oauth",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/claude-oauth/claude-mock",
+    "max_tokens": 200,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello there from the oracle"
+     }
+    ],
+    "system": "You are helpful.",
+    "tools": [
+     {
+      "name": "bash",
+      "description": "Run",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     },
+     {
+      "name": "read",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ]
+      }
+     },
+     {
+      "name": "custom_tool",
+      "description": "Mine",
+      "input_schema": {
+       "type": "object",
+       "properties": {}
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "messages stream anthropic oauth",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/claude-oauth/claude-mock",
+    "max_tokens": 200,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello there from the oracle"
+     }
+    ],
+    "stream": true,
+    "thinking": {
+     "type": "enabled",
+     "budget_tokens": 1024
+    }
+   }
+  },
+  {
+   "name": "messages stream anthropic echotool reversal",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/claude-oauth/claude-mock-echotool",
+    "max_tokens": 200,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello there from the oracle"
+     }
+    ],
+    "stream": true,
+    "tools": [
+     {
+      "name": "bash",
+      "description": "Run",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     },
+     {
+      "name": "read",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ]
+      }
+     },
+     {
+      "name": "custom_tool",
+      "description": "Mine",
+      "input_schema": {
+       "type": "object",
+       "properties": {}
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "messages unary anthropic echotool reversal",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/claude-oauth/claude-mock-echotool",
+    "max_tokens": 200,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello there from the oracle"
+     }
+    ],
+    "tools": [
+     {
+      "name": "bash",
+      "description": "Run",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     },
+     {
+      "name": "read",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ]
+      }
+     },
+     {
+      "name": "custom_tool",
+      "description": "Mine",
+      "input_schema": {
+       "type": "object",
+       "properties": {}
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "tool",
+     "name": "bash"
+    }
+   }
+  },
+  {
+   "name": "messages beta merge",
+   "path": "/v1/messages",
+   "headers": {
+    "anthropic-beta": "advisor-tool-2026-03-01,custom-beta-1"
+   },
+   "body": {
+    "model": "direct/claude-oauth/claude-mock",
+    "max_tokens": 200,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello there from the oracle"
+     }
+    ]
+   }
+  },
+  {
+   "name": "chat to anthropic oauth unary",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/claude-oauth/claude-mock",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "chat to anthropic oauth stream tools",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/claude-oauth/claude-mock-echotool",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "stream": true,
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "lookup_thing",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "q": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "responses to anthropic oauth",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/claude-oauth/claude-mock",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "gemini to anthropic oauth",
+   "path": "/v1beta/models/direct/claude-oauth/claude-mock:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "genuine claude passthrough",
+   "path": "/v1/messages",
+   "headers": {
+    "user-agent": "claude-cli/2.1.300 (external, cli)",
+    "x-app": "cli",
+    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14",
+    "x-claude-code-session-id": "sess-1"
+   },
+   "body": {
+    "model": "direct/claude-oauth/claude-mock",
+    "max_tokens": 100,
+    "system": [
+     {
+      "type": "text",
+      "text": "x-anthropic-billing-header: cc_version=2.1.300.abc; cc_entrypoint=cli;"
+     },
+     {
+      "type": "text",
+      "text": "You are Claude Code, Anthropic's official CLI for Claude."
+     },
+     {
+      "type": "text",
+      "text": "more"
+     }
+    ],
+    "metadata": {
+     "user_id": "{\"device_id\": \"dev\", \"session_id\": \"sess-1\"}"
+    },
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "masked api key unary",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/masked/claude-mock",
+    "max_tokens": 200,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello there from the oracle"
+     }
+    ],
+    "system": [
+     {
+      "type": "text",
+      "text": "Sys"
+     }
+    ],
+    "tools": [
+     {
+      "name": "bash",
+      "description": "Run",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     },
+     {
+      "name": "read",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "path": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ]
+      }
+     },
+     {
+      "name": "custom_tool",
+      "description": "Mine",
+      "input_schema": {
+       "type": "object",
+       "properties": {}
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "masked api key stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/masked/claude-mock",
+    "max_tokens": 200,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello there from the oracle"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "responses to codex unary",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/codex-oauth/gpt-mock-codex",
+    "input": "hi",
+    "max_output_tokens": 50,
+    "service_tier": "flex",
+    "prompt_cache_key": "pk-1"
+   }
+  },
+  {
+   "name": "responses to codex stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/codex-oauth/gpt-mock-codex",
+    "input": "hi",
+    "stream": true,
+    "instructions": "Be good"
+   }
+  },
+  {
+   "name": "responses codex cli passthrough",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/codex-oauth/gpt-mock-codex",
+    "input": "hi",
+    "stream": true,
+    "store": false,
+    "client_metadata": {
+     "turn_id": "t1"
+    }
+   }
+  },
+  {
+   "name": "responses codex tools",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/codex-oauth/gpt-mock-codex-echotool",
+    "input": "hi",
+    "tools": [
+     {
+      "type": "function",
+      "name": "lookup_thing",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "q": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "chat to codex unary",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/codex-oauth/gpt-mock-codex",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "chat to codex stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/codex-oauth/gpt-mock-codex",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "messages to codex",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/codex-oauth/gpt-mock-codex",
+    "max_tokens": 200,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello there from the oracle"
+     }
+    ]
+   }
+  },
+  {
+   "name": "chat to meta",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/meta-oauth/muse-spark",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "responses to meta stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/meta-oauth/muse-spark",
+    "input": "hi",
+    "stream": true
+   }
+  },
+  {
+   "name": "chat to xai generic unary",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/xai-oauth/grok-mock",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "chat to xai generic stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/xai-oauth/grok-mock",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "messages to xai generic",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/xai-oauth/grok-mock",
+    "max_tokens": 200,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello there from the oracle"
+     }
+    ]
+   }
+  },
+  {
+   "name": "chat to kimi toAuth error",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/kimi-oauth/kimi-mock",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "chat to openrouter missing creds",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/or-oauth/or-mock",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "chat to openrouter missing creds stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/or-oauth/or-mock",
+    "messages": [
+     {
+      "role": "system",
+      "content": "Be brief"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "codex images generation",
+   "path": "/v1/images/generations",
+   "body": {
+    "model": "direct/codex-img/gpt-image-mock",
+    "prompt": "a cat",
+    "size": "1024x1024"
+   }
+  }
+ ]
+}

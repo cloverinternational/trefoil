@@ -1,0 +1,166 @@
+{
+ "setup": [
+  [
+   "PUT",
+   "/v0/management/providers/net-refused",
+   {
+    "api_base_url": {
+     "chat": "http://127.0.0.1:1/v1"
+    },
+    "api_key": "sk-up-net",
+    "models": {
+     "m-refused": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/net-dns",
+   {
+    "api_base_url": {
+     "chat": "http://nonexistent-host-zzz.invalid/v1"
+    },
+    "api_key": "sk-up-net",
+    "models": {
+     "m-dns": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/net-good",
+   {
+    "api_base_url": {
+     "chat": "{{MOCK}}/v1"
+    },
+    "api_key": "sk-up-net",
+    "models": {
+     "mock-model": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/net-refused-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "net-refused",
+        "model": "m-refused"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/net-dns-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "net-dns",
+        "model": "m-dns"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/net-failover-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "net-refused",
+        "model": "m-refused"
+       },
+       {
+        "provider": "net-good",
+        "model": "mock-model"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ ],
+ "scenarios": [
+  {
+   "name": "connection refused",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "net-refused-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   },
+   "reset_cooldowns": true
+  },
+  {
+   "name": "dns failure",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "net-dns-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   },
+   "reset_cooldowns": true
+  },
+  {
+   "name": "refused then good target",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "net-failover-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   },
+   "reset_cooldowns": true
+  },
+  {
+   "name": "refused stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "net-dns-a",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   },
+   "reset_cooldowns": true
+  },
+  {
+   "name": "cooldown count after failover",
+   "method": "GET",
+   "path": "/v0/management/cooldowns",
+   "admin": true
+  }
+ ]
+}
