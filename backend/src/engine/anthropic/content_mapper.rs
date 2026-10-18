@@ -14,7 +14,9 @@ use serde_json::{json, Value};
 pub fn convert_anthropic_content(content: &[Value]) -> EngineResult<Option<Value>> {
     let mut parts: Vec<Value> = Vec::new();
     for c in content {
-        if c.is_null() { return Err(type_error(Some(c), "c.type")); }
+        if c.is_null() {
+            return Err(type_error(Some(c), "c.type"));
+        }
         let kind = get_str(c, &["type"]);
         if kind == Some("text") {
             parts.push(obj(vec![
@@ -25,7 +27,10 @@ pub fn convert_anthropic_content(content: &[Value]) -> EngineResult<Option<Value
         } else if kind == Some("image") && truthy(c.get("source")) {
             let source = &c["source"];
             let url = if get_str(source, &["type"]) == Some("base64") {
-                Some(Value::String(format_base64(get(source, &["data"]), get(source, &["media_type"]))?))
+                Some(Value::String(format_base64(
+                    get(source, &["data"]),
+                    get(source, &["media_type"]),
+                )?))
             } else {
                 get(source, &["url"]).cloned()
             };
@@ -37,9 +42,14 @@ pub fn convert_anthropic_content(content: &[Value]) -> EngineResult<Option<Value
             ]));
         }
     }
-    if parts.is_empty() { return Ok(Some(json!(""))); }
+    if parts.is_empty() {
+        return Ok(Some(json!("")));
+    }
     let first = &parts[0];
-    if parts.len() == 1 && get_str(first, &["type"]) == Some("text") && !truthy(first.get("cache_control")) {
+    if parts.len() == 1
+        && get_str(first, &["type"]) == Some("text")
+        && !truthy(first.get("cache_control"))
+    {
         return Ok(first.get("text").cloned());
     }
     Ok(Some(Value::Array(parts)))
@@ -51,9 +61,18 @@ mod tests {
 
     #[test]
     fn single_text_collapses_to_string() {
-        assert_eq!(convert_anthropic_content(&[json!({"type": "text", "text": "hi"})]).unwrap(), Some(json!("hi")));
-        assert_eq!(convert_anthropic_content(&[json!({"type": "tool_use"})]).unwrap(), Some(json!("")));
-        assert_eq!(convert_anthropic_content(&[json!({"type": "text"})]).unwrap(), None);
+        assert_eq!(
+            convert_anthropic_content(&[json!({"type": "text", "text": "hi"})]).unwrap(),
+            Some(json!("hi"))
+        );
+        assert_eq!(
+            convert_anthropic_content(&[json!({"type": "tool_use"})]).unwrap(),
+            Some(json!(""))
+        );
+        assert_eq!(
+            convert_anthropic_content(&[json!({"type": "text"})]).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -63,11 +82,17 @@ mod tests {
             json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}}),
             json!({"type": "image", "source": {"type": "url", "url": "https://x/y.png"}, "cache_control": null}),
         ]).unwrap().unwrap();
-        assert_eq!(out, json!([
-            {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}, "media_type": "image/png"},
-            {"type": "image_url", "image_url": {"url": "https://x/y.png"}, "cache_control": null},
-        ]));
-        assert_eq!(crate::engine::js::stringify(&out[1]), r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"},"media_type":"image/png"}"#);
+        assert_eq!(
+            out,
+            json!([
+                {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}, "media_type": "image/png"},
+                {"type": "image_url", "image_url": {"url": "https://x/y.png"}, "cache_control": null},
+            ])
+        );
+        assert_eq!(
+            crate::engine::js::stringify(&out[1]),
+            r#"{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"},"media_type":"image/png"}"#
+        );
     }
 }

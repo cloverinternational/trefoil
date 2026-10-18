@@ -81,68 +81,158 @@ fn server_schema() -> &'static crate::zod::Schema {
     use crate::zod::*;
     static SCHEMA: std::sync::OnceLock<Schema> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let settings = || vec![
-            ("auth_scheme", trimmed().min(1.0).nullable().optional()),
-            ("rate_limit_cooldown_ms", number().int().min(0.0).default(60_000).optional()),
-            ("quota_cooldown_ms", number().int().min(0.0).default(86_400_000).optional()),
-        ];
+        let settings = || {
+            vec![
+                ("auth_scheme", trimmed().min(1.0).nullable().optional()),
+                (
+                    "rate_limit_cooldown_ms",
+                    number().int().min(0.0).default(60_000).optional(),
+                ),
+                (
+                    "quota_cooldown_ms",
+                    number().int().min(0.0).default(86_400_000).optional(),
+                ),
+            ]
+        };
         let local = object(vec![
             ("mode", literal("local_http")),
             ("enabled", boolean().default(true)),
             ("launcher", enumeration(&["bunx", "uvx"])),
             ("package", trimmed().min(1.0)),
             ("args", array(string()).default(json!([])).optional()),
-            ("env", record(string(), string()).default(json!({})).optional()),
+            (
+                "env",
+                record(string(), string()).default(json!({})).optional(),
+            ),
             ("port", number().int().min(1.0).max(65_535.0)),
             ("path", trimmed().min(1.0).default("/mcp").optional()),
-            ("startup_timeout_ms", number().int().min(1_000.0).max(300_000.0).default(30_000).optional()),
+            (
+                "startup_timeout_ms",
+                number()
+                    .int()
+                    .min(1_000.0)
+                    .max(300_000.0)
+                    .default(30_000)
+                    .optional(),
+            ),
             ("headers", record(string(), string()).optional()),
-        ]).extend(settings());
+        ])
+        .extend(settings());
         let remote = object(vec![
-            ("mode", literal("remote_http").default("remote_http").optional()),
+            (
+                "mode",
+                literal("remote_http").default("remote_http").optional(),
+            ),
             ("upstream_url", string().url()),
             ("enabled", boolean().default(true)),
             ("headers", record(string(), string()).optional()),
-        ]).extend(settings());
+        ])
+        .extend(settings());
         union(vec![local, remote])
     })
 }
 
-fn encrypt_json(value: &Value) -> String { crate::secret_crypto::encrypt(&value.to_string()) }
+fn encrypt_json(value: &Value) -> String {
+    crate::secret_crypto::encrypt(&value.to_string())
+}
 fn decrypt_json(text: Option<String>) -> Option<Value> {
     let text = text?;
     let plain = crate::secret_crypto::decrypt(&text).ok()?;
-    serde_json::from_str(&plain).ok().or(Some(Value::String(plain)))
+    serde_json::from_str(&plain)
+        .ok()
+        .or(Some(Value::String(plain)))
 }
 
 /// `getAllMcpServers` row mapping.
 fn server_view(row: &sqlx::postgres::PgRow) -> Value {
-    let mode: String = row.try_get::<Option<String>, _>("mode").ok().flatten().filter(|m| !m.is_empty()).unwrap_or_else(|| "remote_http".into());
+    let mode: String = row
+        .try_get::<Option<String>, _>("mode")
+        .ok()
+        .flatten()
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "remote_http".into());
     let headers = decrypt_json(row.try_get("headers").ok().flatten());
     let auth_scheme: Option<String> = row.try_get("auth_scheme").ok().flatten();
-    let rate: i64 = row.try_get::<i32, _>("rate_limit_cooldown_ms").map(i64::from).unwrap_or(60_000);
-    let quota: i64 = row.try_get::<i32, _>("quota_cooldown_ms").map(i64::from).unwrap_or(86_400_000);
+    let rate: i64 = row
+        .try_get::<i32, _>("rate_limit_cooldown_ms")
+        .map(i64::from)
+        .unwrap_or(60_000);
+    let quota: i64 = row
+        .try_get::<i32, _>("quota_cooldown_ms")
+        .map(i64::from)
+        .unwrap_or(86_400_000);
     if mode == "local_http" {
         let mut out = serde_json::Map::new();
         out.insert("mode".into(), json!("local_http"));
-        out.insert("enabled".into(), json!(row.try_get::<bool, _>("enabled").unwrap_or(true)));
-        out.insert("launcher".into(), json!(row.try_get::<Option<String>, _>("launcher").ok().flatten()));
-        out.insert("package".into(), json!(row.try_get::<Option<String>, _>("package_name").ok().flatten().unwrap_or_default()));
-        out.insert("args".into(), decrypt_json(row.try_get("args").ok().flatten()).unwrap_or(json!([])));
-        if let Some(env) = decrypt_json(row.try_get("env").ok().flatten()) { out.insert("env".into(), env); }
-        out.insert("port".into(), json!(row.try_get::<Option<i64>, _>("port").ok().flatten().unwrap_or(0)));
-        out.insert("path".into(), json!(row.try_get::<Option<String>, _>("path").ok().flatten().filter(|p| !p.is_empty()).unwrap_or_else(|| "/mcp".into())));
-        out.insert("startup_timeout_ms".into(), json!(row.try_get::<Option<i64>, _>("startup_timeout_ms").ok().flatten().filter(|t| *t != 0).unwrap_or(30_000)));
-        if let Some(h) = headers { out.insert("headers".into(), h); }
+        out.insert(
+            "enabled".into(),
+            json!(row.try_get::<bool, _>("enabled").unwrap_or(true)),
+        );
+        out.insert(
+            "launcher".into(),
+            json!(row.try_get::<Option<String>, _>("launcher").ok().flatten()),
+        );
+        out.insert(
+            "package".into(),
+            json!(row
+                .try_get::<Option<String>, _>("package_name")
+                .ok()
+                .flatten()
+                .unwrap_or_default()),
+        );
+        out.insert(
+            "args".into(),
+            decrypt_json(row.try_get("args").ok().flatten()).unwrap_or(json!([])),
+        );
+        if let Some(env) = decrypt_json(row.try_get("env").ok().flatten()) {
+            out.insert("env".into(), env);
+        }
+        out.insert(
+            "port".into(),
+            json!(row
+                .try_get::<Option<i64>, _>("port")
+                .ok()
+                .flatten()
+                .unwrap_or(0)),
+        );
+        out.insert(
+            "path".into(),
+            json!(row
+                .try_get::<Option<String>, _>("path")
+                .ok()
+                .flatten()
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| "/mcp".into())),
+        );
+        out.insert(
+            "startup_timeout_ms".into(),
+            json!(row
+                .try_get::<Option<i64>, _>("startup_timeout_ms")
+                .ok()
+                .flatten()
+                .filter(|t| *t != 0)
+                .unwrap_or(30_000)),
+        );
+        if let Some(h) = headers {
+            out.insert("headers".into(), h);
+        }
         out.insert("auth_scheme".into(), json!(auth_scheme));
         out.insert("rate_limit_cooldown_ms".into(), json!(rate));
         out.insert("quota_cooldown_ms".into(), json!(quota));
         return Value::Object(out);
     }
     let mut out = serde_json::Map::new();
-    out.insert("upstream_url".into(), json!(row.try_get::<String, _>("upstream_url").unwrap_or_default()));
-    out.insert("enabled".into(), json!(row.try_get::<bool, _>("enabled").unwrap_or(true)));
-    if let Some(h) = headers { out.insert("headers".into(), h); }
+    out.insert(
+        "upstream_url".into(),
+        json!(row.try_get::<String, _>("upstream_url").unwrap_or_default()),
+    );
+    out.insert(
+        "enabled".into(),
+        json!(row.try_get::<bool, _>("enabled").unwrap_or(true)),
+    );
+    if let Some(h) = headers {
+        out.insert("headers".into(), h);
+    }
     out.insert("auth_scheme".into(), json!(auth_scheme));
     out.insert("rate_limit_cooldown_ms".into(), json!(rate));
     out.insert("quota_cooldown_ms".into(), json!(quota));
@@ -152,8 +242,16 @@ fn server_view(row: &sqlx::postgres::PgRow) -> Value {
 const SERVER_COLUMNS: &str = "name,upstream_url,enabled,mode,headers,auth_scheme,rate_limit_cooldown_ms,quota_cooldown_ms,launcher,package_name,args,env,port,path,startup_timeout_ms";
 
 pub(crate) async fn load_server(state: &AppState, name: &str) -> Result<Option<Value>, ()> {
-    let Some(pool) = &state.inner.database else { return Ok(None) };
-    let row = sqlx::query(&format!("SELECT {SERVER_COLUMNS} FROM mcp_servers WHERE name=$1")).bind(name).fetch_optional(pool).await.map_err(|_| ())?;
+    let Some(pool) = &state.inner.database else {
+        return Ok(None);
+    };
+    let row = sqlx::query(&format!(
+        "SELECT {SERVER_COLUMNS} FROM mcp_servers WHERE name=$1"
+    ))
+    .bind(name)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ())?;
     Ok(row.map(|row| server_view(&row)))
 }
 
@@ -164,17 +262,29 @@ async fn list_servers(State(state): State<AppState>, headers: HeaderMap) -> Resp
     let Some(pool) = &state.inner.database else {
         return Json(json!({})).into_response();
     };
-    let Ok(rows) = sqlx::query(&format!("SELECT {SERVER_COLUMNS} FROM mcp_servers ORDER BY id")).fetch_all(pool).await else {
+    let Ok(rows) = sqlx::query(&format!(
+        "SELECT {SERVER_COLUMNS} FROM mcp_servers ORDER BY id"
+    ))
+    .fetch_all(pool)
+    .await
+    else {
         return internal_error();
     };
     let mut out = serde_json::Map::new();
     for row in rows {
-        out.insert(row.try_get::<String, _>("name").unwrap_or_default(), server_view(&row));
+        out.insert(
+            row.try_get::<String, _>("name").unwrap_or_default(),
+            server_view(&row),
+        );
     }
     Json(Value::Object(out)).into_response()
 }
 
-async fn get_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
+async fn get_server(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
@@ -193,7 +303,8 @@ fn valid_name(value: &str) -> bool {
     let b = value.as_bytes();
     (2..=63).contains(&b.len())
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
-        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'_')
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'_')
         && value != "plexus"
 }
 
@@ -203,11 +314,26 @@ fn invalid_name() -> Response {
 
 /// `saveMcpServer`.
 async fn save_server(state: &AppState, name: &str, config: &Value) -> Result<(), ()> {
-    let Some(pool) = &state.inner.database else { return Err(()) };
+    let Some(pool) = &state.inner.database else {
+        return Err(());
+    };
     let local = config.get("mode").and_then(Value::as_str) == Some("local_http");
     let port = config.get("port").and_then(Value::as_i64);
-    let path = config.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()).unwrap_or("/mcp").to_owned();
-    let upstream = if local { format!("http://127.0.0.1:{}{path}", port.unwrap_or(0)) } else { config.get("upstream_url").and_then(Value::as_str).unwrap_or_default().to_owned() };
+    let path = config
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty())
+        .unwrap_or("/mcp")
+        .to_owned();
+    let upstream = if local {
+        format!("http://127.0.0.1:{}{path}", port.unwrap_or(0))
+    } else {
+        config
+            .get("upstream_url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     let opt_enc = |key: &str| config.get(key).filter(|v| !v.is_null()).map(encrypt_json);
     let now = chrono::Utc::now().timestamp_millis();
     sqlx::query("INSERT INTO mcp_servers (name,upstream_url,enabled,headers,auth_scheme,rate_limit_cooldown_ms,quota_cooldown_ms,mode,launcher,package_name,args,env,port,path,startup_timeout_ms,created_at,updated_at)
@@ -233,7 +359,12 @@ async fn save_server(state: &AppState, name: &str, config: &Value) -> Result<(),
         .execute(pool).await.map(|_| ()).map_err(|_| ())
 }
 
-async fn put_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>, Json(body): Json<Value>) -> Response {
+async fn put_server(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
@@ -242,7 +373,13 @@ async fn put_server(State(state): State<AppState>, headers: HeaderMap, Path(name
     }
     let parsed = match server_schema().safe_parse(&body) {
         Ok(parsed) => parsed,
-        Err(details) => return (StatusCode::BAD_REQUEST, Json(json!({"error":"Validation failed","details":details}))).into_response(),
+        Err(details) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"Validation failed","details":details})),
+            )
+                .into_response()
+        }
     };
     match save_server(&state, &name, &parsed).await {
         Ok(()) => Json(json!({"success":true,"name":name})).into_response(),
@@ -250,12 +387,21 @@ async fn put_server(State(state): State<AppState>, headers: HeaderMap, Path(name
     }
 }
 
-async fn patch_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>, Json(body): Json<Value>) -> Response {
+async fn patch_server(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
     let Some(patch) = body.as_object() else {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"Object body is required"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"Object body is required"})),
+        )
+            .into_response();
     };
     if !valid_name(&name) {
         return invalid_name();
@@ -265,10 +411,20 @@ async fn patch_server(State(state): State<AppState>, headers: HeaderMap, Path(na
         Ok(None) => return not_found(&name),
         Err(()) => return internal_error(),
     };
-    if let Some(map) = merged.as_object_mut() { for (k, v) in patch { map.insert(k.clone(), v.clone()); } }
+    if let Some(map) = merged.as_object_mut() {
+        for (k, v) in patch {
+            map.insert(k.clone(), v.clone());
+        }
+    }
     let parsed = match server_schema().safe_parse(&merged) {
         Ok(parsed) => parsed,
-        Err(details) => return (StatusCode::BAD_REQUEST, Json(json!({"error":"Validation failed","details":details}))).into_response(),
+        Err(details) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"Validation failed","details":details})),
+            )
+                .into_response()
+        }
     };
     match save_server(&state, &name, &parsed).await {
         Ok(()) => Json(json!({"success":true,"name":name})).into_response(),
@@ -276,14 +432,22 @@ async fn patch_server(State(state): State<AppState>, headers: HeaderMap, Path(na
     }
 }
 
-async fn delete_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
+async fn delete_server(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
     let Some(pool) = &state.inner.database else {
         return Json(json!({"success":true})).into_response();
     };
-    match sqlx::query("DELETE FROM mcp_servers WHERE name=$1").bind(name).execute(pool).await {
+    match sqlx::query("DELETE FROM mcp_servers WHERE name=$1")
+        .bind(name)
+        .execute(pool)
+        .await
+    {
         Ok(_) => Json(json!({"success":true})).into_response(),
         Err(_) => internal_error(),
     }
@@ -387,65 +551,136 @@ fn not_found(name: &str) -> Response {
         .into_response()
 }
 
-fn lifecycle_log(state:&AppState, message:String) {
-    crate::system_logs::event(state,"info",message,[("module".into(),serde_json::json!("config"))]);
+fn lifecycle_log(state: &AppState, message: String) {
+    crate::system_logs::event(
+        state,
+        "info",
+        message,
+        [("module".into(), serde_json::json!("config"))],
+    );
 }
 
 fn lifecycle_error(message: String) -> Response {
     // Plexus's global error handler for a thrown handler error.
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":{"message":message,"type":"api_error"}}))).into_response()
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error":{"message":message,"type":"api_error"}})),
+    )
+        .into_response()
 }
 
-async fn start_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
+async fn start_server(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
     lifecycle_log(&state, format!("MCP local start requested for '{name}'"));
-    let view = match load_server(&state, &name).await { Ok(Some(view)) => view, Ok(None) => return not_found(&name), Err(()) => return internal_error() };
-    let Some(config) = LocalConfig::from_view(&view) else {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"MCP server is not local_http"}))).into_response();
+    let view = match load_server(&state, &name).await {
+        Ok(Some(view)) => view,
+        Ok(None) => return not_found(&name),
+        Err(()) => return internal_error(),
     };
-    match state.inner.mcp_manager.start(&name, &config).await { Ok(status) => Json(status).into_response(), Err(error) => lifecycle_error(error) }
+    let Some(config) = LocalConfig::from_view(&view) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"MCP server is not local_http"})),
+        )
+            .into_response();
+    };
+    match state.inner.mcp_manager.start(&name, &config).await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => lifecycle_error(error),
+    }
 }
 
-async fn stop_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
+async fn stop_server(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
     lifecycle_log(&state, format!("MCP local stop requested for '{name}'"));
-    match state.inner.mcp_manager.stop(&name).await { Ok(status) => Json(status).into_response(), Err(error) => lifecycle_error(error) }
+    match state.inner.mcp_manager.stop(&name).await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => lifecycle_error(error),
+    }
 }
 
-async fn restart_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
+async fn restart_server(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
     lifecycle_log(&state, format!("MCP local restart requested for '{name}'"));
-    let view = match load_server(&state, &name).await { Ok(Some(view)) => view, Ok(None) => return not_found(&name), Err(()) => return internal_error() };
-    let Some(config) = LocalConfig::from_view(&view) else {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"MCP server is not local_http"}))).into_response();
+    let view = match load_server(&state, &name).await {
+        Ok(Some(view)) => view,
+        Ok(None) => return not_found(&name),
+        Err(()) => return internal_error(),
     };
-    match state.inner.mcp_manager.restart(&name, &config).await { Ok(status) => Json(status).into_response(), Err(error) => lifecycle_error(error) }
+    let Some(config) = LocalConfig::from_view(&view) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"MCP server is not local_http"})),
+        )
+            .into_response();
+    };
+    match state.inner.mcp_manager.restart(&name, &config).await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => lifecycle_error(error),
+    }
 }
 
-async fn server_status(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
+async fn server_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
     lifecycle_log(&state, format!("MCP local status requested for '{name}'"));
-    let view = match load_server(&state, &name).await { Ok(Some(view)) => view, Ok(None) => return not_found(&name), Err(()) => return internal_error() };
-    Json(state.inner.mcp_manager.status(&name, LocalConfig::from_view(&view).as_ref())).into_response()
+    let view = match load_server(&state, &name).await {
+        Ok(Some(view)) => view,
+        Ok(None) => return not_found(&name),
+        Err(()) => return internal_error(),
+    };
+    Json(
+        state
+            .inner
+            .mcp_manager
+            .status(&name, LocalConfig::from_view(&view).as_ref()),
+    )
+    .into_response()
 }
 
 fn internal_error() -> Response {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"Internal server error"}))).into_response()
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error":"Internal server error"})),
+    )
+        .into_response()
 }
 
-async fn process_logs(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
+async fn process_logs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
-    lifecycle_log(&state, format!("MCP local process logs requested for '{name}'"));
+    lifecycle_log(
+        &state,
+        format!("MCP local process logs requested for '{name}'"),
+    );
     Json(json!({"data": state.inner.mcp_manager.logs(&name)})).into_response()
 }
 

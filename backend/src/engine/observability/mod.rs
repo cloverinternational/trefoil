@@ -23,5 +23,8 @@ pub mod storage;
 pub use costs::{calculate_costs, CostAttribution, OpenRouterCatalog, PricingManager};
 pub use hooks::*;
 pub use record::UsageRecord;
-pub use response::{handle_response, AbortKind, HandledBody, HandledResponse, ResponseContext, ResponseServices, StreamSession};
+pub use response::{
+    handle_response, AbortKind, HandledBody, HandledResponse, ResponseContext, ResponseServices,
+    StreamSession,
+};
 pub use storage::UsageStorage;

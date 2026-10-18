@@ -125,8 +125,21 @@ async fn delete_all_cooldowns(State(state): State<AppState>, headers: HeaderMap)
         }
     }
     state.inner.cooldowns.write().unwrap().clear();
-    crate::system_logs::event(&state,"info","Manually cleared all cooldowns",[("module".into(),serde_json::json!("cooldown-manager")),("functionName".into(),serde_json::json!("clearCooldown"))]);
-    crate::system_logs::event(&state,"info","[AUDIT] admin cleared all cooldowns",[("module".into(),serde_json::json!("cooldowns"))]);
+    crate::system_logs::event(
+        &state,
+        "info",
+        "Manually cleared all cooldowns",
+        [
+            ("module".into(), serde_json::json!("cooldown-manager")),
+            ("functionName".into(), serde_json::json!("clearCooldown")),
+        ],
+    );
+    crate::system_logs::event(
+        &state,
+        "info",
+        "[AUDIT] admin cleared all cooldowns",
+        [("module".into(), serde_json::json!("cooldowns"))],
+    );
     Json(serde_json::json!({ "success": true })).into_response()
 }
 
@@ -172,9 +185,30 @@ async fn delete_provider_cooldowns(
 
     let removed = before - cooldowns.len();
     drop(cooldowns);
-    let suffix=query.model.clone().unwrap_or_else(||"*".into());
-    crate::system_logs::event(&state,"info",format!("[AUDIT] admin cleared cooldown for provider='{provider}' model='{suffix}'"),[("module".into(),serde_json::json!("cooldowns"))]);
-    crate::system_logs::event(&state,"info",format!("Manually cleared all cooldowns for provider '{provider}'{}",query.model.as_ref().map(|model|format!(" model '{model}'")).unwrap_or_default()+&format!(" ({removed} total)")),[("module".into(),serde_json::json!("cooldown-manager")),("functionName".into(),serde_json::json!("clearCooldown"))]);
+    let suffix = query.model.clone().unwrap_or_else(|| "*".into());
+    crate::system_logs::event(
+        &state,
+        "info",
+        format!("[AUDIT] admin cleared cooldown for provider='{provider}' model='{suffix}'"),
+        [("module".into(), serde_json::json!("cooldowns"))],
+    );
+    crate::system_logs::event(
+        &state,
+        "info",
+        format!(
+            "Manually cleared all cooldowns for provider '{provider}'{}",
+            query
+                .model
+                .as_ref()
+                .map(|model| format!(" model '{model}'"))
+                .unwrap_or_default()
+                + &format!(" ({removed} total)")
+        ),
+        [
+            ("module".into(), serde_json::json!("cooldown-manager")),
+            ("functionName".into(), serde_json::json!("clearCooldown")),
+        ],
+    );
     Json(serde_json::json!({ "success": true })).into_response()
 }
 
@@ -447,6 +481,27 @@ mod tests {
 
 #[cfg(test)]
 mod audit_tests {
- use super::*;use axum::{body::Body,http::Request};use tower::ServiceExt;
- #[tokio::test] async fn delete_audit_records_provider_and_all_scopes(){let state=AppState::new(Some("correct-admin-key".into()),Default::default());let response=router().with_state(state.clone()).oneshot(Request::delete("/v0/management/cooldowns/fixture?model=model").header("x-admin-key","correct-admin-key").body(Body::empty()).unwrap()).await.unwrap();assert!(response.status().is_success());let logs=state.inner.recent_system_logs.lock().unwrap();assert!(logs.iter().any(|log|log.message.contains("provider='fixture' model='model'")&&log.context["module"]=="cooldowns"));}
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn delete_audit_records_provider_and_all_scopes() {
+        let state = AppState::new(Some("correct-admin-key".into()), Default::default());
+        let response = router()
+            .with_state(state.clone())
+            .oneshot(
+                Request::delete("/v0/management/cooldowns/fixture?model=model")
+                    .header("x-admin-key", "correct-admin-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let logs = state.inner.recent_system_logs.lock().unwrap();
+        assert!(logs.iter().any(
+            |log| log.message.contains("provider='fixture' model='model'")
+                && log.context["module"] == "cooldowns"
+        ));
+    }
 }

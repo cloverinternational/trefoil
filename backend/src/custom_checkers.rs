@@ -80,9 +80,14 @@ pub fn start_poller(state: AppState) {
                 let Some(quota) = config.quota_checker.filter(|q| q.enabled) else {
                     continue;
                 };
-                let checker_type = quota.checker_type.clone().or_else(||quota.id.clone());
+                let checker_type = quota.checker_type.clone().or_else(|| quota.id.clone());
                 // Plexus `buildProviderQuotaConfigs`: id is `quota_checker.id ?? provider`.
-                let checker_id = quota.id.clone().unwrap_or_else(|| provider.clone()).trim().to_owned();
+                let checker_id = quota
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| provider.clone())
+                    .trim()
+                    .to_owned();
                 let schedule_key = (provider.clone(), checker_id.clone());
                 let now = tokio::time::Instant::now();
                 if !checker_due(
@@ -495,11 +500,19 @@ async fn check(
         {
             Ok(Some(code)) => code,
             Ok(None) => {
-                crate::system_logs::event(&state,"warn",format!("Quota checker '{id}' not found"),[("module".into(),serde_json::json!("quota-scheduler")),("functionName".into(),serde_json::json!("runCheckNow"))]);
+                crate::system_logs::event(
+                    &state,
+                    "warn",
+                    format!("Quota checker '{id}' not found"),
+                    [
+                        ("module".into(), serde_json::json!("quota-scheduler")),
+                        ("functionName".into(), serde_json::json!("runCheckNow")),
+                    ],
+                );
                 return error(
                     StatusCode::NOT_FOUND,
                     format!("Quota checker '{id}' not found"),
-                )
+                );
             }
             Err(_) => {
                 return error(
@@ -586,10 +599,13 @@ async fn fetch_builtin_meters(id: &str, endpoint: &str, token: &str) -> Result<V
     if id == "claude-code" {
         request = request.header("anthropic-beta", "oauth-2025-04-20");
     } else if id == "openai-codex" {
-        request = request.header("content-type","application/json")
-            .header("user-agent",crate::codex_masking::user_agent())
-            .header("version",crate::cli_versions::codex_version());
-        if let Some(account)=crate::codex_masking::account_id(token) { request=request.header("chatgpt-account-id",account); }
+        request = request
+            .header("content-type", "application/json")
+            .header("user-agent", crate::codex_masking::user_agent())
+            .header("version", crate::cli_versions::codex_version());
+        if let Some(account) = crate::codex_masking::account_id(token) {
+            request = request.header("chatgpt-account-id", account);
+        }
     }
     let response = request.send().await.map_err(|e| e.to_string())?;
     let status = response.status();
@@ -604,78 +620,203 @@ async fn fetch_builtin_meters(id: &str, endpoint: &str, token: &str) -> Result<V
 }
 
 fn reset_iso(value: Option<&Value>) -> Option<String> {
-    value.and_then(Value::as_str).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|date| date.to_utc().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    value
+        .and_then(Value::as_str)
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|date| {
+            date.to_utc()
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        })
 }
 
-fn allowance(key: &str, label: &str, used: f64, hours: bool, reset: Option<String>, scope: Option<&str>) -> Value {
-    let remaining=(100.0-used).max(0.0);
-    let percent=(used/(used+remaining)*100.0).min(100.0);
-    let mut meter=serde_json::json!({"key":key,"label":label,"kind":"allowance","unit":"percentage","used":used,"remaining":remaining,"utilizationPercent":percent,"status":meter_status(percent),"periodValue":if hours {5} else {7},"periodUnit":if hours {"hour"} else {"day"},"periodCycle":"rolling"});
-    if let Some(reset)=reset { meter["resetsAt"]=Value::String(reset); }
-    if let Some(scope)=scope { meter["scope"]=Value::String(scope.into()); }
+fn allowance(
+    key: &str,
+    label: &str,
+    used: f64,
+    hours: bool,
+    reset: Option<String>,
+    scope: Option<&str>,
+) -> Value {
+    let remaining = (100.0 - used).max(0.0);
+    let percent = (used / (used + remaining) * 100.0).min(100.0);
+    let mut meter = serde_json::json!({"key":key,"label":label,"kind":"allowance","unit":"percentage","used":used,"remaining":remaining,"utilizationPercent":percent,"status":meter_status(percent),"periodValue":if hours {5} else {7},"periodUnit":if hours {"hour"} else {"day"},"periodCycle":"rolling"});
+    if let Some(reset) = reset {
+        meter["resetsAt"] = Value::String(reset);
+    }
+    if let Some(scope) = scope {
+        meter["scope"] = Value::String(scope.into());
+    }
     meter
 }
 
 fn normalized_scope(name: &str) -> String {
-    let mut normalized=String::new();
+    let mut normalized = String::new();
     for character in name.to_ascii_lowercase().chars() {
-        if character.is_ascii_alphanumeric() { normalized.push(character); }
-        else if !normalized.ends_with('_') { normalized.push('_'); }
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character);
+        } else if !normalized.ends_with('_') {
+            normalized.push('_');
+        }
     }
     normalized.trim_matches('_').into()
 }
 
 fn builtin_meters(id: &str, payload: &Value) -> Value {
-    let mut meters=Vec::new();
+    let mut meters = Vec::new();
     if id == "claude-code" {
-        let fields=[("five_hour","5-hour quota","five_hour"),("weekly","Weekly quota","seven_day")];
+        let fields = [
+            ("five_hour", "5-hour quota", "five_hour"),
+            ("weekly", "Weekly quota", "seven_day"),
+        ];
         // Reference schema rejects the whole response when a legacy window is malformed.
-        for field in ["five_hour","seven_day","seven_day_opus","seven_day_omelette"] {
-            if payload.get(field).is_some_and(|v| !v.is_null() && (v.get("utilization").and_then(Value::as_f64).is_none() || v.get("resets_at").is_some_and(|r|!r.is_null()&&!r.is_string()))) { return Value::Array(vec![]); }
+        for field in [
+            "five_hour",
+            "seven_day",
+            "seven_day_opus",
+            "seven_day_omelette",
+        ] {
+            if payload.get(field).is_some_and(|v| {
+                !v.is_null()
+                    && (v.get("utilization").and_then(Value::as_f64).is_none()
+                        || v.get("resets_at")
+                            .is_some_and(|r| !r.is_null() && !r.is_string()))
+            }) {
+                return Value::Array(vec![]);
+            }
         }
-        for (key,label,field) in fields {
-            if let Some(window)=payload.get(field) {
-                if let Some(used)=window["utilization"].as_f64() { meters.push(allowance(key,label,used,key=="five_hour",reset_iso(window.get("resets_at")),None)); }
+        for (key, label, field) in fields {
+            if let Some(window) = payload.get(field) {
+                if let Some(used) = window["utilization"].as_f64() {
+                    meters.push(allowance(
+                        key,
+                        label,
+                        used,
+                        key == "five_hour",
+                        reset_iso(window.get("resets_at")),
+                        None,
+                    ));
+                }
             }
         }
         // (dimension, id, display name, utilization, reset)
-        let mut scoped:Vec<(String,Option<String>,String,Option<f64>,Option<String>)>=Vec::new();
-        for (field,name) in [("seven_day_opus","Opus"),("seven_day_omelette","Omelette")] {
-            if let Some(used)=payload.get(field).and_then(|v|v["utilization"].as_f64()) {
-                scoped.push(("model".into(),None,name.into(),Some(used),reset_iso(payload[field].get("resets_at"))));
+        let mut scoped: Vec<(String, Option<String>, String, Option<f64>, Option<String>)> =
+            Vec::new();
+        for (field, name) in [
+            ("seven_day_opus", "Opus"),
+            ("seven_day_omelette", "Omelette"),
+        ] {
+            if let Some(used) = payload.get(field).and_then(|v| v["utilization"].as_f64()) {
+                scoped.push((
+                    "model".into(),
+                    None,
+                    name.into(),
+                    Some(used),
+                    reset_iso(payload[field].get("resets_at")),
+                ));
             }
         }
-        if let Some(limits)=payload.get("limits").and_then(Value::as_array) {
+        if let Some(limits) = payload.get("limits").and_then(Value::as_array) {
             for limit in limits {
-                if limit["kind"]!="weekly_scoped" || limit.get("percent").is_some_and(|v|!v.is_null()&&!v.is_number()) {continue;}
-                for dimension in ["model","surface"] {
-                    let entry=&limit["scope"][dimension];
-                    let scope_id=entry["id"].as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned);
-                    let name=entry["display_name"].as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned).or_else(||scope_id.clone());
-                    let Some(name)=name else {continue};
-                    let mut next=(dimension.to_owned(),scope_id,name,limit["percent"].as_f64(),reset_iso(limit.get("resets_at")));
-                    let index=scoped.iter().position(|old|old.0==next.0 && match (&old.1,&next.1) {(Some(a),Some(b))=>a==b,_=>normalized_scope(&old.2)==normalized_scope(&next.2)});
-                    if let Some(index)=index {next.3=next.3.or(scoped[index].3);next.4=next.4.or(scoped[index].4.clone());scoped[index]=next;}
-                    else {scoped.push(next);}
+                if limit["kind"] != "weekly_scoped"
+                    || limit
+                        .get("percent")
+                        .is_some_and(|v| !v.is_null() && !v.is_number())
+                {
+                    continue;
+                }
+                for dimension in ["model", "surface"] {
+                    let entry = &limit["scope"][dimension];
+                    let scope_id = entry["id"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned);
+                    let name = entry["display_name"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .or_else(|| scope_id.clone());
+                    let Some(name) = name else { continue };
+                    let mut next = (
+                        dimension.to_owned(),
+                        scope_id,
+                        name,
+                        limit["percent"].as_f64(),
+                        reset_iso(limit.get("resets_at")),
+                    );
+                    let index = scoped.iter().position(|old| {
+                        old.0 == next.0
+                            && match (&old.1, &next.1) {
+                                (Some(a), Some(b)) => a == b,
+                                _ => normalized_scope(&old.2) == normalized_scope(&next.2),
+                            }
+                    });
+                    if let Some(index) = index {
+                        next.3 = next.3.or(scoped[index].3);
+                        next.4 = next.4.or(scoped[index].4.clone());
+                        scoped[index] = next;
+                    } else {
+                        scoped.push(next);
+                    }
                     break;
                 }
             }
         }
-        let mut taken=std::collections::HashSet::new();
-        for (dimension,id,name,used,reset) in scoped {
-            let base=format!("weekly_{dimension}_{}",id.unwrap_or_else(||normalized_scope(&name)));
-            let mut key=base.clone();let mut suffix=2;
-            while !taken.insert(key.clone()) {key=format!("{base}_{suffix}");suffix+=1;}
-            meters.push(allowance(&key,&format!("Weekly · {name}"),used.unwrap_or(0.0),false,reset,Some(&dimension)));
+        let mut taken = std::collections::HashSet::new();
+        for (dimension, id, name, used, reset) in scoped {
+            let base = format!(
+                "weekly_{dimension}_{}",
+                id.unwrap_or_else(|| normalized_scope(&name))
+            );
+            let mut key = base.clone();
+            let mut suffix = 2;
+            while !taken.insert(key.clone()) {
+                key = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            meters.push(allowance(
+                &key,
+                &format!("Weekly · {name}"),
+                used.unwrap_or(0.0),
+                false,
+                reset,
+                Some(&dimension),
+            ));
         }
-    } else if let Some(rate)=payload.get("rate_limit") {
-        if rate["limit_reached"]==true { return Value::Array(vec![allowance("primary","Primary rate limit",100.0,true,None,None)]); }
-        for (key,label) in [("primary","Primary rate limit"),("secondary","Secondary rate limit")] {
-            if let Some(window)=rate.get(format!("{key}_window")).filter(|v|!v.is_null()) {
-                let used=window["used_percent"].as_f64().unwrap_or(0.0).clamp(0.0,100.0);
-                let reset=window["reset_at"].as_i64().filter(|v|*v>0).and_then(|v|chrono::DateTime::from_timestamp(v,0)).map(|d|d.to_rfc3339_opts(chrono::SecondsFormat::Millis,true));
-                meters.push(allowance(key,label,used,window["limit_window_seconds"].as_u64()==Some(18000),reset,None));
+    } else if let Some(rate) = payload.get("rate_limit") {
+        if rate["limit_reached"] == true {
+            return Value::Array(vec![allowance(
+                "primary",
+                "Primary rate limit",
+                100.0,
+                true,
+                None,
+                None,
+            )]);
+        }
+        for (key, label) in [
+            ("primary", "Primary rate limit"),
+            ("secondary", "Secondary rate limit"),
+        ] {
+            if let Some(window) = rate.get(format!("{key}_window")).filter(|v| !v.is_null()) {
+                let used = window["used_percent"]
+                    .as_f64()
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 100.0);
+                let reset = window["reset_at"]
+                    .as_i64()
+                    .filter(|v| *v > 0)
+                    .and_then(|v| chrono::DateTime::from_timestamp(v, 0))
+                    .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+                meters.push(allowance(
+                    key,
+                    label,
+                    used,
+                    window["limit_window_seconds"].as_u64() == Some(18000),
+                    reset,
+                    None,
+                ));
             }
         }
     }
@@ -704,10 +845,16 @@ async fn persist_result(
     let Some(pool) = &state.inner.database else {
         return;
     };
-    let checker_type = state.inner.providers.read().unwrap().get(provider)
-        .and_then(|provider|provider.quota_checker.as_ref())
-        .filter(|quota|quota.id.as_deref().unwrap_or(provider)==checker_id)
-        .and_then(|quota|quota.checker_type.clone()).unwrap_or_else(||checker_id.into());
+    let checker_type = state
+        .inner
+        .providers
+        .read()
+        .unwrap()
+        .get(provider)
+        .and_then(|provider| provider.quota_checker.as_ref())
+        .filter(|quota| quota.id.as_deref().unwrap_or(provider) == checker_id)
+        .and_then(|quota| quota.checker_type.clone())
+        .unwrap_or_else(|| checker_id.into());
     let now = chrono::Utc::now().timestamp_millis();
     if let Some(message) = error {
         let _ = sqlx::query("INSERT INTO meter_snapshots (checker_id,checker_type,provider,meter_key,kind,unit,label,utilization_state,status,success,error_message,checked_at,created_at) VALUES ($1,$5,$2,'_error','unknown','unknown','error','unknown','error',false,$3,$4,$4)")
@@ -947,33 +1094,48 @@ mod provider_window_tests {
     use super::*;
     #[test]
     fn claude_reconciles_legacy_scopes_with_new_limits_without_losing_usage() {
-        let meters=builtin_meters("claude-code",&serde_json::json!({
-            "five_hour":{"utilization":120,"resets_at":"bad date"},
-            "seven_day_opus":{"utilization":82,"resets_at":"2026-09-18T12:00:00Z"},
-            "limits":[{"kind":"weekly_scoped","percent":null,"scope":{"model":{"id":"opus-v2","display_name":"Opus"}}},
-              {"kind":"weekly_scoped","percent":12,"scope":{"surface":{"id":"chat","display_name":"Chat"}}}]
-        }));
-        assert_eq!(meters.as_array().unwrap().len(),3);
-        assert_eq!(meters[0]["used"],120.0);
-        assert_eq!(meters[0]["utilizationPercent"],100.0);
+        let meters = builtin_meters(
+            "claude-code",
+            &serde_json::json!({
+                "five_hour":{"utilization":120,"resets_at":"bad date"},
+                "seven_day_opus":{"utilization":82,"resets_at":"2026-09-18T12:00:00Z"},
+                "limits":[{"kind":"weekly_scoped","percent":null,"scope":{"model":{"id":"opus-v2","display_name":"Opus"}}},
+                  {"kind":"weekly_scoped","percent":12,"scope":{"surface":{"id":"chat","display_name":"Chat"}}}]
+            }),
+        );
+        assert_eq!(meters.as_array().unwrap().len(), 3);
+        assert_eq!(meters[0]["used"], 120.0);
+        assert_eq!(meters[0]["utilizationPercent"], 100.0);
         assert!(meters[0].get("resetsAt").is_none());
-        assert_eq!(meters[1]["key"],"weekly_model_opus-v2");
-        assert_eq!(meters[1]["used"],82.0);
-        assert_eq!(meters[1]["resetsAt"],"2026-09-18T12:00:00.000Z");
-        assert_eq!(meters[2]["scope"],"surface");
+        assert_eq!(meters[1]["key"], "weekly_model_opus-v2");
+        assert_eq!(meters[1]["used"], 82.0);
+        assert_eq!(meters[1]["resetsAt"], "2026-09-18T12:00:00.000Z");
+        assert_eq!(meters[2]["scope"], "surface");
     }
     #[test]
     fn codex_exhaustion_overrides_windows_and_missing_percentage_is_zero() {
-        let exhausted=builtin_meters("openai-codex",&serde_json::json!({"rate_limit":{"limit_reached":true,"primary_window":{"used_percent":1}}}));
-        assert_eq!(exhausted[0]["used"],100.0);
-        assert_eq!(exhausted[0]["status"],"exhausted");
-        let windows=builtin_meters("openai-codex",&serde_json::json!({"rate_limit":{"primary_window":{"reset_at":1,"limit_window_seconds":18000}}}));
-        assert_eq!(windows[0]["used"],0.0);
-        assert_eq!(windows[0]["resetsAt"],"1970-01-01T00:00:01.000Z");
+        let exhausted = builtin_meters(
+            "openai-codex",
+            &serde_json::json!({"rate_limit":{"limit_reached":true,"primary_window":{"used_percent":1}}}),
+        );
+        assert_eq!(exhausted[0]["used"], 100.0);
+        assert_eq!(exhausted[0]["status"], "exhausted");
+        let windows = builtin_meters(
+            "openai-codex",
+            &serde_json::json!({"rate_limit":{"primary_window":{"reset_at":1,"limit_window_seconds":18000}}}),
+        );
+        assert_eq!(windows[0]["used"], 0.0);
+        assert_eq!(windows[0]["resetsAt"], "1970-01-01T00:00:01.000Z");
     }
     #[test]
     fn malformed_legacy_window_rejects_all_claude_meters() {
-        assert_eq!(builtin_meters("claude-code",&serde_json::json!({"five_hour":{"utilization":1},"seven_day":{"utilization":"bad"}})),serde_json::json!([]));
+        assert_eq!(
+            builtin_meters(
+                "claude-code",
+                &serde_json::json!({"five_hour":{"utilization":1},"seven_day":{"utilization":"bad"}})
+            ),
+            serde_json::json!([])
+        );
     }
 }
 
@@ -984,16 +1146,24 @@ mod codex_header_tests {
     use base64::Engine;
     #[tokio::test]
     async fn codex_usage_request_carries_account_and_client_headers() {
-        let token=format!("x.{}.x",base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"account-test"}}"#));
+        let token = format!(
+            "x.{}.x",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"account-test"}}"#)
+        );
         let app=Router::new().route("/usage",get(|headers:HeaderMap|async move {
             assert_eq!(headers["chatgpt-account-id"],"account-test");
             assert_eq!(headers["version"],crate::codex_masking::CODEX_VERSION);
             assert!(headers["user-agent"].to_str().unwrap().contains("codex"));
             Json(serde_json::json!({"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":18000}}}))
         }));
-        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();
-        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
-        let result=fetch_builtin_meters("openai-codex",&format!("http://{addr}/usage"),&token).await.unwrap();
-        assert_eq!(result[0]["remaining"],75.0);server.abort();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = fetch_builtin_meters("openai-codex", &format!("http://{addr}/usage"), &token)
+            .await
+            .unwrap();
+        assert_eq!(result[0]["remaining"], 75.0);
+        server.abort();
     }
 }

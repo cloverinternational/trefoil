@@ -25,7 +25,9 @@ struct Entries {
 
 impl Entries {
     fn delete(&mut self, key: &str) {
-        if let Some((_, _, seq)) = self.map.remove(key) { self.order.remove(&seq); }
+        if let Some((_, _, seq)) = self.map.remove(key) {
+            self.order.remove(&seq);
+        }
     }
     fn insert(&mut self, key: String, entry: StickyEntry, expires_at: i64) {
         self.delete(&key);
@@ -43,7 +45,9 @@ pub struct StickySessionManager {
 }
 
 impl StickySessionManager {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// `StickySessionManager.getInstance()`.
     pub fn global() -> &'static StickySessionManager {
@@ -59,7 +63,9 @@ impl StickySessionManager {
             return Some(format!("r:{}", to_string(req.get("previousResponseId"))));
         }
         let messages = get_arr(req, &["messages"])?;
-        if messages.len() < 2 { return None; }
+        if messages.len() < 2 {
+            return None;
+        }
         let anchor = stringify(&Value::Array(messages[..2].to_vec()));
         Some(format!("m:{:x}", wyhash(0, anchor.as_bytes())))
     }
@@ -74,7 +80,13 @@ impl StickySessionManager {
     }
 
     /// `get` with an explicit `now` (ms).
-    pub fn get_at(&self, alias: &str, api_type: &str, session_key: &str, now: i64) -> Option<StickyEntry> {
+    pub fn get_at(
+        &self,
+        alias: &str,
+        api_type: &str,
+        session_key: &str,
+        now: i64,
+    ) -> Option<StickyEntry> {
         let key = Self::make_key(alias, api_type, session_key);
         let mut e = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         let entry = e.map.get(&key).cloned()?;
@@ -87,21 +99,57 @@ impl StickySessionManager {
     }
 
     /// `set(alias, apiType, sessionKey, provider, model, expiresAt = now + DEFAULT_STICKY_TTL_MS)`.
-    pub fn set(&self, alias: &str, api_type: &str, session_key: &str, provider: &str, model: &str, expires_at: Option<i64>) {
+    pub fn set(
+        &self,
+        alias: &str,
+        api_type: &str,
+        session_key: &str,
+        provider: &str,
+        model: &str,
+        expires_at: Option<i64>,
+    ) {
         let now = crate::engine::js::now_ms();
-        self.set_at(alias, api_type, session_key, provider, model, expires_at.unwrap_or(now + DEFAULT_STICKY_TTL_MS), now);
+        self.set_at(
+            alias,
+            api_type,
+            session_key,
+            provider,
+            model,
+            expires_at.unwrap_or(now + DEFAULT_STICKY_TTL_MS),
+            now,
+        );
     }
 
     /// `set` with an explicit `now` (ms).
     #[allow(clippy::too_many_arguments)]
-    pub fn set_at(&self, alias: &str, api_type: &str, session_key: &str, provider: &str, model: &str, expires_at: i64, now: i64) {
+    pub fn set_at(
+        &self,
+        alias: &str,
+        api_type: &str,
+        session_key: &str,
+        provider: &str,
+        model: &str,
+        expires_at: i64,
+        now: i64,
+    ) {
         let key = Self::make_key(alias, api_type, session_key);
         let mut e = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         e.delete(&key);
-        if expires_at <= now { return; }
-        e.insert(key, StickyEntry { provider: provider.into(), model: model.into() }, expires_at);
+        if expires_at <= now {
+            return;
+        }
+        e.insert(
+            key,
+            StickyEntry {
+                provider: provider.into(),
+                model: model.into(),
+            },
+            expires_at,
+        );
         if e.map.len() > MAX_ENTRIES {
-            if let Some(oldest) = e.order.values().next().cloned() { e.delete(&oldest); }
+            if let Some(oldest) = e.order.values().next().cloned() {
+                e.delete(&oldest);
+            }
         }
     }
 
@@ -113,19 +161,37 @@ impl StickySessionManager {
     }
 
     /// Test helper.
-    pub fn size(&self) -> usize { self.entries.lock().unwrap_or_else(|p| p.into_inner()).map.len() }
+    pub fn size(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .map
+            .len()
+    }
 }
 
 /// `Bun.hash(input)` — Zig `std.hash.Wyhash.hash(seed, input)` (wyhash final v4).
 pub fn wyhash(seed: u64, input: &[u8]) -> u64 {
-    const S: [u64; 4] = [0xa0761d6478bd642f, 0xe7037ed1a0b428db, 0x8ebc6af09c88c6e3, 0x589965cc75374cc3];
+    const S: [u64; 4] = [
+        0xa0761d6478bd642f,
+        0xe7037ed1a0b428db,
+        0x8ebc6af09c88c6e3,
+        0x589965cc75374cc3,
+    ];
     fn mum(a: u64, b: u64) -> (u64, u64) {
         let x = (a as u128).wrapping_mul(b as u128);
         (x as u64, (x >> 64) as u64)
     }
-    fn mix(a: u64, b: u64) -> u64 { let (x, y) = mum(a, b); x ^ y }
-    fn r8(b: &[u8]) -> u64 { u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8])) }
-    fn r4(b: &[u8]) -> u64 { u32::from_le_bytes(b[..4].try_into().unwrap_or([0; 4])) as u64 }
+    fn mix(a: u64, b: u64) -> u64 {
+        let (x, y) = mum(a, b);
+        x ^ y
+    }
+    fn r8(b: &[u8]) -> u64 {
+        u64::from_le_bytes(b[..8].try_into().unwrap_or([0; 8]))
+    }
+    fn r4(b: &[u8]) -> u64 {
+        u32::from_le_bytes(b[..4].try_into().unwrap_or([0; 4])) as u64
+    }
 
     let mut state = [seed ^ mix(S[0], S[1]); 3];
     let len = input.len();
@@ -192,31 +258,55 @@ mod tests {
             ("héllo wörld 0123456789", "85388a895b4cfbf2"),
         ];
         for (input, expected) in cases {
-            assert_eq!(format!("{:x}", wyhash(0, input.as_bytes())), expected, "{input:?}");
+            assert_eq!(
+                format!("{:x}", wyhash(0, input.as_bytes())),
+                expected,
+                "{input:?}"
+            );
         }
     }
 
     #[test]
     fn session_key() {
         let req = json!({"messages": [{"role": "system", "content": "You are helpful"}, {"role": "user", "content": "hi"}, {"role": "assistant", "content": "x"}]});
-        assert_eq!(StickySessionManager::compute_session_key(&req).as_deref(), Some("m:1d48d3e5a8e2f5bb"));
-        assert_eq!(StickySessionManager::compute_session_key(&json!({"messages": [{"role": "user"}]})), None);
+        assert_eq!(
+            StickySessionManager::compute_session_key(&req).as_deref(),
+            Some("m:1d48d3e5a8e2f5bb")
+        );
+        assert_eq!(
+            StickySessionManager::compute_session_key(&json!({"messages": [{"role": "user"}]})),
+            None
+        );
         assert_eq!(StickySessionManager::compute_session_key(&json!({})), None);
-        assert_eq!(StickySessionManager::compute_session_key(&json!({"previousResponseId": "resp_1", "messages": []})).as_deref(), Some("r:resp_1"));
+        assert_eq!(
+            StickySessionManager::compute_session_key(
+                &json!({"previousResponseId": "resp_1", "messages": []})
+            )
+            .as_deref(),
+            Some("r:resp_1")
+        );
     }
 
     #[test]
     fn get_set_expiry_and_lru() {
         let m = StickySessionManager::new();
         m.set_at("a", " Chat ", "k", "p", "m", 2000, 1000);
-        assert_eq!(m.get_at("a", "chat", "k", 1500), Some(StickyEntry { provider: "p".into(), model: "m".into() }));
+        assert_eq!(
+            m.get_at("a", "chat", "k", 1500),
+            Some(StickyEntry {
+                provider: "p".into(),
+                model: "m".into()
+            })
+        );
         assert_eq!(m.get_at("a", "responses", "k", 1500), None);
         assert_eq!(m.get_at("b", "chat", "k", 1500), None);
         assert_eq!(m.get_at("a", "chat", "k", 2000), None);
         assert_eq!(m.size(), 0);
         m.set_at("a", "chat", "k", "p", "m", 1000, 1000);
         assert_eq!(m.size(), 0);
-        for i in 0..=MAX_ENTRIES { m.set_at("a", "chat", &i.to_string(), "p", "m", 5000, 1000); }
+        for i in 0..=MAX_ENTRIES {
+            m.set_at("a", "chat", &i.to_string(), "p", "m", 5000, 1000);
+        }
         assert_eq!(m.size(), MAX_ENTRIES);
         assert_eq!(m.get_at("a", "chat", "0", 1000), None);
         assert!(m.get_at("a", "chat", "1", 1000).is_some());

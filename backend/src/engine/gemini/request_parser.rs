@@ -10,7 +10,11 @@ fn simplify_content(parts: Vec<Value>, empty: Value) -> Value {
     if parts.len() == 1 && get_str(&parts[0], &["type"]) == Some("text") {
         return parts[0].get("text").cloned().unwrap_or(Value::Null);
     }
-    if parts.is_empty() { empty } else { Value::Array(parts) }
+    if parts.is_empty() {
+        empty
+    } else {
+        Value::Array(parts)
+    }
 }
 
 /// `for (const x of v)` over a JSON value: arrays yield items, strings yield
@@ -29,7 +33,9 @@ fn map_tools(tools: &[Value]) -> EngineResult<Vec<Value>> {
         let fds = read(Some(tool), "functionDeclarations")?;
         if truthy(fds) {
             for fd in iterate(fds.unwrap_or(&Value::Null), "tool.functionDeclarations")? {
-                if fd.is_null() { return Err(read_error(Some(&fd), "name")); }
+                if fd.is_null() {
+                    return Err(read_error(Some(&fd), "name"));
+                }
                 unified.push(json!({"type": "function", "function": obj(vec![
                     ("name", fd.get("name").cloned()),
                     ("description", fd.get("description").cloned()),
@@ -38,10 +44,19 @@ fn map_tools(tools: &[Value]) -> EngineResult<Vec<Value>> {
                 ])}));
             }
         }
-        if truthy(tool.get("googleSearch")) { unified.push(json!({"type": "googleSearch", "googleSearch": {}})); }
-        if truthy(tool.get("codeExecution")) { unified.push(json!({"type": "codeExecution", "codeExecution": {}})); }
-        if truthy(tool.get("urlContext")) { unified.push(json!({"type": "urlContext", "urlContext": {}})); }
-        if matches!(get_str(tool, &["type"]), Some("web_search_20250305" | "web_search" | "openrouter:web_search")) {
+        if truthy(tool.get("googleSearch")) {
+            unified.push(json!({"type": "googleSearch", "googleSearch": {}}));
+        }
+        if truthy(tool.get("codeExecution")) {
+            unified.push(json!({"type": "codeExecution", "codeExecution": {}}));
+        }
+        if truthy(tool.get("urlContext")) {
+            unified.push(json!({"type": "urlContext", "urlContext": {}}));
+        }
+        if matches!(
+            get_str(tool, &["type"]),
+            Some("web_search_20250305" | "web_search" | "openrouter:web_search")
+        ) {
             unified.push(json!({"type": "googleSearch", "googleSearch": {}}));
         }
     }
@@ -49,7 +64,10 @@ fn map_tools(tools: &[Value]) -> EngineResult<Vec<Value>> {
 }
 
 /// Unified message under construction (`UnifiedMessage`).
-struct Thinking { content: String, signature: Option<Value> }
+struct Thinking {
+    content: String,
+    signature: Option<Value>,
+}
 
 /// `parseGeminiRequest`.
 pub fn parse_gemini_request(input: &Value) -> EngineResult<Value> {
@@ -70,17 +88,33 @@ pub fn parse_gemini_request(input: &Value) -> EngineResult<Value> {
     // Gap 1: systemInstruction (inbound); thought parts are dropped.
     if truthy(system_instruction) && truthy(get(system_instruction.unwrap(), &["parts"])) {
         let mut noop = |_: &Value, _: Option<&Value>| {};
-        let parts = convert_gemini_parts_to_unified(&system_instruction.unwrap()["parts"], Some(&mut noop))?;
-        out.insert("systemInstruction".into(), json!({"role": "system", "content": simplify_content(parts, json!([]))}));
+        let parts = convert_gemini_parts_to_unified(
+            &system_instruction.unwrap()["parts"],
+            Some(&mut noop),
+        )?;
+        out.insert(
+            "systemInstruction".into(),
+            json!({"role": "system", "content": simplify_content(parts, json!([]))}),
+        );
     }
 
     // Response format.
     if get_str(&gc, &["responseMimeType"]) == Some("application/json") {
         let schema = gc.get("responseJsonSchema").filter(|s| truthy(Some(s)));
-        out.insert("response_format".into(), obj(vec![
-            ("type", Some(json!(if schema.is_some() { "json_schema" } else { "json_object" }))),
-            ("json_schema", schema.map(normalize_json_schema_types)),
-        ]));
+        out.insert(
+            "response_format".into(),
+            obj(vec![
+                (
+                    "type",
+                    Some(json!(if schema.is_some() {
+                        "json_schema"
+                    } else {
+                        "json_object"
+                    })),
+                ),
+                ("json_schema", schema.map(normalize_json_schema_types)),
+            ]),
+        );
     }
 
     // Thinking config (camelCase and snake_case variants).
@@ -89,43 +123,85 @@ pub fn parse_gemini_request(input: &Value) -> EngineResult<Value> {
         let level = coalesce(tc.get("thinkingLevel"), tc.get("thinking_level"));
         let budget = coalesce(tc.get("thinkingBudget"), tc.get("thinking_budget"));
         let budget_is = |n: f64| budget.as_ref().and_then(Value::as_f64) == Some(n);
-        let enabled = if budget_is(0.0) { Some(json!(false)) } else { coalesce(tc.get("includeThoughts"), tc.get("include_thoughts")) };
+        let enabled = if budget_is(0.0) {
+            Some(json!(false))
+        } else {
+            coalesce(tc.get("includeThoughts"), tc.get("include_thoughts"))
+        };
         let effort = match level.as_ref().filter(|l| truthy(Some(l))) {
             Some(l) => Some(Value::String(lower(l, "thinkingLevel")?)),
             None => None,
         };
-        out.insert("reasoning".into(), obj(vec![
-            ("enabled", enabled),
-            ("max_tokens", budget.clone()),
-            ("effort", effort),
-            ("adaptive", if budget_is(-1.0) { Some(json!(true)) } else { None }),
-        ]));
+        out.insert(
+            "reasoning".into(),
+            obj(vec![
+                ("enabled", enabled),
+                ("max_tokens", budget.clone()),
+                ("effort", effort),
+                (
+                    "adaptive",
+                    if budget_is(-1.0) {
+                        Some(json!(true))
+                    } else {
+                        None
+                    },
+                ),
+            ]),
+        );
     }
 
     // Gap 3: toolConfig.
     if truthy(input.get("toolConfig")) {
-        out.insert("toolConfig".into(), obj(vec![
-            ("mode", get(input, &["toolConfig", "functionCallingConfig", "mode"]).cloned()),
-            ("functionCallingPreference", get(input, &["toolConfig", "functionCallingConfig", "functionCallingPreference"]).cloned()),
-        ]));
+        out.insert(
+            "toolConfig".into(),
+            obj(vec![
+                (
+                    "mode",
+                    get(input, &["toolConfig", "functionCallingConfig", "mode"]).cloned(),
+                ),
+                (
+                    "functionCallingPreference",
+                    get(
+                        input,
+                        &[
+                            "toolConfig",
+                            "functionCallingConfig",
+                            "functionCallingPreference",
+                        ],
+                    )
+                    .cloned(),
+                ),
+            ]),
+        );
     }
 
     // Gap 4 & 5: function declarations and Google built-in tools.
     if let Some(list) = tools.as_array().filter(|t| !t.is_empty()) {
         let unified = map_tools(list)?;
-        if !unified.is_empty() { out.insert("tools".into(), Value::Array(unified)); }
+        if !unified.is_empty() {
+            out.insert("tools".into(), Value::Array(unified));
+        }
     }
 
     // Contents → messages.
     let mut messages: Vec<Value> = Vec::new();
     if let Some(contents) = contents.as_array() {
         for content in contents {
-            let role = if read(Some(content), "role")?.and_then(Value::as_str) == Some("model") { "assistant" } else { "user" };
-            let Some(parts) = content.get("parts").filter(|p| truthy(Some(p))) else { continue };
+            let role = if read(Some(content), "role")?.and_then(Value::as_str) == Some("model") {
+                "assistant"
+            } else {
+                "user"
+            };
+            let Some(parts) = content.get("parts").filter(|p| truthy(Some(p))) else {
+                continue;
+            };
 
             let mut thinking: Option<Thinking> = None;
             let mut on_thinking = |text: &Value, signature: Option<&Value>| {
-                let t = thinking.get_or_insert_with(|| Thinking { content: String::new(), signature: None });
+                let t = thinking.get_or_insert_with(|| Thinking {
+                    content: String::new(),
+                    signature: None,
+                });
                 t.content.push_str(&to_string(Some(text)));
                 // Gap 6: only base64-valid signatures are kept.
                 if truthy(signature) && is_valid_thought_signature_value(signature) {
@@ -137,43 +213,79 @@ pub fn parse_gemini_request(input: &Value) -> EngineResult<Value> {
 
             let mut tool_calls: Option<Vec<Value>> = None;
             for part in &parts {
-                if !truthy(part.get("functionCall")) { continue; }
+                if !truthy(part.get("functionCall")) {
+                    continue;
+                }
                 let fc = &part["functionCall"];
                 let name = fc.get("name");
-                let id = if truthy(name) { name.cloned().unwrap_or(Value::Null) } else { json!(random_call_id()) };
+                let id = if truthy(name) {
+                    name.cloned().unwrap_or(Value::Null)
+                } else {
+                    json!(random_call_id())
+                };
                 let mut tc = obj(vec![
                     ("id", Some(id)),
                     ("type", Some(json!("function"))),
-                    ("function", Some(obj(vec![
-                        ("name", Some(or(name, Some(&json!("unknown"))).unwrap_or(Value::Null))),
-                        ("arguments", stringify_opt(fc.get("args"))),
-                    ]))),
+                    (
+                        "function",
+                        Some(obj(vec![
+                            (
+                                "name",
+                                Some(or(name, Some(&json!("unknown"))).unwrap_or(Value::Null)),
+                            ),
+                            ("arguments", stringify_opt(fc.get("args"))),
+                        ])),
+                    ),
                 ]);
-                if truthy(part.get("thoughtSignature")) { tc["thought_signature"] = part["thoughtSignature"].clone(); }
+                if truthy(part.get("thoughtSignature")) {
+                    tc["thought_signature"] = part["thoughtSignature"].clone();
+                }
                 tool_calls.get_or_insert_with(Vec::new).push(tc);
             }
 
             let has_content_parts = !content_parts.is_empty();
             let mut message = Map::new();
             message.insert("role".into(), json!(role));
-            message.insert("content".into(), simplify_content(content_parts, Value::Null));
+            message.insert(
+                "content".into(),
+                simplify_content(content_parts, Value::Null),
+            );
             if let Some(t) = thinking {
-                message.insert("thinking".into(), obj(vec![("content", Some(Value::String(t.content))), ("signature", t.signature)]));
+                message.insert(
+                    "thinking".into(),
+                    obj(vec![
+                        ("content", Some(Value::String(t.content))),
+                        ("signature", t.signature),
+                    ]),
+                );
             }
-            if let Some(tcs) = tool_calls { message.insert("tool_calls".into(), Value::Array(tcs)); }
+            if let Some(tcs) = tool_calls {
+                message.insert("tool_calls".into(), Value::Array(tcs));
+            }
 
-            let function_responses: Vec<&Value> = parts.iter().filter(|p| truthy(p.get("functionResponse"))).collect();
+            let function_responses: Vec<&Value> = parts
+                .iter()
+                .filter(|p| truthy(p.get("functionResponse")))
+                .collect();
             if !function_responses.is_empty() {
                 for fr in function_responses {
                     let name = get(fr, &["functionResponse", "name"]);
                     messages.push(obj(vec![
                         ("role", Some(json!("tool"))),
-                        ("content", stringify_opt(get(fr, &["functionResponse", "response"]))),
-                        ("tool_call_id", Some(or(name, Some(&json!("unknown_tool"))).unwrap_or(Value::Null))),
+                        (
+                            "content",
+                            stringify_opt(get(fr, &["functionResponse", "response"])),
+                        ),
+                        (
+                            "tool_call_id",
+                            Some(or(name, Some(&json!("unknown_tool"))).unwrap_or(Value::Null)),
+                        ),
                         ("name", name.cloned()),
                     ]));
                 }
-                if has_content_parts { messages.push(Value::Object(message)); }
+                if has_content_parts {
+                    messages.push(Value::Object(message));
+                }
             } else {
                 messages.push(Value::Object(message));
             }
@@ -184,24 +296,39 @@ pub fn parse_gemini_request(input: &Value) -> EngineResult<Value> {
     // separate model contents).
     let mut merged: Vec<Value> = Vec::new();
     for msg in messages {
-        let prev_is_assistant = merged.last().is_some_and(|p| get_str(p, &["role"]) == Some("assistant"));
+        let prev_is_assistant = merged
+            .last()
+            .is_some_and(|p| get_str(p, &["role"]) == Some("assistant"));
         if !(prev_is_assistant && get_str(&msg, &["role"]) == Some("assistant")) {
             merged.push(msg);
             continue;
         }
-        let prev = merged.last_mut().and_then(Value::as_object_mut).expect("assistant message object");
+        let prev = merged
+            .last_mut()
+            .and_then(Value::as_object_mut)
+            .expect("assistant message object");
         if let Some(tcs) = get_arr(&msg, &["tool_calls"]).filter(|t| !t.is_empty()) {
-            if !truthy(prev.get("tool_calls")) { prev.insert("tool_calls".into(), json!([])); }
-            if let Some(Value::Array(p)) = prev.get_mut("tool_calls") { p.extend(tcs.iter().cloned()); }
+            if !truthy(prev.get("tool_calls")) {
+                prev.insert("tool_calls".into(), json!([]));
+            }
+            if let Some(Value::Array(p)) = prev.get_mut("tool_calls") {
+                p.extend(tcs.iter().cloned());
+            }
         }
         let mc = msg.get("content");
         if truthy(mc) && truthy(prev.get("content")) {
             let merged_content = match (prev.get("content"), mc) {
-                (Some(Value::String(a)), Some(Value::String(b))) => Some(Value::String(format!("{a}{b}"))),
-                (Some(Value::Array(a)), Some(Value::Array(b))) => Some(Value::Array(a.iter().chain(b.iter()).cloned().collect())),
+                (Some(Value::String(a)), Some(Value::String(b))) => {
+                    Some(Value::String(format!("{a}{b}")))
+                }
+                (Some(Value::Array(a)), Some(Value::Array(b))) => {
+                    Some(Value::Array(a.iter().chain(b.iter()).cloned().collect()))
+                }
                 _ => None,
             };
-            if let Some(c) = merged_content { prev.insert("content".into(), c); }
+            if let Some(c) = merged_content {
+                prev.insert("content".into(), c);
+            }
         } else if truthy(mc) && !truthy(prev.get("content")) {
             prev.insert("content".into(), mc.cloned().unwrap_or(Value::Null));
         }
@@ -212,12 +339,19 @@ pub fn parse_gemini_request(input: &Value) -> EngineResult<Value> {
                 let pt = prev.get_mut("thinking").expect("thinking");
                 let joined = format!(
                     "{}{}",
-                    to_string(Some(&or(pt.get("content"), Some(&json!(""))).unwrap_or(Value::Null))),
-                    to_string(Some(&or(get(&msg, &["thinking", "content"]), Some(&json!(""))).unwrap_or(Value::Null))),
+                    to_string(Some(
+                        &or(pt.get("content"), Some(&json!(""))).unwrap_or(Value::Null)
+                    )),
+                    to_string(Some(
+                        &or(get(&msg, &["thinking", "content"]), Some(&json!("")))
+                            .unwrap_or(Value::Null)
+                    )),
                 );
                 if let Some(m) = pt.as_object_mut() {
                     m.insert("content".into(), Value::String(joined));
-                    if truthy(get(&msg, &["thinking", "signature"])) { m.insert("signature".into(), msg["thinking"]["signature"].clone()); }
+                    if truthy(get(&msg, &["thinking", "signature"])) {
+                        m.insert("signature".into(), msg["thinking"]["signature"].clone());
+                    }
                 }
             }
         }
@@ -225,14 +359,25 @@ pub fn parse_gemini_request(input: &Value) -> EngineResult<Value> {
 
     // Propagate the first thought signature to unsigned sibling tool calls.
     for msg in merged.iter_mut() {
-        if get_str(msg, &["role"]) != Some("assistant") { continue; }
-        let Some(Value::Array(tcs)) = msg.get_mut("tool_calls") else { continue };
-        if tcs.len() < 2 { continue; }
-        let shared = tcs.iter().find(|tc| truthy(tc.get("thought_signature"))).map(|tc| tc["thought_signature"].clone());
+        if get_str(msg, &["role"]) != Some("assistant") {
+            continue;
+        }
+        let Some(Value::Array(tcs)) = msg.get_mut("tool_calls") else {
+            continue;
+        };
+        if tcs.len() < 2 {
+            continue;
+        }
+        let shared = tcs
+            .iter()
+            .find(|tc| truthy(tc.get("thought_signature")))
+            .map(|tc| tc["thought_signature"].clone());
         if let Some(sig) = shared {
             for tc in tcs.iter_mut() {
                 if !truthy(tc.get("thought_signature")) {
-                    if let Some(m) = tc.as_object_mut() { m.insert("thought_signature".into(), sig.clone()); }
+                    if let Some(m) = tc.as_object_mut() {
+                        m.insert("thought_signature".into(), sig.clone());
+                    }
                 }
             }
         }
@@ -246,26 +391,44 @@ pub fn parse_gemini_request(input: &Value) -> EngineResult<Value> {
 mod tests {
     use super::*;
 
-    fn parse_req(v: Value) -> Value { parse_gemini_request(&v).unwrap() }
+    fn parse_req(v: Value) -> Value {
+        parse_gemini_request(&v).unwrap()
+    }
 
     #[test]
     fn system_instruction() {
-        let r = parse_req(json!({"systemInstruction": {"role": "system", "parts": [{"text": "You are a helpful assistant."}]}, "contents": [{"role": "user", "parts": [{"text": "Hello"}]}], "model": "gemini-2.0-flash"}));
-        assert_eq!(r["systemInstruction"], json!({"role": "system", "content": "You are a helpful assistant."}));
-        let r = parse_req(json!({"systemInstruction": {"parts": [{"text": "a"}, {"text": "b"}]}, "contents": [], "model": "m"}));
+        let r = parse_req(
+            json!({"systemInstruction": {"role": "system", "parts": [{"text": "You are a helpful assistant."}]}, "contents": [{"role": "user", "parts": [{"text": "Hello"}]}], "model": "gemini-2.0-flash"}),
+        );
+        assert_eq!(
+            r["systemInstruction"],
+            json!({"role": "system", "content": "You are a helpful assistant."})
+        );
+        let r = parse_req(
+            json!({"systemInstruction": {"parts": [{"text": "a"}, {"text": "b"}]}, "contents": [], "model": "m"}),
+        );
         assert!(r["systemInstruction"]["content"].is_array());
-        let r = parse_req(json!({"contents": [{"role": "user", "parts": [{"text": "Hello"}]}], "model": "gemini-2.0-flash"}));
+        let r = parse_req(
+            json!({"contents": [{"role": "user", "parts": [{"text": "Hello"}]}], "model": "gemini-2.0-flash"}),
+        );
         assert!(r.get("systemInstruction").is_none());
-        assert_eq!(r, json!({"messages": [{"role": "user", "content": "Hello"}], "model": "gemini-2.0-flash", "stream": false}));
+        assert_eq!(
+            r,
+            json!({"messages": [{"role": "user", "content": "Hello"}], "model": "gemini-2.0-flash", "stream": false})
+        );
     }
 
     #[test]
     fn tool_config_and_tools() {
         for mode in ["auto", "none", "any"] {
-            let r = parse_req(json!({"contents": [], "model": "m", "toolConfig": {"functionCallingConfig": {"mode": mode}}}));
+            let r = parse_req(
+                json!({"contents": [], "model": "m", "toolConfig": {"functionCallingConfig": {"mode": mode}}}),
+            );
             assert_eq!(r["toolConfig"], json!({"mode": mode}));
         }
-        let r = parse_req(json!({"contents": [], "toolConfig": {"functionCallingConfig": {"mode": "auto", "functionCallingPreference": "auto"}}}));
+        let r = parse_req(
+            json!({"contents": [], "toolConfig": {"functionCallingConfig": {"mode": "auto", "functionCallingPreference": "auto"}}}),
+        );
         assert_eq!(r["toolConfig"]["functionCallingPreference"], "auto");
         assert_eq!(r["model"], "");
         let r = parse_req(json!({"contents": [], "tools": [
@@ -274,22 +437,47 @@ mod tests {
         ]}));
         let tools = r["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 5);
-        assert_eq!(tools[0]["function"]["parametersJsonSchema"]["type"], "object");
+        assert_eq!(
+            tools[0]["function"]["parametersJsonSchema"]["type"],
+            "object"
+        );
         assert_eq!(tools[0]["function"]["parameters"]["type"], "object");
-        assert_eq!(tools.iter().map(|t| t["type"].as_str().unwrap()).collect::<Vec<_>>(), vec!["function", "googleSearch", "codeExecution", "urlContext", "googleSearch"]);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|t| t["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "function",
+                "googleSearch",
+                "codeExecution",
+                "urlContext",
+                "googleSearch"
+            ]
+        );
     }
 
     #[test]
     fn thinking_config() {
-        let r = parse_req(json!({"contents": [], "generationConfig": {"thinkingConfig": {"include_thoughts": true, "thinking_level": "MEDIUM"}}}));
+        let r = parse_req(
+            json!({"contents": [], "generationConfig": {"thinkingConfig": {"include_thoughts": true, "thinking_level": "MEDIUM"}}}),
+        );
         assert_eq!(r["reasoning"], json!({"enabled": true, "effort": "medium"}));
-        let r = parse_req(json!({"contents": [], "generationConfig": {"thinkingConfig": {"include_thoughts": true, "thinking_budget": 8192}}}));
+        let r = parse_req(
+            json!({"contents": [], "generationConfig": {"thinkingConfig": {"include_thoughts": true, "thinking_budget": 8192}}}),
+        );
         assert_eq!(r["reasoning"], json!({"enabled": true, "max_tokens": 8192}));
-        let r = parse_req(json!({"contents": [], "generationConfig": {"thinkingConfig": {"includeThoughts": true, "thinkingBudget": 4096}}}));
+        let r = parse_req(
+            json!({"contents": [], "generationConfig": {"thinkingConfig": {"includeThoughts": true, "thinkingBudget": 4096}}}),
+        );
         assert_eq!(r["reasoning"], json!({"enabled": true, "max_tokens": 4096}));
-        let r = parse_req(json!({"contents": [], "generationConfig": {"thinkingConfig": {"thinkingBudget": -1}}}));
+        let r = parse_req(
+            json!({"contents": [], "generationConfig": {"thinkingConfig": {"thinkingBudget": -1}}}),
+        );
         assert_eq!(r["reasoning"], json!({"max_tokens": -1, "adaptive": true}));
-        let r = parse_req(json!({"contents": [], "generationConfig": {"thinkingConfig": {"thinkingBudget": 0, "includeThoughts": true}}}));
+        let r = parse_req(
+            json!({"contents": [], "generationConfig": {"thinkingConfig": {"thinkingBudget": 0, "includeThoughts": true}}}),
+        );
         assert_eq!(r["reasoning"], json!({"enabled": false, "max_tokens": 0}));
         let r = parse_req(json!({"contents": [], "generationConfig": {}}));
         assert!(r.get("reasoning").is_none());
@@ -297,11 +485,18 @@ mod tests {
 
     #[test]
     fn response_format() {
-        let r = parse_req(json!({"contents": [], "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": {"type": "OBJECT"}, "maxOutputTokens": 10, "temperature": 0.5}}));
-        assert_eq!(r["response_format"], json!({"type": "json_schema", "json_schema": {"type": "object"}}));
+        let r = parse_req(
+            json!({"contents": [], "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": {"type": "OBJECT"}, "maxOutputTokens": 10, "temperature": 0.5}}),
+        );
+        assert_eq!(
+            r["response_format"],
+            json!({"type": "json_schema", "json_schema": {"type": "object"}})
+        );
         assert_eq!(r["max_tokens"], 10);
         assert_eq!(r["temperature"], 0.5);
-        let r = parse_req(json!({"contents": [], "generationConfig": {"responseMimeType": "application/json"}}));
+        let r = parse_req(
+            json!({"contents": [], "generationConfig": {"responseMimeType": "application/json"}}),
+        );
         assert_eq!(r["response_format"], json!({"type": "json_object"}));
     }
 
@@ -319,22 +514,36 @@ mod tests {
         assert_eq!(r["stream"], true);
         let m = r["messages"].as_array().unwrap();
         assert_eq!(m.len(), 6);
-        assert_eq!(m[1], json!({"role": "assistant", "content": null,
+        assert_eq!(
+            m[1],
+            json!({"role": "assistant", "content": null,
             "thinking": {"content": "planmore", "signature": "aGVsbG8="},
             "tool_calls": [
                 {"id": "a", "type": "function", "function": {"name": "a", "arguments": "{\"x\":1}"}, "thought_signature": "c2ln"},
                 {"id": "b", "type": "function", "function": {"name": "b", "arguments": "{}"}, "thought_signature": "c2ln"}
-            ]}));
-        assert_eq!(m[2], json!({"role": "tool", "content": "{\"ok\":true}", "tool_call_id": "a", "name": "a"}));
-        assert_eq!(m[3], json!({"role": "tool", "content": "1", "tool_call_id": "unknown_tool"}));
+            ]})
+        );
+        assert_eq!(
+            m[2],
+            json!({"role": "tool", "content": "{\"ok\":true}", "tool_call_id": "a", "name": "a"})
+        );
+        assert_eq!(
+            m[3],
+            json!({"role": "tool", "content": "1", "tool_call_id": "unknown_tool"})
+        );
         assert_eq!(m[4], json!({"role": "assistant", "content": "xy"}));
         // functionResponse with no content parts drops the model message (and its tool call).
-        assert_eq!(m[5], json!({"role": "tool", "tool_call_id": "z", "name": "z"}));
+        assert_eq!(
+            m[5],
+            json!({"role": "tool", "tool_call_id": "z", "name": "z"})
+        );
     }
 
     #[test]
     fn unnamed_function_call_gets_random_id() {
-        let r = parse_req(json!({"contents": [{"role": "model", "parts": [{"functionCall": {"args": {"a": 1}}}]}]}));
+        let r = parse_req(
+            json!({"contents": [{"role": "model", "parts": [{"functionCall": {"args": {"a": 1}}}]}]}),
+        );
         let tc = &r["messages"][0]["tool_calls"][0];
         assert!(tc["id"].as_str().unwrap().starts_with("call_"));
         assert_eq!(tc["function"]["name"], "unknown");

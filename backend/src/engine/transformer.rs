@@ -18,14 +18,26 @@ pub struct EngineError {
 }
 
 impl EngineError {
-    pub fn new(message: impl Into<String>) -> Self { Self { message: message.into(), status: None, code: None } }
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            status: None,
+            code: None,
+        }
+    }
     pub fn status(message: impl Into<String>, status: u16, code: &str) -> Self {
-        Self { message: message.into(), status: Some(status), code: Some(code.into()) }
+        Self {
+            message: message.into(),
+            status: Some(status),
+            code: Some(code.into()),
+        }
     }
 }
 
 impl std::fmt::Display for EngineError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.message) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 pub type EngineResult<T> = Result<T, EngineError>;
@@ -36,18 +48,26 @@ pub trait StreamTransformer: Send {
     fn on_event(&mut self, event: &SseEvent) -> Vec<Value>;
     /// Raw text fed before SSE parsing, for transformers that do not use SSE
     /// framing (default: parse as SSE in the caller and ignore here).
-    fn on_raw(&mut self, _text: &str) -> Vec<Value> { Vec::new() }
+    fn on_raw(&mut self, _text: &str) -> Vec<Value> {
+        Vec::new()
+    }
     /// Provider stream ended.
-    fn finish(&mut self) -> Vec<Value> { Vec::new() }
+    fn finish(&mut self) -> Vec<Value> {
+        Vec::new()
+    }
     /// True when `on_raw` should receive the raw text instead of SSE events.
-    fn wants_raw(&self) -> bool { false }
+    fn wants_raw(&self) -> bool {
+        false
+    }
 }
 
 /// Unified chunks → client wire text (already SSE-encoded).
 pub trait StreamFormatter: Send {
     fn on_chunk(&mut self, chunk: &Value) -> Vec<String>;
     /// Unified stream ended.
-    fn finish(&mut self) -> Vec<String> { Vec::new() }
+    fn finish(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub trait Transformer: Send + Sync {
@@ -55,7 +75,9 @@ pub trait Transformer: Send + Sync {
     fn name(&self) -> &'static str;
     fn default_endpoint(&self) -> &'static str;
     /// `getEndpoint?(request)`; defaults to `default_endpoint`.
-    fn endpoint(&self, _request: &Value) -> String { self.default_endpoint().to_owned() }
+    fn endpoint(&self, _request: &Value) -> String {
+        self.default_endpoint().to_owned()
+    }
     /// Client request (this format) → unified request.
     fn parse_request(&self, input: &Value) -> EngineResult<Value>;
     /// Unified request → provider request (this format).
@@ -64,8 +86,14 @@ pub trait Transformer: Send + Sync {
     fn transform_response(&self, response: &Value) -> EngineResult<Value>;
     /// Unified response → client response (this format).
     fn format_response(&self, response: &Value) -> EngineResult<Value>;
-    fn stream_transformer(&self) -> Option<Box<dyn StreamTransformer>> { None }
-    fn stream_formatter(&self) -> Option<Box<dyn StreamFormatter>> { None }
+    fn stream_transformer(&self) -> Option<Box<dyn StreamTransformer>> {
+        None
+    }
+    fn stream_formatter(&self) -> Option<Box<dyn StreamFormatter>> {
+        None
+    }
     /// Usage from one SSE event's data (`extractUsage`).
-    fn extract_usage(&self, _data: &str) -> Option<Value> { None }
+    fn extract_usage(&self, _data: &str) -> Option<Value> {
+        None
+    }
 }

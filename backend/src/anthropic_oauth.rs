@@ -4,7 +4,10 @@
 //! (`https://platform.claude.com/oauth/code/callback`), which shows
 //! `code#state` for the user to paste. Refresh stays with the generic
 //! transport (`oauth_transport`).
-use crate::oauth_login::{generate_pkce, search_param, search_params, url_param, AuthEvent, AuthPrompt, Interaction, OAuthCredentials};
+use crate::oauth_login::{
+    generate_pkce, search_param, search_params, url_param, AuthEvent, AuthPrompt, Interaction,
+    OAuthCredentials,
+};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -22,7 +25,10 @@ pub struct Endpoints {
 
 impl Default for Endpoints {
     fn default() -> Self {
-        Self { authorize_url: "https://claude.ai/oauth/authorize".into(), token_url: "https://platform.claude.com/v1/oauth/token".into() }
+        Self {
+            authorize_url: "https://claude.ai/oauth/authorize".into(),
+            token_url: "https://platform.claude.com/v1/oauth/token".into(),
+        }
     }
 }
 
@@ -38,7 +44,10 @@ pub fn parse_authorization_input(input: &str) -> (Option<String>, Option<String>
     }
     if value.contains('#') {
         let mut parts = value.split('#');
-        return (parts.next().map(str::to_owned), parts.next().map(str::to_owned));
+        return (
+            parts.next().map(str::to_owned),
+            parts.next().map(str::to_owned),
+        );
     }
     if value.contains("code=") {
         return (search_param(value, "code"), search_param(value, "state"));
@@ -46,7 +55,10 @@ pub fn parse_authorization_input(input: &str) -> (Option<String>, Option<String>
     (Some(value.to_owned()), None)
 }
 
-pub async fn login(interaction: Interaction, endpoints: Endpoints) -> Result<OAuthCredentials, String> {
+pub async fn login(
+    interaction: Interaction,
+    endpoints: Endpoints,
+) -> Result<OAuthCredentials, String> {
     let (verifier, challenge) = generate_pkce();
     let params = search_params(&[
         ("code", "true"),
@@ -64,7 +76,10 @@ pub async fn login(interaction: Interaction, endpoints: Endpoints) -> Result<OAu
         instructions: Some("Sign in in your browser. Anthropic shows an authorization code — copy it and paste it below.".into()),
     });
     let input = interaction
-        .prompt(AuthPrompt::ManualCode { message: "Paste the code Anthropic shows after you sign in:".into(), placeholder: Some("code#state".into()) })
+        .prompt(AuthPrompt::ManualCode {
+            message: "Paste the code Anthropic shows after you sign in:".into(),
+            placeholder: Some("code#state".into()),
+        })
         .await?;
     let (code, state) = parse_authorization_input(&input);
     if let Some(state) = state.as_deref().filter(|s| !s.is_empty()) {
@@ -75,11 +90,24 @@ pub async fn login(interaction: Interaction, endpoints: Endpoints) -> Result<OAu
     let Some(code) = code.filter(|c| !c.is_empty()) else {
         return Err("Missing authorization code".into());
     };
-    interaction.notify(AuthEvent::Progress("Exchanging authorization code for tokens...".into()));
-    exchange_authorization_code(&endpoints.token_url, &code, &state.unwrap_or_else(|| verifier.clone()), &verifier).await
+    interaction.notify(AuthEvent::Progress(
+        "Exchanging authorization code for tokens...".into(),
+    ));
+    exchange_authorization_code(
+        &endpoints.token_url,
+        &code,
+        &state.unwrap_or_else(|| verifier.clone()),
+        &verifier,
+    )
+    .await
 }
 
-async fn exchange_authorization_code(token_url: &str, code: &str, state: &str, verifier: &str) -> Result<OAuthCredentials, String> {
+async fn exchange_authorization_code(
+    token_url: &str,
+    code: &str,
+    state: &str,
+    verifier: &str,
+) -> Result<OAuthCredentials, String> {
     let body = serde_json::json!({
         "grant_type": "authorization_code",
         "client_id": CLIENT_ID,
@@ -100,17 +128,25 @@ async fn exchange_authorization_code(token_url: &str, code: &str, state: &str, v
     let status = response.status();
     let text = response.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
-        return Err(format!("Anthropic token exchange failed. status={}; body={text}", status.as_u16()));
+        return Err(format!(
+            "Anthropic token exchange failed. status={}; body={text}",
+            status.as_u16()
+        ));
     }
     // Never echo a 2xx body: it can carry token material.
-    let json: Value = serde_json::from_str(&text).map_err(|_| "Anthropic token exchange returned invalid JSON".to_string())?;
+    let json: Value = serde_json::from_str(&text)
+        .map_err(|_| "Anthropic token exchange returned invalid JSON".to_string())?;
     let mut missing = Vec::new();
     let object = json.as_object();
     match object {
         None => missing.push(String::new()),
         Some(map) => {
             for field in ["access_token", "refresh_token"] {
-                if map.get(field).and_then(Value::as_str).is_none_or(|v| v.is_empty()) {
+                if map
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .is_none_or(|v| v.is_empty())
+                {
                     missing.push(field.to_string());
                 }
             }
@@ -120,7 +156,10 @@ async fn exchange_authorization_code(token_url: &str, code: &str, state: &str, v
         }
     }
     if !missing.is_empty() {
-        return Err(format!("Anthropic token exchange response missing fields: {}", missing.join(", ")));
+        return Err(format!(
+            "Anthropic token exchange response missing fields: {}",
+            missing.join(", ")
+        ));
     }
     let expires_in = json["expires_in"].as_f64().unwrap_or(0.0);
     Ok(OAuthCredentials::new(
@@ -136,13 +175,36 @@ mod tests {
 
     #[test]
     fn parses_copy_code_inputs_like_reference() {
-        assert_eq!(parse_authorization_input("abc#ver"), (Some("abc".into()), Some("ver".into())));
-        assert_eq!(parse_authorization_input("a#b#c"), (Some("a".into()), Some("b".into())));
-        assert_eq!(parse_authorization_input("abc#"), (Some("abc".into()), Some("".into())));
-        assert_eq!(parse_authorization_input("https://platform.claude.com/oauth/code/callback?code=c&state=s"), (Some("c".into()), Some("s".into())));
-        assert_eq!(parse_authorization_input("code=c&state=s"), (Some("c".into()), Some("s".into())));
-        assert_eq!(parse_authorization_input("?code=c"), (Some("c".into()), None));
-        assert_eq!(parse_authorization_input(" bare "), (Some("bare".into()), None));
+        assert_eq!(
+            parse_authorization_input("abc#ver"),
+            (Some("abc".into()), Some("ver".into()))
+        );
+        assert_eq!(
+            parse_authorization_input("a#b#c"),
+            (Some("a".into()), Some("b".into()))
+        );
+        assert_eq!(
+            parse_authorization_input("abc#"),
+            (Some("abc".into()), Some("".into()))
+        );
+        assert_eq!(
+            parse_authorization_input(
+                "https://platform.claude.com/oauth/code/callback?code=c&state=s"
+            ),
+            (Some("c".into()), Some("s".into()))
+        );
+        assert_eq!(
+            parse_authorization_input("code=c&state=s"),
+            (Some("c".into()), Some("s".into()))
+        );
+        assert_eq!(
+            parse_authorization_input("?code=c"),
+            (Some("c".into()), None)
+        );
+        assert_eq!(
+            parse_authorization_input(" bare "),
+            (Some("bare".into()), None)
+        );
         assert_eq!(parse_authorization_input("   "), (None, None));
     }
 }

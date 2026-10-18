@@ -11,7 +11,10 @@ use serde_json::Value;
 pub const CODEX_VERSION: &str = "0.155.1";
 
 pub fn user_agent() -> String {
-    format!("codex_cli_rs/{} (Debian 13.0.0; x86_64) WindowsTerminal", crate::cli_versions::codex_version())
+    format!(
+        "codex_cli_rs/{} (Debian 13.0.0; x86_64) WindowsTerminal",
+        crate::cli_versions::codex_version()
+    )
 }
 
 /// Extract the ChatGPT account claim from a JWT access token, if present.

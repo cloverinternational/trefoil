@@ -210,43 +210,108 @@ async fn patch_debug(
 
     if let Some(enabled) = enabled_value {
         *state.inner.debug_enabled_global.write().unwrap() = enabled;
-        crate::system_logs::event(&state,"warn",format!("Debug mode (global) {}",if enabled {"enabled"} else {"disabled"}),[("module".into(),serde_json::json!("debug-manager")),("functionName".into(),serde_json::json!("setEnabled"))]);
+        crate::system_logs::event(
+            &state,
+            "warn",
+            format!(
+                "Debug mode (global) {}",
+                if enabled { "enabled" } else { "disabled" }
+            ),
+            [
+                ("module".into(), serde_json::json!("debug-manager")),
+                ("functionName".into(), serde_json::json!("setEnabled")),
+            ],
+        );
     }
     if let Ok(Some(providers)) = providers_result {
         let mut set = state.inner.debug_enabled_providers.write().unwrap();
         set.clear();
-        let mut values=Vec::new();
+        let mut values = Vec::new();
         for p in providers.unwrap_or_default() {
             let trimmed = p.trim();
             if !trimmed.is_empty() {
-                set.insert(trimmed.to_string());values.push(trimmed.to_string());
+                set.insert(trimmed.to_string());
+                values.push(trimmed.to_string());
             }
         }
-        crate::system_logs::event(&state,"warn",format!("Debug provider capture {}",if values.is_empty(){"cleared".into()}else{format!("set to: {}",values.join(", "))}),[("module".into(),serde_json::json!("debug-manager")),("functionName".into(),serde_json::json!("setEnabledProviders"))]);
+        crate::system_logs::event(
+            &state,
+            "warn",
+            format!(
+                "Debug provider capture {}",
+                if values.is_empty() {
+                    "cleared".into()
+                } else {
+                    format!("set to: {}", values.join(", "))
+                }
+            ),
+            [
+                ("module".into(), serde_json::json!("debug-manager")),
+                (
+                    "functionName".into(),
+                    serde_json::json!("setEnabledProviders"),
+                ),
+            ],
+        );
     }
     if let Ok(Some(keys)) = keys_result {
         let mut set = state.inner.debug_enabled_keys.write().unwrap();
         set.clear();
-        let mut values=Vec::new();
+        let mut values = Vec::new();
         for k in keys.unwrap_or_default() {
             let trimmed = k.trim();
             if !trimmed.is_empty() {
-                set.insert(trimmed.to_string());values.push(trimmed.to_string());
+                set.insert(trimmed.to_string());
+                values.push(trimmed.to_string());
             }
         }
-        crate::system_logs::event(&state,"warn",format!("Debug key capture {}",if values.is_empty(){"cleared".into()}else{format!("set to: {}",values.join(", "))}),[("module".into(),serde_json::json!("debug-manager")),("functionName".into(),serde_json::json!("setEnabledKeys"))]);
+        crate::system_logs::event(
+            &state,
+            "warn",
+            format!(
+                "Debug key capture {}",
+                if values.is_empty() {
+                    "cleared".into()
+                } else {
+                    format!("set to: {}", values.join(", "))
+                }
+            ),
+            [
+                ("module".into(), serde_json::json!("debug-manager")),
+                ("functionName".into(), serde_json::json!("setEnabledKeys")),
+            ],
+        );
     }
     if let Ok(Some(aliases)) = aliases_result {
         let mut set = state.inner.debug_enabled_aliases.write().unwrap();
         set.clear();
-        let mut values=Vec::new();
+        let mut values = Vec::new();
         for a in aliases.unwrap_or_default() {
             let trimmed = a.trim();
             if !trimmed.is_empty() {
-                set.insert(trimmed.to_string());values.push(trimmed.to_string());
+                set.insert(trimmed.to_string());
+                values.push(trimmed.to_string());
             }
         }
-        crate::system_logs::event(&state,"warn",format!("Debug alias capture {}",if values.is_empty(){"cleared".into()}else{format!("set to: {}",values.join(", "))}),[("module".into(),serde_json::json!("debug-manager")),("functionName".into(),serde_json::json!("setEnabledAliases"))]);
+        crate::system_logs::event(
+            &state,
+            "warn",
+            format!(
+                "Debug alias capture {}",
+                if values.is_empty() {
+                    "cleared".into()
+                } else {
+                    format!("set to: {}", values.join(", "))
+                }
+            ),
+            [
+                ("module".into(), serde_json::json!("debug-manager")),
+                (
+                    "functionName".into(),
+                    serde_json::json!("setEnabledAliases"),
+                ),
+            ],
+        );
     }
 
     let enabled_global = *state.inner.debug_enabled_global.read().unwrap();

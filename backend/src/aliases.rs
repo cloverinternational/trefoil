@@ -191,10 +191,18 @@ async fn get_alias(
 
 /// `ModelConfigSchema.safeParse` → repository round trip; `Err` is the 400.
 fn validate_alias(body: &Value) -> Result<ModelConfig, Response> {
-    let parsed = crate::alias_view::model_config().safe_parse(body).map_err(|details| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Validation failed", "details": details}))).into_response()
-    })?;
-    Ok(crate::alias_view::from_view(crate::alias_view::repository_view(&parsed)))
+    let parsed = crate::alias_view::model_config()
+        .safe_parse(body)
+        .map_err(|details| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Validation failed", "details": details})),
+            )
+                .into_response()
+        })?;
+    Ok(crate::alias_view::from_view(
+        crate::alias_view::repository_view(&parsed),
+    ))
 }
 
 async fn save_alias(state: &AppState, slug: &str, config: ModelConfig) -> Response {
@@ -203,16 +211,43 @@ async fn save_alias(state: &AppState, slug: &str, config: ModelConfig) -> Respon
         let mut candidate = aliases.clone();
         candidate.insert(slug.to_owned(), config.clone());
         if let Err(message) = assert_no_alias_ref_cycles(&candidate) {
-            crate::system_logs::event(state,"error",format!("Failed to save model alias '{slug}' {message}"),[("module".into(),serde_json::json!("config")),("stack".into(),serde_json::json!(format!("Error: {message}")))]);
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()).into_response();
+            crate::system_logs::event(
+                state,
+                "error",
+                format!("Failed to save model alias '{slug}' {message}"),
+                [
+                    ("module".into(), serde_json::json!("config")),
+                    (
+                        "stack".into(),
+                        serde_json::json!(format!("Error: {message}")),
+                    ),
+                ],
+            );
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+            .into_response();
         }
     }
     if let Some(pool) = &state.inner.database {
-        if crate::database::upsert_alias(pool, slug, &config).await.is_err() {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()).into_response();
+        if crate::database::upsert_alias(pool, slug, &config)
+            .await
+            .is_err()
+        {
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+            .into_response();
         }
     }
-    state.inner.aliases.write().unwrap().insert(slug.to_owned(), config);
+    state
+        .inner
+        .aliases
+        .write()
+        .unwrap()
+        .insert(slug.to_owned(), config);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
@@ -241,14 +276,21 @@ async fn patch_alias(
         return e.into_response();
     }
     let Some(body) = raw.as_object() else {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Object body is required".to_string()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Object body is required".to_string(),
+        )
+        .into_response();
     };
     let Some(existing) = state.inner.aliases.read().unwrap().get(&slug).cloned() else {
-        return ApiError::Simple(StatusCode::NOT_FOUND, format!("Alias '{slug}' not found")).into_response();
+        return ApiError::Simple(StatusCode::NOT_FOUND, format!("Alias '{slug}' not found"))
+            .into_response();
     };
     let mut merged = existing.public_view();
     let map = merged.as_object_mut().expect("alias view is an object");
-    for (key, value) in body { map.insert(key.clone(), value.clone()); }
+    for (key, value) in body {
+        map.insert(key.clone(), value.clone());
+    }
     match validate_alias(&merged) {
         Ok(config) => save_alias(&state, &slug, config).await,
         Err(response) => response,

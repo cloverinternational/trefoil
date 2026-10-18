@@ -12,10 +12,14 @@ pub fn convert_gemini_parts_to_unified(
     parts: &Value,
     mut on_thinking: Option<&mut dyn FnMut(&Value, Option<&Value>)>,
 ) -> EngineResult<Vec<Value>> {
-    let Value::Array(parts) = parts else { return Err(type_error("parts.forEach is not a function")) };
+    let Value::Array(parts) = parts else {
+        return Err(type_error("parts.forEach is not a function"));
+    };
     let mut out = Vec::new();
     for part in parts {
-        if part.is_null() { return Err(read_error(Some(part), "text")); }
+        if part.is_null() {
+            return Err(read_error(Some(part), "text"));
+        }
         if truthy(part.get("text")) {
             let text = &part["text"];
             match on_thinking.as_mut() {
@@ -31,7 +35,8 @@ pub fn convert_gemini_parts_to_unified(
                 ("media_type", mime.cloned()),
             ]));
         } else if truthy(part.get("fileData")) {
-            let uri = or(get(part, &["fileData", "fileUri"]), Some(&json!(""))).unwrap_or(Value::Null);
+            let uri =
+                or(get(part, &["fileData", "fileUri"]), Some(&json!(""))).unwrap_or(Value::Null);
             out.push(obj(vec![
                 ("type", Some(json!("image_url"))),
                 ("image_url", Some(json!({"url": uri}))),
@@ -50,22 +55,35 @@ pub fn convert_unified_parts_to_gemini(content: Option<&Value>) -> EngineResult<
         Some(Value::String(s)) => parts.push(json!({"text": s})),
         Some(Value::Array(items)) => {
             for c in items {
-                if c.is_null() { return Err(read_error(Some(c), "type")); }
+                if c.is_null() {
+                    return Err(read_error(Some(c), "type"));
+                }
                 match get_str(c, &["type"]) {
                     Some("text") => parts.push(obj(vec![("text", c.get("text").cloned())])),
                     Some("image_url") => {
                         let image_url = c.get("image_url");
-                        if nullish(image_url) { return Err(read_error(image_url, "url")); }
+                        if nullish(image_url) {
+                            return Err(read_error(image_url, "url"));
+                        }
                         let url = match get(c, &["image_url", "url"]) {
                             Some(Value::String(u)) => u,
-                            other @ (None | Some(Value::Null)) => return Err(read_error(other, "startsWith")),
-                            Some(_) => return Err(type_error("c.image_url.url.startsWith is not a function")),
+                            other @ (None | Some(Value::Null)) => {
+                                return Err(read_error(other, "startsWith"))
+                            }
+                            Some(_) => {
+                                return Err(type_error(
+                                    "c.image_url.url.startsWith is not a function",
+                                ))
+                            }
                         };
                         if url.starts_with("data:") {
                             let data = url.split(',').nth(1).unwrap_or("");
-                            parts.push(json!({"inlineData": {"mimeType": "image/jpeg", "data": data}}));
+                            parts.push(
+                                json!({"inlineData": {"mimeType": "image/jpeg", "data": data}}),
+                            );
                         } else {
-                            let mime = or(c.get("media_type"), Some(&json!("image/jpeg"))).unwrap_or(Value::Null);
+                            let mime = or(c.get("media_type"), Some(&json!("image/jpeg")))
+                                .unwrap_or(Value::Null);
                             parts.push(json!({"fileData": {"mimeType": mime, "fileUri": url}}));
                         }
                     }
@@ -94,20 +112,30 @@ mod tests {
         let mut seen = Vec::new();
         let mut cb = |t: &Value, s: Option<&Value>| seen.push((t.clone(), s.cloned()));
         let out = convert_gemini_parts_to_unified(&parts, Some(&mut cb)).unwrap();
-        assert_eq!(out, vec![
-            json!({"type": "text", "text": "hi"}),
-            json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}, "media_type": "image/png"}),
-            json!({"type": "image_url", "image_url": {"url": "gs://x"}}),
-        ]);
+        assert_eq!(
+            out,
+            vec![
+                json!({"type": "text", "text": "hi"}),
+                json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}, "media_type": "image/png"}),
+                json!({"type": "image_url", "image_url": {"url": "gs://x"}}),
+            ]
+        );
         assert_eq!(seen, vec![(json!("think"), Some(json!("aGVsbG8=")))]);
         // Without a callback thought parts are plain text.
-        assert_eq!(convert_gemini_parts_to_unified(&json!([{"text": "t", "thought": true}]), None).unwrap(), vec![json!({"type": "text", "text": "t"})]);
+        assert_eq!(
+            convert_gemini_parts_to_unified(&json!([{"text": "t", "thought": true}]), None)
+                .unwrap(),
+            vec![json!({"type": "text", "text": "t"})]
+        );
         assert!(convert_gemini_parts_to_unified(&json!({}), None).is_err());
     }
 
     #[test]
     fn unified_to_gemini_parts() {
-        assert_eq!(convert_unified_parts_to_gemini(Some(&json!("x"))).unwrap(), vec![json!({"text": "x"})]);
+        assert_eq!(
+            convert_unified_parts_to_gemini(Some(&json!("x"))).unwrap(),
+            vec![json!({"text": "x"})]
+        );
         let out = convert_unified_parts_to_gemini(Some(&json!([
             {"type": "text", "text": "a"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
@@ -115,11 +143,14 @@ mod tests {
             {"type": "image_url", "image_url": {"url": "data:nocomma"}},
             {"type": "other"}
         ]))).unwrap();
-        assert_eq!(out, vec![
-            json!({"text": "a"}),
-            json!({"inlineData": {"mimeType": "image/jpeg", "data": "QUJD"}}),
-            json!({"fileData": {"mimeType": "image/png", "fileUri": "https://x/y.png"}}),
-            json!({"inlineData": {"mimeType": "image/jpeg", "data": ""}}),
-        ]);
+        assert_eq!(
+            out,
+            vec![
+                json!({"text": "a"}),
+                json!({"inlineData": {"mimeType": "image/jpeg", "data": "QUJD"}}),
+                json!({"fileData": {"mimeType": "image/png", "fileUri": "https://x/y.png"}}),
+                json!({"inlineData": {"mimeType": "image/jpeg", "data": ""}}),
+            ]
+        );
     }
 }

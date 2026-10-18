@@ -17,15 +17,23 @@ fn joined_texts(parts: Option<&Value>, what: &str) -> EngineResult<Value> {
         Some(_) => return Err(EngineError::new(format!("{what}?.map is not a function. (In '{what}?.map((part) => part.text)', '{what}?.map' is undefined)"))),
     };
     let mut texts = Vec::with_capacity(parts.len());
-    for part in parts { texts.push(prop(Some(part), "part.text")?); }
+    for part in parts {
+        texts.push(prop(Some(part), "part.text")?);
+    }
     let joined = join(&texts, "\n");
-    Ok(if joined.is_empty() { Value::Null } else { Value::String(joined) })
+    Ok(if joined.is_empty() {
+        Value::Null
+    } else {
+        Value::String(joined)
+    })
 }
 
 /// `array.find(item => item.type === type)` (throws on null items like JS).
 fn find_by_type<'a>(items: &'a [Value], ty: &str) -> EngineResult<Option<&'a Value>> {
     for item in items {
-        if prop(Some(item), "item.type")?.and_then(Value::as_str) == Some(ty) { return Ok(Some(item)); }
+        if prop(Some(item), "item.type")?.and_then(Value::as_str) == Some(ty) {
+            return Ok(Some(item));
+        }
     }
     Ok(None)
 }
@@ -41,7 +49,10 @@ pub fn transform_responses_response(response: &Value) -> EngineResult<Value> {
                 ))
             }
         };
-        let usage = response.get("usage").filter(|u| truthy(Some(u))).map(normalize_openai_responses);
+        let usage = response
+            .get("usage")
+            .filter(|u| truthy(Some(u)))
+            .map(normalize_openai_responses);
 
         let message_item = find_by_type(output, "message")?;
         let message_content = message_item.and_then(|m| m.get("content"));
@@ -49,11 +60,18 @@ pub fn transform_responses_response(response: &Value) -> EngineResult<Value> {
 
         let image_generation_calls: Vec<Value> = output
             .iter()
-            .filter(|item| get_str(item, &["type"]) == Some("image_generation_call") && get_str(item, &["result"]).is_some_and(|r| !r.is_empty()))
+            .filter(|item| {
+                get_str(item, &["type"]) == Some("image_generation_call")
+                    && get_str(item, &["result"]).is_some_and(|r| !r.is_empty())
+            })
             .map(to_unified_image_generation_call)
             .collect();
 
-        let client_tool_calls: Vec<Value> = output.iter().filter(|i| is_client_executed_tool_item(Some(i))).cloned().collect();
+        let client_tool_calls: Vec<Value> = output
+            .iter()
+            .filter(|i| is_client_executed_tool_item(Some(i)))
+            .cloned()
+            .collect();
 
         let mut annotations = Vec::new();
         let annotation_parts: &[Value] = match message_content {
@@ -64,7 +82,8 @@ pub fn transform_responses_response(response: &Value) -> EngineResult<Value> {
         for part in annotation_parts {
             if let Some(Value::Array(anns)) = prop(Some(part), "part.annotations")? {
                 for ann in anns {
-                    if prop(Some(ann), "ann.type")?.and_then(Value::as_str) == Some("url_citation") {
+                    if prop(Some(ann), "ann.type")?.and_then(Value::as_str) == Some("url_citation")
+                    {
                         annotations.push(json!({"type": "url_citation", "url_citation": obj(vec![
                             ("url", ann.get("url").cloned()),
                             ("title", ann.get("title").cloned()),
@@ -84,37 +103,91 @@ pub fn transform_responses_response(response: &Value) -> EngineResult<Value> {
             Some(Value::String(s)) => !s.is_empty(),
             _ => false,
         };
-        let reasoning_parts = if content_has_length { reasoning_content_parts } else { reasoning_item.and_then(|r| r.get("summary")) };
-        let reasoning_content = joined_texts(reasoning_parts, "(reasoningItem?.content?.length ? reasoningItem.content : reasoningItem?.summary)")?;
+        let reasoning_parts = if content_has_length {
+            reasoning_content_parts
+        } else {
+            reasoning_item.and_then(|r| r.get("summary"))
+        };
+        let reasoning_content = joined_texts(
+            reasoning_parts,
+            "(reasoningItem?.content?.length ? reasoningItem.content : reasoningItem?.summary)",
+        )?;
 
         let mut tool_calls = Vec::new();
         for item in output {
             let ty = prop(Some(item), "item.type")?.and_then(Value::as_str);
-            if ty != Some("function_call") && ty != Some("custom_tool_call") { continue; }
+            if ty != Some("function_call") && ty != Some("custom_tool_call") {
+                continue;
+            }
             let flat_name = if truthy(item.get("namespace")) {
-                Some(Value::String(format!("{}__{}", to_string(item.get("namespace")), to_string(item.get("name")))))
+                Some(Value::String(format!(
+                    "{}__{}",
+                    to_string(item.get("namespace")),
+                    to_string(item.get("name"))
+                )))
             } else {
                 item.get("name").cloned()
             };
-            let arguments = if ty == Some("custom_tool_call") { Some(Value::String(custom_tool_arguments_for_model(item.get("input")))) } else { item.get("arguments").cloned() };
+            let arguments = if ty == Some("custom_tool_call") {
+                Some(Value::String(custom_tool_arguments_for_model(
+                    item.get("input"),
+                )))
+            } else {
+                item.get("arguments").cloned()
+            };
             tool_calls.push(obj(vec![
                 ("id", item.get("call_id").cloned()),
                 ("type", Some(json!("function"))),
-                ("function", Some(obj(vec![("name", flat_name), ("arguments", arguments)]))),
+                (
+                    "function",
+                    Some(obj(vec![("name", flat_name), ("arguments", arguments)])),
+                ),
             ]));
         }
 
-        let created = if truthy(response.get("created_at")) { response["created_at"].clone() } else { json!(now_secs()) };
+        let created = if truthy(response.get("created_at")) {
+            response["created_at"].clone()
+        } else {
+            json!(now_secs())
+        };
         return Ok(obj(vec![
             ("id", response.get("id").cloned()),
             ("model", response.get("model").cloned()),
             ("created", Some(created)),
             ("content", Some(content)),
             ("reasoning_content", Some(reasoning_content)),
-            ("annotations", if annotations.is_empty() { None } else { Some(Value::Array(annotations)) }),
-            ("tool_calls", if tool_calls.is_empty() { None } else { Some(Value::Array(tool_calls)) }),
-            ("image_generation_calls", if image_generation_calls.is_empty() { None } else { Some(Value::Array(image_generation_calls)) }),
-            ("client_tool_calls", if client_tool_calls.is_empty() { None } else { Some(Value::Array(client_tool_calls)) }),
+            (
+                "annotations",
+                if annotations.is_empty() {
+                    None
+                } else {
+                    Some(Value::Array(annotations))
+                },
+            ),
+            (
+                "tool_calls",
+                if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(Value::Array(tool_calls))
+                },
+            ),
+            (
+                "image_generation_calls",
+                if image_generation_calls.is_empty() {
+                    None
+                } else {
+                    Some(Value::Array(image_generation_calls))
+                },
+            ),
+            (
+                "client_tool_calls",
+                if client_tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(Value::Array(client_tool_calls))
+                },
+            ),
             ("usage", usage),
         ]));
     }
@@ -122,14 +195,26 @@ pub fn transform_responses_response(response: &Value) -> EngineResult<Value> {
     // Chat Completions format.
     let choice = get(response, &["choices", "0"]);
     let message = choice.and_then(|c| c.get("message"));
-    let usage = response.get("usage").filter(|u| truthy(Some(u))).map(normalize_openai_chat);
+    let usage = response
+        .get("usage")
+        .filter(|u| truthy(Some(u)))
+        .map(normalize_openai_chat);
     Ok(obj(vec![
         ("id", response.get("id").cloned()),
         ("model", response.get("model").cloned()),
         ("created", response.get("created").cloned()),
-        ("content", Some(or(message.and_then(|m| m.get("content")), None).unwrap_or(Value::Null))),
-        ("reasoning_content", Some(or(message.and_then(|m| m.get("reasoning_content")), None).unwrap_or(Value::Null))),
-        ("tool_calls", message.and_then(|m| m.get("tool_calls")).cloned()),
+        (
+            "content",
+            Some(or(message.and_then(|m| m.get("content")), None).unwrap_or(Value::Null)),
+        ),
+        (
+            "reasoning_content",
+            Some(or(message.and_then(|m| m.get("reasoning_content")), None).unwrap_or(Value::Null)),
+        ),
+        (
+            "tool_calls",
+            message.and_then(|m| m.get("tool_calls")).cloned(),
+        ),
         ("usage", usage),
     ]))
 }

@@ -51,7 +51,10 @@ pub(crate) fn js_keys(map: &Map<String, Value>) -> Vec<&String> {
         let n: u32 = k.parse().ok()?;
         (n != u32::MAX && n.to_string() == k).then_some(n)
     }
-    let mut ints: Vec<(u32, &String)> = map.keys().filter_map(|k| index(k).map(|n| (n, k))).collect();
+    let mut ints: Vec<(u32, &String)> = map
+        .keys()
+        .filter_map(|k| index(k).map(|n| (n, k)))
+        .collect();
     ints.sort_by_key(|(n, _)| *n);
     let mut out: Vec<&String> = ints.into_iter().map(|(_, k)| k).collect();
     out.extend(map.keys().filter(|k| index(k).is_none()));
@@ -60,7 +63,9 @@ pub(crate) fn js_keys(map: &Map<String, Value>) -> Vec<&String> {
 
 /// `Number(v)` for numeric comparisons, `NaN` when not coercible
 /// (comparisons with `NaN` are false, like JS).
-pub(crate) fn js_num(v: Option<&Value>) -> f64 { super::js::to_number(v).unwrap_or(f64::NAN) }
+pub(crate) fn js_num(v: Option<&Value>) -> f64 {
+    super::js::to_number(v).unwrap_or(f64::NAN)
+}
 
 /// `Date.parse` for the formats Plexus stores (ISO-8601 / RFC 3339, RFC 2822,
 /// date-only `YYYY-MM-DD`); `NaN` otherwise. Offset-less date-times are read as
@@ -68,13 +73,21 @@ pub(crate) fn js_num(v: Option<&Value>) -> f64 { super::js::to_number(v).unwrap_
 pub(crate) fn date_parse_ms(s: &str) -> f64 {
     use chrono::{DateTime, NaiveDate, NaiveDateTime};
     let s = s.trim();
-    if let Ok(d) = DateTime::parse_from_rfc3339(s) { return d.timestamp_millis() as f64; }
-    if let Ok(d) = DateTime::parse_from_rfc2822(s) { return d.timestamp_millis() as f64; }
+    if let Ok(d) = DateTime::parse_from_rfc3339(s) {
+        return d.timestamp_millis() as f64;
+    }
+    if let Ok(d) = DateTime::parse_from_rfc2822(s) {
+        return d.timestamp_millis() as f64;
+    }
     for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M"] {
-        if let Ok(d) = NaiveDateTime::parse_from_str(s, fmt) { return d.and_utc().timestamp_millis() as f64; }
+        if let Ok(d) = NaiveDateTime::parse_from_str(s, fmt) {
+            return d.and_utc().timestamp_millis() as f64;
+        }
     }
     if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        if let Some(dt) = d.and_hms_opt(0, 0, 0) { return dt.and_utc().timestamp_millis() as f64; }
+        if let Some(dt) = d.and_hms_opt(0, 0, 0) {
+            return dt.and_utc().timestamp_millis() as f64;
+        }
     }
     f64::NAN
 }
@@ -94,7 +107,10 @@ mod tests {
     #[test]
     fn js_key_order_puts_integer_keys_first() {
         let v = json!({"b": 1, "2": 1, "a": 1, "1": 1, "01": 1});
-        let keys: Vec<&str> = js_keys(v.as_object().unwrap()).into_iter().map(String::as_str).collect();
+        let keys: Vec<&str> = js_keys(v.as_object().unwrap())
+            .into_iter()
+            .map(String::as_str)
+            .collect();
         assert_eq!(keys, vec!["1", "2", "b", "a", "01"]);
     }
 

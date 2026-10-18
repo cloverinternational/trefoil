@@ -125,24 +125,42 @@ async fn pi_models(
         return response;
     }
     let Some(provider) = query.provider.filter(|value| !value.is_empty()) else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Missing 'provider' parameter"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Missing 'provider' parameter"})),
+        )
+            .into_response();
     };
     // Catalog chat models for this provider (built-in baseline + pi.dev overlay).
-    let merged = crate::pi_catalog::catalog().get_models(Some(&provider)).into_iter().map(|model| {
-        let mut row = serde_json::Map::new();
-        for key in ["id", "name", "api"] {
-            if let Some(value) = model.get(key) {
-                row.insert(key.into(), value.clone());
+    let merged = crate::pi_catalog::catalog()
+        .get_models(Some(&provider))
+        .into_iter()
+        .map(|model| {
+            let mut row = serde_json::Map::new();
+            for key in ["id", "name", "api"] {
+                if let Some(value) = model.get(key) {
+                    row.insert(key.into(), value.clone());
+                }
             }
-        }
-        row.insert("custom".into(), serde_json::Value::Bool(false));
-        serde_json::Value::Object(row)
-    });
+            row.insert("custom".into(), serde_json::Value::Bool(false));
+            serde_json::Value::Object(row)
+        });
     let q = query.q.unwrap_or_default().to_lowercase();
-    let data = merged.filter(|model| {
-        q.is_empty() || model["id"].as_str().unwrap_or_default().to_lowercase().contains(&q)
-            || model["name"].as_str().unwrap_or_default().to_lowercase().contains(&q)
-    }).collect::<Vec<_>>();
+    let data = merged
+        .filter(|model| {
+            q.is_empty()
+                || model["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&q)
+                || model["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&q)
+        })
+        .collect::<Vec<_>>();
     Json(serde_json::json!({"data":data})).into_response()
 }
 
@@ -490,9 +508,9 @@ async fn quota_checkers(State(state): State<AppState>, headers: HeaderMap) -> Re
             }
             let checker_type = quota.checker_type.clone().or_else(|| quota.id.clone())?;
             let checker_id = quota.id.clone().unwrap_or_else(|| provider.clone());
-            let custom = !checker_types().as_array().is_some_and(|types| {
-                types.iter().any(|t| t["type"] == checker_type)
-            });
+            let custom = !checker_types()
+                .as_array()
+                .is_some_and(|types| types.iter().any(|t| t["type"] == checker_type));
             let display_name = checker_type.clone();
             Some(serde_json::json!({
                 "type": checker_type,
@@ -544,19 +562,48 @@ fn snapshot_json(row: &sqlx::postgres::PgRow) -> serde_json::Value {
 }
 
 pub(crate) fn meter_json(row: &sqlx::postgres::PgRow) -> serde_json::Value {
-    let stored=snapshot_json(row);
-    let mut meter=serde_json::Map::new();
-    meter.insert("key".into(),stored["meterKey"].clone());
-    for key in ["label","kind","unit","group","scope","limit","used","remaining","status","periodValue","periodUnit","periodCycle"] {
-        if !stored[key].is_null() {meter.insert(key.into(),stored[key].clone());}
+    let stored = snapshot_json(row);
+    let mut meter = serde_json::Map::new();
+    meter.insert("key".into(), stored["meterKey"].clone());
+    for key in [
+        "label",
+        "kind",
+        "unit",
+        "group",
+        "scope",
+        "limit",
+        "used",
+        "remaining",
+        "status",
+        "periodValue",
+        "periodUnit",
+        "periodCycle",
+    ] {
+        if !stored[key].is_null() {
+            meter.insert(key.into(), stored[key].clone());
+        }
     }
-    meter.insert("utilizationPercent".into(),match stored["utilizationState"].as_str() {
-        Some("unknown")=>serde_json::json!("unknown"),
-        Some("not_applicable")=>serde_json::json!("not_applicable"),
-        _=>if stored["utilizationPercent"].is_null() {serde_json::json!(0)} else {stored["utilizationPercent"].clone()}
-    });
-    if let Some(ms)=stored["resetsAt"].as_i64() {
-        if let Some(date)=chrono::DateTime::from_timestamp_millis(ms) {meter.insert("resetsAt".into(),serde_json::json!(date.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)));}
+    meter.insert(
+        "utilizationPercent".into(),
+        match stored["utilizationState"].as_str() {
+            Some("unknown") => serde_json::json!("unknown"),
+            Some("not_applicable") => serde_json::json!("not_applicable"),
+            _ => {
+                if stored["utilizationPercent"].is_null() {
+                    serde_json::json!(0)
+                } else {
+                    stored["utilizationPercent"].clone()
+                }
+            }
+        },
+    );
+    if let Some(ms) = stored["resetsAt"].as_i64() {
+        if let Some(date) = chrono::DateTime::from_timestamp_millis(ms) {
+            meter.insert(
+                "resetsAt".into(),
+                serde_json::json!(date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+            );
+        }
     }
     meter.into()
 }
@@ -1324,7 +1371,21 @@ async fn patch_capture_trace_on_error(
         .write()
         .unwrap()
         .insert("debug.captureOnError".into(), serde_json::json!(enabled));
-    crate::system_logs::event(&state,"warn",format!("Debug capture-on-error {}",if enabled {"enabled"} else {"disabled"}),[("module".into(),serde_json::json!("debug-manager")),("functionName".into(),serde_json::json!("setCaptureOnError"))]);
+    crate::system_logs::event(
+        &state,
+        "warn",
+        format!(
+            "Debug capture-on-error {}",
+            if enabled { "enabled" } else { "disabled" }
+        ),
+        [
+            ("module".into(), serde_json::json!("debug-manager")),
+            (
+                "functionName".into(),
+                serde_json::json!("setCaptureOnError"),
+            ),
+        ],
+    );
     Json(serde_json::json!({ "enabled": enabled })).into_response()
 }
 
@@ -2684,6 +2745,19 @@ mod tests {
 
 #[cfg(test)]
 mod quota_snapshot_tests {
- use super::*;
- #[test] fn snapshot_includes_active_provider_quota_configuration(){let state=AppState::new(Some("admin".into()),Default::default());state.inner.providers.write().unwrap().insert("provider".into(),crate::state::ProviderConfig{quota_checker:Some(serde_json::from_value(serde_json::json!({"id":"checker","type":"claude-code","enabled":true,"intervalMinutes":30})).unwrap()),..Default::default()});let quotas=state.inner.providers.read().unwrap().values().filter_map(|p|p.quota_checker.as_ref()).count();assert_eq!(quotas,1);}
+    use super::*;
+    #[test]
+    fn snapshot_includes_active_provider_quota_configuration() {
+        let state = AppState::new(Some("admin".into()), Default::default());
+        state.inner.providers.write().unwrap().insert("provider".into(),crate::state::ProviderConfig{quota_checker:Some(serde_json::from_value(serde_json::json!({"id":"checker","type":"claude-code","enabled":true,"intervalMinutes":30})).unwrap()),..Default::default()});
+        let quotas = state
+            .inner
+            .providers
+            .read()
+            .unwrap()
+            .values()
+            .filter_map(|p| p.quota_checker.as_ref())
+            .count();
+        assert_eq!(quotas, 1);
+    }
 }

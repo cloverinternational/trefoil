@@ -15,7 +15,10 @@ use serde_json::{json, Value};
 pub fn transform_anthropic_response(response: &Value) -> EngineResult<Value> {
     let blocks: &[Value] = match or(response.get("content"), None) {
         None => &[],
-        Some(Value::Array(_)) => response["content"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+        Some(Value::Array(_)) => response["content"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
         // `for…of` over a string yields characters (no block types).
         Some(Value::String(_)) => &[],
         Some(_) => return Err(EngineError::new("contentBlocks is not iterable")),
@@ -25,14 +28,22 @@ pub fn transform_anthropic_response(response: &Value) -> EngineResult<Value> {
     let mut tool_calls: Vec<Value> = Vec::new();
 
     for block in blocks {
-        if block.is_null() { return Err(super::helpers::type_error(Some(block), "block.type")); }
+        if block.is_null() {
+            return Err(super::helpers::type_error(Some(block), "block.type"));
+        }
         match get_str(block, &["type"]) {
             Some("text") => text.push_str(&to_string(block.get("text"))),
             Some("thinking") => reasoning.push_str(&to_string(block.get("thinking"))),
             Some("tool_use") => tool_calls.push(obj(vec![
                 ("id", block.get("id").cloned()),
                 ("type", Some(json!("function"))),
-                ("function", Some(obj(vec![("name", block.get("name").cloned()), ("arguments", stringify_opt(block.get("input")))]))),
+                (
+                    "function",
+                    Some(obj(vec![
+                        ("name", block.get("name").cloned()),
+                        ("arguments", stringify_opt(block.get("input"))),
+                    ])),
+                ),
             ])),
             _ => {}
         }
@@ -57,18 +68,45 @@ pub fn transform_anthropic_response(response: &Value) -> EngineResult<Value> {
     Ok(obj(vec![
         ("id", response.get("id").cloned()),
         ("model", response.get("model").cloned()),
-        ("content", Some(if text.is_empty() { Value::Null } else { json!(text) })),
-        ("reasoning_content", Some(if reasoning.is_empty() { Value::Null } else { json!(reasoning) })),
-        ("tool_calls", if tool_calls.is_empty() { None } else { Some(Value::Array(tool_calls)) }),
-        ("finishReason", Some(or(response.get("stop_reason"), None).unwrap_or(Value::Null))),
-        ("usage", Some(json!({
-            "input_tokens": input_tokens,
-            "output_tokens": real_output,
-            "total_tokens": js_plus(&input_tokens, &total_output),
-            "reasoning_tokens": imputed,
-            "cached_tokens": cache_read,
-            "cache_creation_tokens": cache_creation,
-        }))),
+        (
+            "content",
+            Some(if text.is_empty() {
+                Value::Null
+            } else {
+                json!(text)
+            }),
+        ),
+        (
+            "reasoning_content",
+            Some(if reasoning.is_empty() {
+                Value::Null
+            } else {
+                json!(reasoning)
+            }),
+        ),
+        (
+            "tool_calls",
+            if tool_calls.is_empty() {
+                None
+            } else {
+                Some(Value::Array(tool_calls))
+            },
+        ),
+        (
+            "finishReason",
+            Some(or(response.get("stop_reason"), None).unwrap_or(Value::Null)),
+        ),
+        (
+            "usage",
+            Some(json!({
+                "input_tokens": input_tokens,
+                "output_tokens": real_output,
+                "total_tokens": js_plus(&input_tokens, &total_output),
+                "reasoning_tokens": imputed,
+                "cached_tokens": cache_read,
+                "cache_creation_tokens": cache_creation,
+            })),
+        ),
     ]))
 }
 
@@ -89,17 +127,23 @@ mod tests {
             "usage": {"input_tokens": 10, "output_tokens": 50, "cache_read_input_tokens": 3},
         });
         let out = transform_anthropic_response(&resp).unwrap();
-        assert_eq!(stringify(&out), stringify(&json!({
-            "id": "msg_1", "model": "claude", "content": "Hello world!", "reasoning_content": "let me think",
-            "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "get", "arguments": "{\"a\":1}"}}],
-            "finishReason": "tool_use",
-            "usage": {"input_tokens": 10, "output_tokens": 6, "total_tokens": 60, "reasoning_tokens": 44, "cached_tokens": 3, "cache_creation_tokens": 0},
-        })));
+        assert_eq!(
+            stringify(&out),
+            stringify(&json!({
+                "id": "msg_1", "model": "claude", "content": "Hello world!", "reasoning_content": "let me think",
+                "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "get", "arguments": "{\"a\":1}"}}],
+                "finishReason": "tool_use",
+                "usage": {"input_tokens": 10, "output_tokens": 6, "total_tokens": 60, "reasoning_tokens": 44, "cached_tokens": 3, "cache_creation_tokens": 0},
+            }))
+        );
     }
 
     #[test]
     fn empty_response() {
         let out = transform_anthropic_response(&json!({"id": "m"})).unwrap();
-        assert_eq!(stringify(&out), r#"{"id":"m","content":null,"reasoning_content":null,"finishReason":null,"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"reasoning_tokens":0,"cached_tokens":0,"cache_creation_tokens":0}}"#);
+        assert_eq!(
+            stringify(&out),
+            r#"{"id":"m","content":null,"reasoning_content":null,"finishReason":null,"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0,"reasoning_tokens":0,"cached_tokens":0,"cache_creation_tokens":0}}"#
+        );
     }
 }

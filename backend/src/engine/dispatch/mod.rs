@@ -41,7 +41,10 @@ pub mod util;
 pub use adapter_resolver::resolve_adapters;
 pub use adapters::{ProviderAdapter, ResolvedAdapter};
 pub use attempt_history::RetryAttemptRecord;
-pub use request_payload::{apply_auto_anthropic_betas, build_request_payload, build_request_url, setup_headers, RequestPayload};
+pub use request_payload::{
+    apply_auto_anthropic_betas, build_request_payload, build_request_url, setup_headers,
+    RequestPayload,
+};
 
 #[cfg(test)]
 mod tests;

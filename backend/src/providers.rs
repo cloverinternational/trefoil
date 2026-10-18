@@ -22,9 +22,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::auth::{resolve_principal, Principal};
-use crate::state::{
-    AppState, ProviderConfig,
-};
+use crate::state::{AppState, ProviderConfig};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -147,7 +145,9 @@ async fn probe_request(
     if !provider.models.is_empty() && !provider.models.contains_key(model) {
         return Err("Model is not in the provider's configured inventory".to_string());
     }
-    let upstream_model = provider.models.get(model)
+    let upstream_model = provider
+        .models
+        .get(model)
         .and_then(|entry| entry.upstream_id.as_deref())
         .filter(|id| !id.is_empty())
         .unwrap_or(model);
@@ -256,10 +256,17 @@ fn public_discovery_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ip) => {
             let [a, b, c, _] = ip.octets();
-            !(a == 0 || a == 10 || a == 127 || a >= 224 || a == 169 && b == 254
-                || a == 172 && (16..=31).contains(&b) || a == 192 && b == 168
-                || a == 100 && (64..=127).contains(&b) || a == 192 && b == 0 && c == 0
-                || a == 198 && (b == 18 || b == 19) || a == 198 && b == 51 && c == 100
+            !(a == 0
+                || a == 10
+                || a == 127
+                || a >= 224
+                || a == 169 && b == 254
+                || a == 172 && (16..=31).contains(&b)
+                || a == 192 && b == 168
+                || a == 100 && (64..=127).contains(&b)
+                || a == 192 && b == 0 && c == 0
+                || a == 198 && (b == 18 || b == 19)
+                || a == 198 && b == 51 && c == 100
                 || a == 203 && b == 0 && c == 113)
         }
         // Do not support IPv6 here until transition/tunnel address ranges are
@@ -282,17 +289,24 @@ async fn fetch_models(
     // Never forward a caller-supplied credential to a caller-supplied host.
     // Credentialed discovery needs a separately verified saved-provider flow.
     if body.get("apiKey").is_some() {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Credentialed model discovery is unavailable".into()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Credentialed model discovery is unavailable".into(),
+        )
+        .into_response();
     }
     let Ok(parsed) = url::Url::parse(url) else {
         return ApiError::Simple(StatusCode::BAD_REQUEST, "Invalid URL".into()).into_response();
     };
     // Credential-free discovery is limited to a reviewed public catalog.
     // Saved-provider credential discovery requires a separate scoped design.
-    if parsed.scheme() != "https" || parsed.host_str().is_none()
-        || !parsed.username().is_empty() || parsed.password().is_some()
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
         || parsed.port().is_some_and(|port| port != 443)
-        || parsed.query().is_some() || parsed.fragment().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
         || parsed.host_str() != Some("openrouter.ai")
         || parsed.path() != "/api/v1/models"
     {
@@ -300,17 +314,43 @@ async fn fetch_models(
             .into_response();
     }
     let host = parsed.host_str().unwrap();
-    let Ok(Ok(addresses)) = tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::lookup_host((host, 443))).await else {
-        return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to resolve provider host".into()).into_response();
+    let Ok(Ok(addresses)) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::net::lookup_host((host, 443)),
+    )
+    .await
+    else {
+        return ApiError::Simple(
+            StatusCode::BAD_GATEWAY,
+            "Unable to resolve provider host".into(),
+        )
+        .into_response();
     };
     let addresses: Vec<_> = addresses.collect();
-    let approved = addresses.iter().find(|address| public_discovery_ip(address.ip()) && address.is_ipv4()).copied();
-    if approved.is_none() || addresses.iter().any(|address| address.is_ipv4() && !public_discovery_ip(address.ip())) {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "URL is not allowed".into()).into_response();
+    let approved = addresses
+        .iter()
+        .find(|address| public_discovery_ip(address.ip()) && address.is_ipv4())
+        .copied();
+    if approved.is_none()
+        || addresses
+            .iter()
+            .any(|address| address.is_ipv4() && !public_discovery_ip(address.ip()))
+    {
+        return ApiError::Simple(StatusCode::BAD_REQUEST, "URL is not allowed".into())
+            .into_response();
     }
-    let Ok(client) = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
-        .resolve(host, approved.unwrap()).timeout(std::time::Duration::from_secs(10)).build() else {
-        return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to configure provider request".into()).into_response();
+    let Ok(client) = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(host, approved.unwrap())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    else {
+        return ApiError::Simple(
+            StatusCode::BAD_GATEWAY,
+            "Unable to configure provider request".into(),
+        )
+        .into_response();
     };
     let request = client.get(url);
     match request
@@ -319,8 +359,15 @@ async fn fetch_models(
         .await
     {
         Ok(response) if response.status().is_success() => {
-            if response.content_length().is_some_and(|size| size > 2_000_000) {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Model catalog is too large".into()).into_response();
+            if response
+                .content_length()
+                .is_some_and(|size| size > 2_000_000)
+            {
+                return ApiError::Simple(
+                    StatusCode::BAD_GATEWAY,
+                    "Model catalog is too large".into(),
+                )
+                .into_response();
             }
             let mut response = response;
             let mut bytes = Vec::new();
@@ -328,26 +375,53 @@ async fn fetch_models(
                 let chunk = match response.chunk().await {
                     Ok(Some(chunk)) => chunk,
                     Ok(None) => break,
-                    Err(_) => return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to read model catalog".into()).into_response(),
+                    Err(_) => {
+                        return ApiError::Simple(
+                            StatusCode::BAD_GATEWAY,
+                            "Unable to read model catalog".into(),
+                        )
+                        .into_response()
+                    }
                 };
                 if bytes.len().saturating_add(chunk.len()) > 2_000_000 {
-                    return ApiError::Simple(StatusCode::BAD_GATEWAY, "Model catalog is too large".into()).into_response();
+                    return ApiError::Simple(
+                        StatusCode::BAD_GATEWAY,
+                        "Model catalog is too large".into(),
+                    )
+                    .into_response();
                 }
                 bytes.extend_from_slice(&chunk);
             }
             if bytes.is_empty() {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to read model catalog".into()).into_response();
+                return ApiError::Simple(
+                    StatusCode::BAD_GATEWAY,
+                    "Unable to read model catalog".into(),
+                )
+                .into_response();
             }
             let Ok(payload) = serde_json::from_slice::<Value>(&bytes) else {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into()).into_response();
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into())
+                    .into_response();
             };
             let Some(data) = payload.get("data").and_then(Value::as_array) else {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into()).into_response();
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into())
+                    .into_response();
             };
-            if data.len() > 20_000 || data.iter().any(|model| model.get("id").and_then(Value::as_str).is_none_or(|id| id.is_empty() || id.len() > 200)) {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into()).into_response();
+            if data.len() > 20_000
+                || data.iter().any(|model| {
+                    model
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_none_or(|id| id.is_empty() || id.len() > 200)
+                })
+            {
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into())
+                    .into_response();
             }
-            let sanitized: Vec<Value> = data.iter().map(|model| serde_json::json!({"id":model["id"]})).collect();
+            let sanitized: Vec<Value> = data
+                .iter()
+                .map(|model| serde_json::json!({"id":model["id"]}))
+                .collect();
             Json(serde_json::json!({"data":sanitized})).into_response()
         }
         Ok(_) => ApiError::Simple(StatusCode::BAD_GATEWAY, "Provider request failed".into())
@@ -357,7 +431,11 @@ async fn fetch_models(
             "Request timed out after 10 seconds".into(),
         )
         .into_response(),
-        Err(_) => ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to fetch provider models".into()).into_response(),
+        Err(_) => ApiError::Simple(
+            StatusCode::BAD_GATEWAY,
+            "Unable to fetch provider models".into(),
+        )
+        .into_response(),
     }
 }
 
@@ -425,7 +503,11 @@ async fn list_providers(State(state): State<AppState>, headers: HeaderMap) -> Re
     }
     if let Some(pool) = &state.inner.database {
         let Ok(current) = crate::database::load_providers(pool).await else {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into()).into_response();
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".into(),
+            )
+            .into_response();
         };
         *state.inner.providers.write().unwrap() = current;
     }
@@ -442,45 +524,89 @@ async fn list_providers(State(state): State<AppState>, headers: HeaderMap) -> Re
 fn provider_public(state: &AppState, config: &ProviderConfig) -> Value {
     let mut view = config.public_view();
     if let Some(map) = view.as_object_mut() {
-        match config.oauth_provider.as_deref().and_then(|kind| resolve_oauth_account(state, kind, config.oauth_account.as_deref())) {
-            Some(account) => { map.insert("oauth_account".into(), Value::String(account)); }
-            None => { map.shift_remove("oauth_account"); }
+        match config
+            .oauth_provider
+            .as_deref()
+            .and_then(|kind| resolve_oauth_account(state, kind, config.oauth_account.as_deref()))
+        {
+            Some(account) => {
+                map.insert("oauth_account".into(), Value::String(account));
+            }
+            None => {
+                map.shift_remove("oauth_account");
+            }
         }
     }
     view
 }
 
 fn oauth_accounts(state: &AppState, kind: &str) -> Vec<String> {
-    state.inner.oauth_accounts.read().unwrap().iter().filter(|(p, _)| p == kind).map(|(_, a)| a.clone()).collect()
+    state
+        .inner
+        .oauth_accounts
+        .read()
+        .unwrap()
+        .iter()
+        .filter(|(p, _)| p == kind)
+        .map(|(_, a)| a.clone())
+        .collect()
 }
 
 /// `resolveOAuthAccountId`: the linked credential, else the well-known
 /// `legacy` account, else the single account for this provider type.
 fn resolve_oauth_account(state: &AppState, kind: &str, linked: Option<&str>) -> Option<String> {
     let accounts = oauth_accounts(state, kind);
-    if let Some(linked) = linked.filter(|l| accounts.iter().any(|a| a == l)) { return Some(linked.to_owned()); }
-    if accounts.iter().any(|a| a == "legacy") { return Some("legacy".into()); }
+    if let Some(linked) = linked.filter(|l| accounts.iter().any(|a| a == l)) {
+        return Some(linked.to_owned());
+    }
+    if accounts.iter().any(|a| a == "legacy") {
+        return Some("legacy".into());
+    }
     (accounts.len() == 1).then(|| accounts[0].clone())
 }
 
 /// `saveProvider`'s credential link: the slug-keyed account, else a
 /// grandfathered `oauth_account`, else the existing compatible link.
-fn link_oauth_account(state: &AppState, slug: &str, parsed: &Value, existing: Option<&ProviderConfig>) -> Option<String> {
-    let kind = parsed.get("oauth_provider").and_then(Value::as_str).filter(|k| !k.is_empty())?;
+fn link_oauth_account(
+    state: &AppState,
+    slug: &str,
+    parsed: &Value,
+    existing: Option<&ProviderConfig>,
+) -> Option<String> {
+    let kind = parsed
+        .get("oauth_provider")
+        .and_then(Value::as_str)
+        .filter(|k| !k.is_empty())?;
     let accounts = oauth_accounts(state, kind);
-    if accounts.iter().any(|a| a == slug) { return Some(slug.to_owned()); }
-    let legacy = parsed.get("oauth_account").and_then(Value::as_str).map(str::trim).filter(|a| !a.is_empty());
+    if accounts.iter().any(|a| a == slug) {
+        return Some(slug.to_owned());
+    }
+    let legacy = parsed
+        .get("oauth_account")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|a| !a.is_empty());
     if let Some(legacy) = legacy {
         return (legacy != slug && accounts.iter().any(|a| a == legacy)).then(|| legacy.to_owned());
     }
-    existing.filter(|e| e.oauth_provider.as_deref() == Some(kind)).and_then(|e| e.oauth_account.clone()).filter(|a| accounts.iter().any(|x| x == a))
+    existing
+        .filter(|e| e.oauth_provider.as_deref() == Some(kind))
+        .and_then(|e| e.oauth_account.clone())
+        .filter(|a| accounts.iter().any(|x| x == a))
 }
 
-fn provider_etag(config: &ProviderConfig) -> String { format!("\"{}\"", config.version) }
+fn provider_etag(config: &ProviderConfig) -> String {
+    format!("\"{}\"", config.version)
+}
 
 async fn refresh_oauth_accounts(state: &AppState) {
     if let Some(pool) = &state.inner.database {
-        if let Ok(rows) = sqlx::query_as::<_, (String, String)>("SELECT oauth_provider_type, account_id FROM oauth_credentials").fetch_all(pool).await {
+        if let Ok(rows) = sqlx::query_as::<_, (String, String)>(
+            "SELECT oauth_provider_type, account_id FROM oauth_credentials",
+        )
+        .fetch_all(pool)
+        .await
+        {
             *state.inner.oauth_accounts.write().unwrap() = rows;
         }
     }
@@ -496,9 +622,24 @@ async fn get_provider(
     }
     if let Some(pool) = &state.inner.database {
         match crate::database::load_provider(pool, &slug).await {
-            Ok(Some(config)) => { state.inner.providers.write().unwrap().insert(slug.clone(), config); }
-            Ok(None) => { state.inner.providers.write().unwrap().remove(&slug); }
-            Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into()).into_response(),
+            Ok(Some(config)) => {
+                state
+                    .inner
+                    .providers
+                    .write()
+                    .unwrap()
+                    .insert(slug.clone(), config);
+            }
+            Ok(None) => {
+                state.inner.providers.write().unwrap().remove(&slug);
+            }
+            Err(_) => {
+                return ApiError::Simple(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".into(),
+                )
+                .into_response()
+            }
         }
         refresh_oauth_accounts(&state).await;
     }
@@ -506,31 +647,66 @@ async fn get_provider(
     match config {
         Some(config) => {
             let mut response = Json(provider_public(&state, &config)).into_response();
-            response.headers_mut().insert(axum::http::header::ETAG, provider_etag(&config).parse().unwrap());
+            response.headers_mut().insert(
+                axum::http::header::ETAG,
+                provider_etag(&config).parse().unwrap(),
+            );
             response
         }
-        None => ApiError::Simple(StatusCode::NOT_FOUND, format!("Provider '{slug}' not found")).into_response(),
+        None => ApiError::Simple(
+            StatusCode::NOT_FOUND,
+            format!("Provider '{slug}' not found"),
+        )
+        .into_response(),
     }
 }
 
 /// Plexus `ProviderConfigSchema` + `validateProviderQuotaChecker` + raw slug
 /// check, then the repository round trip. `Err` is the finished 400.
-async fn validate_provider(state: &AppState, slug: &str, body: &Value, existing: Option<&ProviderConfig>) -> Result<ProviderConfig, Response> {
-    let parsed = crate::provider_schema::provider_config().safe_parse(body)
-        .map_err(|details| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Validation failed", "details": details}))).into_response())?;
+async fn validate_provider(
+    state: &AppState,
+    slug: &str,
+    body: &Value,
+    existing: Option<&ProviderConfig>,
+) -> Result<ProviderConfig, Response> {
+    let parsed = crate::provider_schema::provider_config()
+        .safe_parse(body)
+        .map_err(|details| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Validation failed", "details": details})),
+            )
+                .into_response()
+        })?;
     let custom_types: Vec<String> = match &state.inner.database {
-        Some(pool) => sqlx::query_scalar::<_, String>("SELECT trim(id) FROM custom_checkers WHERE enabled = true").fetch_all(pool).await.unwrap_or_default(),
+        Some(pool) => sqlx::query_scalar::<_, String>(
+            "SELECT trim(id) FROM custom_checkers WHERE enabled = true",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default(),
         None => vec![],
     };
-    crate::provider_schema::validate_quota_checker(&parsed, &custom_types)
-        .map_err(|details| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Validation failed", "details": details}))).into_response())?;
-    if parsed.pointer("/raw_passthrough/enabled") == Some(&Value::Bool(true)) && !is_slug_safe(slug) {
-        return Err(ApiError::Simple(StatusCode::BAD_REQUEST, "Raw passthrough requires a single slug-safe provider ID".to_string()).into_response());
+    crate::provider_schema::validate_quota_checker(&parsed, &custom_types).map_err(|details| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Validation failed", "details": details})),
+        )
+            .into_response()
+    })?;
+    if parsed.pointer("/raw_passthrough/enabled") == Some(&Value::Bool(true)) && !is_slug_safe(slug)
+    {
+        return Err(ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Raw passthrough requires a single slug-safe provider ID".to_string(),
+        )
+        .into_response());
     }
     refresh_oauth_accounts(state).await;
     let account = link_oauth_account(state, slug, &parsed, existing);
     let view = crate::provider_view::repository_view(&parsed, account.as_deref());
-    let mut config = crate::provider_view::from_view(view, existing.map(|e| e.version).unwrap_or(1));
+    let mut config =
+        crate::provider_view::from_view(view, existing.map(|e| e.version).unwrap_or(1));
     // The served view resolves the account at read time; keep the link.
     config.oauth_account = account;
     Ok(config)
@@ -546,7 +722,10 @@ async fn put_provider(
         return e.into_response();
     }
     let existing = match &state.inner.database {
-        Some(pool) => crate::database::load_provider(pool, &slug).await.ok().flatten(),
+        Some(pool) => crate::database::load_provider(pool, &slug)
+            .await
+            .ok()
+            .flatten(),
         None => None,
     };
     let config = match validate_provider(&state, &slug, &raw, existing.as_ref()).await {
@@ -554,13 +733,29 @@ async fn put_provider(
         Err(response) => return response,
     };
     let Some(pool) = state.inner.database.clone() else {
-        return ApiError::Simple(StatusCode::SERVICE_UNAVAILABLE, "Database unavailable".into()).into_response();
+        return ApiError::Simple(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Database unavailable".into(),
+        )
+        .into_response();
     };
-    if crate::database::upsert_provider(&pool, &slug, &config).await.is_err() {
-        return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into()).into_response();
+    if crate::database::upsert_provider(&pool, &slug, &config)
+        .await
+        .is_err()
+    {
+        return ApiError::Simple(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".into(),
+        )
+        .into_response();
     }
     if let Ok(Some(saved)) = crate::database::load_provider(&pool, &slug).await {
-        state.inner.providers.write().unwrap().insert(slug.clone(), saved);
+        state
+            .inner
+            .providers
+            .write()
+            .unwrap()
+            .insert(slug.clone(), saved);
     }
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
@@ -575,52 +770,116 @@ async fn patch_provider(
         return e.into_response();
     }
     let Some(body) = raw.as_object() else {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Object body is required".to_string()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Object body is required".to_string(),
+        )
+        .into_response();
     };
     let Some(pool) = state.inner.database.clone() else {
-        return ApiError::Simple(StatusCode::SERVICE_UNAVAILABLE, "Database unavailable".into()).into_response();
+        return ApiError::Simple(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Database unavailable".into(),
+        )
+        .into_response();
     };
     let existing = match crate::database::load_provider(&pool, &slug).await {
         Ok(Some(provider)) => provider,
-        Ok(None) => return ApiError::Simple(StatusCode::NOT_FOUND, format!("Provider '{slug}' not found")).into_response(),
-        Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into()).into_response(),
+        Ok(None) => {
+            return ApiError::Simple(
+                StatusCode::NOT_FOUND,
+                format!("Provider '{slug}' not found"),
+            )
+            .into_response()
+        }
+        Err(_) => {
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".into(),
+            )
+            .into_response()
+        }
     };
     // Trefoil extension: optimistic concurrency via If-Match / expectedVersion.
     // Plexus strips unknown keys, so `expectedVersion` never reaches the schema.
     let expected_version = body.get("expectedVersion").and_then(Value::as_i64);
     let header_version = match headers.get(axum::http::header::IF_MATCH) {
         None => None,
-        Some(value) => match value.to_str().ok().and_then(|s| s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).and_then(|n| n.parse::<i64>().ok())) {
+        Some(value) => match value.to_str().ok().and_then(|s| {
+            s.strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .and_then(|n| n.parse::<i64>().ok())
+        }) {
             Some(version) if version > 0 => Some(version),
-            _ => return ApiError::Simple(StatusCode::BAD_REQUEST, "Invalid If-Match provider ETag".into()).into_response(),
+            _ => {
+                return ApiError::Simple(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid If-Match provider ETag".into(),
+                )
+                .into_response()
+            }
         },
     };
-    if header_version.is_some() && expected_version.is_some() && header_version != expected_version {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "If-Match conflicts with expectedVersion".into()).into_response();
+    if header_version.is_some() && expected_version.is_some() && header_version != expected_version
+    {
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "If-Match conflicts with expectedVersion".into(),
+        )
+        .into_response();
     }
     refresh_oauth_accounts(&state).await;
     let mut merged = provider_public(&state, &existing);
     let map = merged.as_object_mut().expect("provider view is an object");
-    for (key, value) in body { map.insert(key.clone(), value.clone()); }
+    for (key, value) in body {
+        map.insert(key.clone(), value.clone());
+    }
     // Explicit null clears these saved settings on PATCH; omission preserves them.
     for key in ["pi_ai_provider", "pi_ai_quirks", "responses_extensions"] {
-        if body.get(key) == Some(&Value::Null) { map.shift_remove(key); }
+        if body.get(key) == Some(&Value::Null) {
+            map.shift_remove(key);
+        }
     }
     let config = match validate_provider(&state, &slug, &merged, Some(&existing)).await {
         Ok(config) => config,
         Err(response) => return response,
     };
-    let revision = header_version.or(expected_version).unwrap_or(existing.version);
-    let next_version = match crate::database::update_provider_if_version(&pool, &slug, &config, revision).await {
-        Ok(Some(version)) => version,
-        Ok(None) => return ApiError::Simple(StatusCode::CONFLICT, "Provider changed; reload before saving".into()).into_response(),
-        Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into()).into_response(),
+    let revision = header_version
+        .or(expected_version)
+        .unwrap_or(existing.version);
+    let next_version =
+        match crate::database::update_provider_if_version(&pool, &slug, &config, revision).await {
+            Ok(Some(version)) => version,
+            Ok(None) => {
+                return ApiError::Simple(
+                    StatusCode::CONFLICT,
+                    "Provider changed; reload before saving".into(),
+                )
+                .into_response()
+            }
+            Err(_) => {
+                return ApiError::Simple(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".into(),
+                )
+                .into_response()
+            }
+        };
+    let config = ProviderConfig {
+        version: next_version,
+        ..config
     };
-    let config = ProviderConfig { version: next_version, ..config };
     let etag = provider_etag(&config);
-    state.inner.providers.write().unwrap().insert(slug.clone(), config);
+    state
+        .inner
+        .providers
+        .write()
+        .unwrap()
+        .insert(slug.clone(), config);
     let mut response = Json(serde_json::json!({ "success": true, "slug": slug })).into_response();
-    response.headers_mut().insert(axum::http::header::ETAG, etag.parse().unwrap());
+    response
+        .headers_mut()
+        .insert(axum::http::header::ETAG, etag.parse().unwrap());
     response
 }
 

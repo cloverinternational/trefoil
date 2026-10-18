@@ -35,26 +35,29 @@ async fn list_presets(State(state): State<AppState>, headers: HeaderMap) -> Resp
     match resolve_principal(&state, provided_key) {
         Some(Principal::Admin) => {}
         Some(Principal::Limited { .. }) => {
-            return (StatusCode::FORBIDDEN, Json(serde_json::json!({
-                "error": "Admin key required"
-            })))
-            .into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "Admin key required"
+                })),
+            )
+                .into_response();
         }
         None => {
-            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({
-                "error": "Unauthorized"
-            })))
-            .into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "Unauthorized"
+                })),
+            )
+                .into_response();
         }
     }
 
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(PRESETS_JSON);
     match parsed {
         Ok(value) => {
-            let presets = value
-                .get("presets")
-                .cloned()
-                .unwrap_or(value);
+            let presets = value.get("presets").cloned().unwrap_or(value);
             Json(serde_json::json!({ "data": presets, "source": "local" })).into_response()
         }
         Err(error) => (

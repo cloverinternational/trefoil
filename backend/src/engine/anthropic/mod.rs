@@ -29,7 +29,10 @@ pub use response_transformer::transform_anthropic_response;
 pub use stream_formatter::AnthropicStreamFormatter;
 pub use stream_transformer::AnthropicStreamTransformer;
 pub use thinking_clamp::{anthropic_model_supports_disable, clamp_anthropic_effort_and_thinking};
-pub use tool_mapper::{convert_anthropic_tools_to_unified, convert_unified_tools_to_anthropic, ANTHROPIC_BUILTIN_TOOL_TYPES};
+pub use tool_mapper::{
+    convert_anthropic_tools_to_unified, convert_unified_tools_to_anthropic,
+    ANTHROPIC_BUILTIN_TOOL_TYPES,
+};
 
 use super::js::{get, or, parse, truthy};
 use super::transformer::*;
@@ -39,26 +42,50 @@ pub struct AnthropicTransformer;
 
 /// `a || b || 0` over optional values.
 fn first_truthy(candidates: &[Option<&Value>]) -> Value {
-    candidates.iter().copied().find(|c| truthy(*c)).flatten().cloned().unwrap_or_else(|| json!(0))
+    candidates
+        .iter()
+        .copied()
+        .find(|c| truthy(*c))
+        .flatten()
+        .cloned()
+        .unwrap_or_else(|| json!(0))
 }
 
 impl Transformer for AnthropicTransformer {
-    fn name(&self) -> &'static str { "messages" }
-    fn default_endpoint(&self) -> &'static str { "/messages" }
+    fn name(&self) -> &'static str {
+        "messages"
+    }
+    fn default_endpoint(&self) -> &'static str {
+        "/messages"
+    }
 
-    fn parse_request(&self, input: &Value) -> EngineResult<Value> { parse_anthropic_request(input) }
-    fn transform_request(&self, request: &Value) -> EngineResult<Value> { build_anthropic_request(request) }
-    fn transform_response(&self, response: &Value) -> EngineResult<Value> { transform_anthropic_response(response) }
-    fn format_response(&self, response: &Value) -> EngineResult<Value> { format_anthropic_response(response) }
+    fn parse_request(&self, input: &Value) -> EngineResult<Value> {
+        parse_anthropic_request(input)
+    }
+    fn transform_request(&self, request: &Value) -> EngineResult<Value> {
+        build_anthropic_request(request)
+    }
+    fn transform_response(&self, response: &Value) -> EngineResult<Value> {
+        transform_anthropic_response(response)
+    }
+    fn format_response(&self, response: &Value) -> EngineResult<Value> {
+        format_anthropic_response(response)
+    }
 
-    fn stream_transformer(&self) -> Option<Box<dyn StreamTransformer>> { Some(Box::new(AnthropicStreamTransformer::new())) }
-    fn stream_formatter(&self) -> Option<Box<dyn StreamFormatter>> { Some(Box::new(AnthropicStreamFormatter::new())) }
+    fn stream_transformer(&self) -> Option<Box<dyn StreamTransformer>> {
+        Some(Box::new(AnthropicStreamTransformer::new()))
+    }
+    fn stream_formatter(&self) -> Option<Box<dyn StreamFormatter>> {
+        Some(Box::new(AnthropicStreamFormatter::new()))
+    }
 
     /// Usage from Anthropic event data: `message_start` (`message.usage`) and
     /// `message_delta` (`usage`). Parse errors yield `None`.
     fn extract_usage(&self, data: &str) -> Option<Value> {
         let data = parse(data)?;
-        if data.is_null() { return None; }
+        if data.is_null() {
+            return None;
+        }
         let kind = get(&data, &["type"]).and_then(Value::as_str);
         if kind == Some("message_start") && truthy(get(&data, &["message", "usage"])) {
             let u = &data["message"]["usage"];
@@ -94,9 +121,15 @@ mod tests {
         assert_eq!((t.name(), t.default_endpoint()), ("messages", "/messages"));
         assert_eq!(t.endpoint(&json!({})), "/messages");
         let u = t.extract_usage(r#"{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":7}}}"#).unwrap();
-        assert_eq!(stringify(&u), r#"{"input_tokens":5,"output_tokens":0,"cached_tokens":7,"reasoning_tokens":0}"#);
+        assert_eq!(
+            stringify(&u),
+            r#"{"input_tokens":5,"output_tokens":0,"cached_tokens":7,"reasoning_tokens":0}"#
+        );
         let u = t.extract_usage(r#"{"type":"message_delta","usage":{"output_tokens":9,"cache_creation_input_tokens":7}}"#).unwrap();
-        assert_eq!(stringify(&u), r#"{"input_tokens":0,"output_tokens":9,"cached_tokens":0,"reasoning_tokens":0}"#);
+        assert_eq!(
+            stringify(&u),
+            r#"{"input_tokens":0,"output_tokens":9,"cached_tokens":0,"reasoning_tokens":0}"#
+        );
         assert!(t.extract_usage("nope").is_none());
         assert!(t.extract_usage("null").is_none());
         assert!(t.extract_usage(r#"{"type":"message_stop"}"#).is_none());
@@ -119,9 +152,13 @@ mod tests {
         let mut parser = SseParser::new();
         let mut out = String::new();
         for event in parser.feed(raw) {
-            for chunk in st.on_event(&event) { out.extend(sf.on_chunk(&chunk)); }
+            for chunk in st.on_event(&event) {
+                out.extend(sf.on_chunk(&chunk));
+            }
         }
-        for chunk in st.finish() { out.extend(sf.on_chunk(&chunk)); }
+        for chunk in st.finish() {
+            out.extend(sf.on_chunk(&chunk));
+        }
         out.extend(sf.finish());
         assert_eq!(out, concat!(
             "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"thinkingTokens\":0,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\n",

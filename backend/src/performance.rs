@@ -43,8 +43,13 @@ async fn get_performance(
     let Some(storage) = crate::usage::usage_storage(&state) else {
         return Json(serde_json::Value::Array(Vec::new())).into_response();
     };
-    let rows = storage.get_provider_performance(q.provider.as_deref(), q.model.as_deref()).await;
-    Json(serde_json::Value::Array(rows.iter().map(|row| row.to_json()).collect())).into_response()
+    let rows = storage
+        .get_provider_performance(q.provider.as_deref(), q.model.as_deref())
+        .await;
+    Json(serde_json::Value::Array(
+        rows.iter().map(|row| row.to_json()).collect(),
+    ))
+    .into_response()
 }
 async fn delete_performance(
     State(state): State<AppState>,

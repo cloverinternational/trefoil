@@ -30,17 +30,29 @@ pub fn get_transformer(provider_type: &str) -> EngineResult<Arc<dyn Transformer>
 pub struct ImageBridgeTransformer;
 
 impl Transformer for ImageBridgeTransformer {
-    fn name(&self) -> &'static str { "images" }
-    fn default_endpoint(&self) -> &'static str { "" }
+    fn name(&self) -> &'static str {
+        "images"
+    }
+    fn default_endpoint(&self) -> &'static str {
+        ""
+    }
     fn parse_request(&self, _input: &serde_json::Value) -> EngineResult<serde_json::Value> {
-        Err(EngineError::new("'images' is not a wire protocol: bridged image requests are never parsed."))
+        Err(EngineError::new(
+            "'images' is not a wire protocol: bridged image requests are never parsed.",
+        ))
     }
     fn transform_request(&self, _request: &serde_json::Value) -> EngineResult<serde_json::Value> {
         Err(EngineError::new("'images' is not a wire protocol: bridged image requests are dispatched through the image pipeline."))
     }
-    fn transform_response(&self, response: &serde_json::Value) -> EngineResult<serde_json::Value> { Ok(response.clone()) }
-    fn format_response(&self, response: &serde_json::Value) -> EngineResult<serde_json::Value> { Ok(response.clone()) }
-    fn stream_transformer(&self) -> Option<Box<dyn crate::engine::transformer::StreamTransformer>> { Some(Box::new(UnifiedPassthrough)) }
+    fn transform_response(&self, response: &serde_json::Value) -> EngineResult<serde_json::Value> {
+        Ok(response.clone())
+    }
+    fn format_response(&self, response: &serde_json::Value) -> EngineResult<serde_json::Value> {
+        Ok(response.clone())
+    }
+    fn stream_transformer(&self) -> Option<Box<dyn crate::engine::transformer::StreamTransformer>> {
+        Some(Box::new(UnifiedPassthrough))
+    }
 }
 
 struct UnifiedPassthrough;
@@ -54,5 +66,7 @@ impl crate::engine::transformer::StreamTransformer for UnifiedPassthrough {
 pub struct Registry;
 
 impl crate::engine::observability::TransformerRegistry for Registry {
-    fn transformer(&self, api_type: &str) -> Option<Arc<dyn Transformer>> { get_transformer(api_type).ok() }
+    fn transformer(&self, api_type: &str) -> Option<Arc<dyn Transformer>> {
+        get_transformer(api_type).ok()
+    }
 }

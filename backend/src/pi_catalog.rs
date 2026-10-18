@@ -78,7 +78,10 @@ impl ModelsStore {
         Self::Memory(Mutex::new(HashMap::new()))
     }
     pub fn file(path: impl Into<PathBuf>) -> Self {
-        Self::File(FileModelsStore { path: path.into(), entries: tokio::sync::Mutex::new(None) })
+        Self::File(FileModelsStore {
+            path: path.into(),
+            entries: tokio::sync::Mutex::new(None),
+        })
     }
     /// `TREFOIL_MODELS_STORE_PATH` file store, else in-memory.
     pub fn from_env() -> Self {
@@ -96,7 +99,10 @@ impl ModelsStore {
     pub async fn write(&self, provider_id: &str, entry: ModelsStoreEntry) -> Result<(), String> {
         match self {
             Self::Memory(entries) => {
-                entries.lock().unwrap().insert(provider_id.to_owned(), entry);
+                entries
+                    .lock()
+                    .unwrap()
+                    .insert(provider_id.to_owned(), entry);
                 Ok(())
             }
             Self::File(store) => store.write(provider_id, entry).await,
@@ -122,23 +128,36 @@ pub struct FileModelsStore {
 }
 
 impl FileModelsStore {
-    async fn loaded<'a>(&self, slot: &'a mut Option<Map<String, Value>>) -> &'a mut Map<String, Value> {
+    async fn loaded<'a>(
+        &self,
+        slot: &'a mut Option<Map<String, Value>>,
+    ) -> &'a mut Map<String, Value> {
         if slot.is_none() {
             let entries = match tokio::fs::read(&self.path).await {
                 Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
                     Ok(Value::Object(map)) => map,
                     Ok(_) => {
-                        log("warn", "Model catalog store unreadable, starting empty: not a JSON object".into());
+                        log(
+                            "warn",
+                            "Model catalog store unreadable, starting empty: not a JSON object"
+                                .into(),
+                        );
                         Map::new()
                     }
                     Err(error) => {
-                        log("warn", format!("Model catalog store unreadable, starting empty: {error}"));
+                        log(
+                            "warn",
+                            format!("Model catalog store unreadable, starting empty: {error}"),
+                        );
                         Map::new()
                     }
                 },
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Map::new(),
                 Err(error) => {
-                    log("warn", format!("Model catalog store unreadable, starting empty: {error}"));
+                    log(
+                        "warn",
+                        format!("Model catalog store unreadable, starting empty: {error}"),
+                    );
                     Map::new()
                 }
             };
@@ -152,14 +171,19 @@ impl FileModelsStore {
         let entries = self.loaded(&mut guard).await;
         match entries.get(provider_id) {
             None => Ok(None),
-            Some(value) => serde_json::from_value(value.clone()).map(Some).map_err(|error| error.to_string()),
+            Some(value) => serde_json::from_value(value.clone())
+                .map(Some)
+                .map_err(|error| error.to_string()),
         }
     }
 
     async fn write(&self, provider_id: &str, entry: ModelsStoreEntry) -> Result<(), String> {
         let mut guard = self.entries.lock().await;
         let entries = self.loaded(&mut guard).await;
-        entries.insert(provider_id.to_owned(), serde_json::to_value(entry).map_err(|error| error.to_string())?);
+        entries.insert(
+            provider_id.to_owned(),
+            serde_json::to_value(entry).map_err(|error| error.to_string())?,
+        );
         let body = serde_json::to_vec(entries).map_err(|error| error.to_string())?;
         self.persist(body).await
     }
@@ -173,13 +197,23 @@ impl FileModelsStore {
     }
 
     async fn persist(&self, body: Vec<u8>) -> Result<(), String> {
-        if let Some(parent) = self.path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-            tokio::fs::create_dir_all(parent).await.map_err(|error| error.to_string())?;
+        if let Some(parent) = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|error| error.to_string())?;
         }
         let mut tmp = self.path.clone().into_os_string();
         tmp.push(".tmp");
-        tokio::fs::write(&tmp, body).await.map_err(|error| error.to_string())?;
-        tokio::fs::rename(&tmp, &self.path).await.map_err(|error| error.to_string())
+        tokio::fs::write(&tmp, body)
+            .await
+            .map_err(|error| error.to_string())?;
+        tokio::fs::rename(&tmp, &self.path)
+            .await
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -197,7 +231,10 @@ fn is_model_type(model: &Value, ty: &str) -> bool {
 }
 /// Models from stores and remote sources may have types only newer versions know.
 fn has_known_model_type(model: &Value) -> bool {
-    matches!(model_type(model).as_str(), Some("chat" | "image" | "classifier"))
+    matches!(
+        model_type(model).as_str(),
+        Some("chat" | "image" | "classifier")
+    )
 }
 
 /// pi.dev answers model-ID keyed objects; tolerate array/{models:[]} shapes too.
@@ -211,7 +248,11 @@ pub fn parse_catalog(provider_id: &str, value: Value) -> Result<Vec<Value>, Stri
             },
             _ => map.into_iter().map(|(_, value)| value).collect(),
         },
-        _ => return Err(format!("Invalid model catalog for provider \"{provider_id}\"")),
+        _ => {
+            return Err(format!(
+                "Invalid model catalog for provider \"{provider_id}\""
+            ))
+        }
     };
     Ok(entries
         .into_iter()
@@ -248,13 +289,24 @@ static LOG_STATE: OnceLock<AppState> = OnceLock::new();
 
 fn log(level: &str, message: String) {
     if let Some(state) = LOG_STATE.get() {
-        crate::system_logs::event(state, level, message, [("module".into(), serde_json::json!(MODULE))]);
+        crate::system_logs::event(
+            state,
+            level,
+            message,
+            [("module".into(), serde_json::json!(MODULE))],
+        );
     }
 }
 
 fn log_refresh_outcome(result: &CatalogRefreshResult) {
     if result.errors.is_empty() {
-        log("debug", format!("Model catalog refresh completed ({} providers)", result.refreshed));
+        log(
+            "debug",
+            format!(
+                "Model catalog refresh completed ({} providers)",
+                result.refreshed
+            ),
+        );
     } else {
         let details = result
             .errors
@@ -264,7 +316,10 @@ fn log_refresh_outcome(result: &CatalogRefreshResult) {
             .join("; ");
         log(
             "warn",
-            format!("Model catalog refresh completed with {} provider error(s): {details}", result.errors.len()),
+            format!(
+                "Model catalog refresh completed with {} provider error(s): {details}",
+                result.errors.len()
+            ),
         );
     }
 }
@@ -285,7 +340,10 @@ impl ProviderSlot {
         let mut merged = self.baseline.clone();
         for model in &self.dynamic {
             let ty = model_type(model);
-            match merged.iter().position(|entry| model_type(entry) == ty && entry.get("id") == model.get("id")) {
+            match merged
+                .iter()
+                .position(|entry| model_type(entry) == ty && entry.get("id") == model.get("id"))
+            {
                 Some(index) => merged[index] = model.clone(),
                 None => merged.push(model.clone()),
             }
@@ -339,7 +397,8 @@ impl ModelCatalog {
                         let id = provider["id"].as_str()?.to_owned();
                         let native_refresh = provider["nativeRefresh"].as_bool().unwrap_or(false);
                         Some(ProviderSlot {
-                            wrappable: !native_refresh && !SELF_REFRESHING_PROVIDERS.contains(&id.as_str()),
+                            wrappable: !native_refresh
+                                && !SELF_REFRESHING_PROVIDERS.contains(&id.as_str()),
                             id,
                             baseline: provider["models"].as_array().cloned().unwrap_or_default(),
                             dynamic: Vec::new(),
@@ -350,7 +409,11 @@ impl ModelCatalog {
             .unwrap_or_default();
         let builtin_provider_ids = deps.snapshot["builtinProviderIds"]
             .as_array()
-            .map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_owned)).collect())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_owned))
+                    .collect()
+            })
             .unwrap_or_default();
         Self {
             providers: RwLock::new(providers),
@@ -375,8 +438,15 @@ impl ModelCatalog {
     pub fn get_all_models(&self, provider: Option<&str>) -> Vec<Value> {
         let providers = self.providers.read().unwrap();
         match provider {
-            Some(id) => providers.iter().find(|slot| slot.id == id).map(ProviderSlot::current_models).unwrap_or_default(),
-            None => providers.iter().flat_map(ProviderSlot::current_models).collect(),
+            Some(id) => providers
+                .iter()
+                .find(|slot| slot.id == id)
+                .map(ProviderSlot::current_models)
+                .unwrap_or_default(),
+            None => providers
+                .iter()
+                .flat_map(ProviderSlot::current_models)
+                .collect(),
         }
     }
 
@@ -386,19 +456,30 @@ impl ModelCatalog {
     }
 
     pub fn get_models_of_type(&self, ty: &str, provider: Option<&str>) -> Vec<Value> {
-        self.get_all_models(provider).into_iter().filter(|model| is_model_type(model, ty)).collect()
+        self.get_all_models(provider)
+            .into_iter()
+            .filter(|model| is_model_type(model, ty))
+            .collect()
     }
 
     /// Chat model lookup; `None` for unknown pairs.
     pub fn get_model(&self, provider: &str, id: &str) -> Option<Value> {
-        self.get_models(Some(provider)).into_iter().find(|model| model["id"].as_str() == Some(id))
+        self.get_models(Some(provider))
+            .into_iter()
+            .find(|model| model["id"].as_str() == Some(id))
     }
 
     fn refreshable_ids(&self) -> Vec<String> {
         // wrapProviders(): every built-in provider without a native catalog
         // source gains the pi.dev overlay; self-refreshing ones are skipped.
         self.wrapped.store(true, Ordering::Relaxed);
-        self.providers.read().unwrap().iter().filter(|slot| slot.wrappable).map(|slot| slot.id.clone()).collect()
+        self.providers
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|slot| slot.wrappable)
+            .map(|slot| slot.id.clone())
+            .collect()
     }
 
     fn generation_is_current(&self, provider_id: &str, generation: u64) -> bool {
@@ -406,7 +487,13 @@ impl ModelCatalog {
     }
 
     fn set_dynamic(&self, provider_id: &str, models: Vec<Value>) {
-        if let Some(slot) = self.providers.write().unwrap().iter_mut().find(|slot| slot.id == provider_id) {
+        if let Some(slot) = self
+            .providers
+            .write()
+            .unwrap()
+            .iter_mut()
+            .find(|slot| slot.id == provider_id)
+        {
             slot.dynamic = models;
         }
     }
@@ -433,7 +520,12 @@ impl ModelCatalog {
     }
 
     /// pi-ai `createProvider().refreshModels` with Plexus's pi.dev `fetchModels`.
-    async fn refresh_provider(&self, provider_id: &str, allow_network: bool, generation: u64) -> Result<(), String> {
+    async fn refresh_provider(
+        &self,
+        provider_id: &str,
+        allow_network: bool,
+        generation: u64,
+    ) -> Result<(), String> {
         let stored = self.store.read(provider_id).await?;
         if let Some(stored) = &stored {
             let restored = stored
@@ -442,24 +534,43 @@ impl ModelCatalog {
                 .filter(|model| model.get("provider").and_then(Value::as_str) == Some(provider_id))
                 .cloned()
                 .collect();
-            if !self.publish(provider_id, generation, None, restored).await? {
+            if !self
+                .publish(provider_id, generation, None, restored)
+                .await?
+            {
                 return Ok(());
             }
         }
         if !allow_network {
             return Ok(());
         }
-        let fetched = self.fetch_pi_dev_catalog(provider_id, stored.as_ref()).await?;
+        let fetched = self
+            .fetch_pi_dev_catalog(provider_id, stored.as_ref())
+            .await?;
         let refreshed: Vec<Value> = fetched.into_iter().filter(has_known_model_type).collect();
-        let entry = ModelsStoreEntry { models: refreshed.clone(), checked_at: Some(system_now_ms()), extra: Map::new() };
-        self.publish(provider_id, generation, Some(entry), refreshed).await?;
+        let entry = ModelsStoreEntry {
+            models: refreshed.clone(),
+            checked_at: Some(system_now_ms()),
+            extra: Map::new(),
+        };
+        self.publish(provider_id, generation, Some(entry), refreshed)
+            .await?;
         Ok(())
     }
 
     /// 404/501 means no overlay is published — keep whatever the store holds.
-    async fn fetch_pi_dev_catalog(&self, provider_id: &str, stored: Option<&ModelsStoreEntry>) -> Result<Vec<Value>, String> {
+    async fn fetch_pi_dev_catalog(
+        &self,
+        provider_id: &str,
+        stored: Option<&ModelsStoreEntry>,
+    ) -> Result<Vec<Value>, String> {
         let url = reqwest::Url::parse(&self.catalog_base_url)
-            .and_then(|base| base.join(&format!("/api/models/providers/{}", encode_uri_component(provider_id))))
+            .and_then(|base| {
+                base.join(&format!(
+                    "/api/models/providers/{}",
+                    encode_uri_component(provider_id)
+                ))
+            })
             .map_err(|error| error.to_string())?;
         let response = self
             .client
@@ -475,7 +586,9 @@ impl ModelCatalog {
             return Ok(stored.map(|entry| entry.models.clone()).unwrap_or_default());
         }
         if !response.status().is_success() {
-            return Err(format!("Model catalog request failed for {provider_id}: {status}"));
+            return Err(format!(
+                "Model catalog request failed for {provider_id}: {status}"
+            ));
         }
         let body: Value = response.json().await.map_err(|error| error.to_string())?;
         parse_catalog(provider_id, body)
@@ -500,7 +613,10 @@ impl ModelCatalog {
                     let stale = force
                         || match stored.and_then(|entry| entry.checked_at) {
                             None => true,
-                            Some(checked_at) => (self.now)() - checked_at >= REMOTE_CATALOG_REFRESH_INTERVAL_MS as i64,
+                            Some(checked_at) => {
+                                (self.now)() - checked_at
+                                    >= REMOTE_CATALOG_REFRESH_INTERVAL_MS as i64
+                            }
                         };
                     if stale {
                         self.refresh_provider(&id, true, generation).await?;
@@ -539,7 +655,9 @@ impl ModelCatalog {
                     loop {
                         tokio::time::sleep(period).await;
                         let catalog = Arc::clone(&catalog);
-                        tokio::spawn(async move { log_refresh_outcome(&catalog.refresh(false, true).await) });
+                        tokio::spawn(async move {
+                            log_refresh_outcome(&catalog.refresh(false, true).await)
+                        });
                     }
                 }));
             }
@@ -557,13 +675,19 @@ impl ModelCatalog {
 // ─── Singleton ──────────────────────────────────────────────────────────────
 
 pub fn builtin_snapshot() -> Value {
-    serde_json::from_str(include_str!("assets/pi-catalog.json")).expect("embedded pi catalog must be valid")
+    serde_json::from_str(include_str!("assets/pi-catalog.json"))
+        .expect("embedded pi catalog must be valid")
 }
 
 static CATALOG: OnceLock<Arc<ModelCatalog>> = OnceLock::new();
 
 pub fn catalog() -> &'static Arc<ModelCatalog> {
-    CATALOG.get_or_init(|| Arc::new(ModelCatalog::new(ModelCatalogDeps::new(builtin_snapshot(), ModelsStore::from_env()))))
+    CATALOG.get_or_init(|| {
+        Arc::new(ModelCatalog::new(ModelCatalogDeps::new(
+            builtin_snapshot(),
+            ModelsStore::from_env(),
+        )))
+    })
 }
 
 /// `PLEXUS_MODEL_CATALOG_REFRESH=false` disables pi.dev network refresh.
@@ -582,13 +706,21 @@ pub async fn init(state: &AppState) {
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v0/management/catalog/status", axum::routing::get(catalog_status))
-        .route("/v0/management/catalog/refresh-all", axum::routing::post(refresh_all))
+        .route(
+            "/v0/management/catalog/status",
+            axum::routing::get(catalog_status),
+        )
+        .route(
+            "/v0/management/catalog/refresh-all",
+            axum::routing::post(refresh_all),
+        )
 }
 
 #[allow(clippy::result_large_err)]
 fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
-    let provided_key = headers.get("x-admin-key").and_then(|value| value.to_str().ok());
+    let provided_key = headers
+        .get("x-admin-key")
+        .and_then(|value| value.to_str().ok());
     match resolve_principal(state, provided_key) {
         Some(Principal::Admin) => Ok(()),
         Some(Principal::Limited { .. }) => Err((
@@ -650,14 +782,22 @@ async fn refresh_all(State(state): State<AppState>, headers: HeaderMap) -> Respo
     );
     // Version fetches keep the last-known version on failure; run them after
     // the catalog work so a slow registry can't delay it.
-    let (codex_error, claude_code_error) =
-        tokio::join!(crate::cli_versions::refresh_codex(), crate::cli_versions::refresh_claude_code());
+    let (codex_error, claude_code_error) = tokio::join!(
+        crate::cli_versions::refresh_codex(),
+        crate::cli_versions::refresh_claude_code()
+    );
     let duration_ms = started.elapsed().as_millis() as u64;
-    let had_errors = metadata.had_errors || !pi_catalog.errors.is_empty() || codex_error.is_some() || claude_code_error.is_some();
+    let had_errors = metadata.had_errors
+        || !pi_catalog.errors.is_empty()
+        || codex_error.is_some()
+        || claude_code_error.is_some();
     if had_errors {
         let mut context = vec![
             ("module".to_owned(), serde_json::json!("models")),
-            ("piCatalogErrors".to_owned(), Value::Object(pi_catalog.errors.clone())),
+            (
+                "piCatalogErrors".to_owned(),
+                Value::Object(pi_catalog.errors.clone()),
+            ),
         ];
         if let Some(error) = &codex_error {
             context.push(("codexError".into(), serde_json::json!(error)));
@@ -665,7 +805,12 @@ async fn refresh_all(State(state): State<AppState>, headers: HeaderMap) -> Respo
         if let Some(error) = &claude_code_error {
             context.push(("claudeCodeError".into(), serde_json::json!(error)));
         }
-        crate::system_logs::event(&state, "warn", "Catalog refresh-all (manual) completed with errors", context);
+        crate::system_logs::event(
+            &state,
+            "warn",
+            "Catalog refresh-all (manual) completed with errors",
+            context,
+        );
     } else {
         crate::system_logs::event(
             &state,
@@ -741,7 +886,12 @@ mod tests {
         (format!("http://{addr}"), calls, server)
     }
 
-    fn make(base_url: &str, providers: Vec<(&str, bool, Vec<Value>)>, store: ModelsStore, now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>) -> Arc<ModelCatalog> {
+    fn make(
+        base_url: &str,
+        providers: Vec<(&str, bool, Vec<Value>)>,
+        store: ModelsStore,
+        now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
+    ) -> Arc<ModelCatalog> {
         let mut deps = ModelCatalogDeps::new(snapshot(providers), store);
         deps.catalog_base_url = base_url.into();
         if let Some(now) = now {
@@ -755,41 +905,85 @@ mod tests {
 
     #[tokio::test]
     async fn pi_catalog_serves_baseline_without_network() {
-        let catalog = make("http://127.0.0.1:9", anthropic(), ModelsStore::memory(), None);
+        let catalog = make(
+            "http://127.0.0.1:9",
+            anthropic(),
+            ModelsStore::memory(),
+            None,
+        );
         catalog.init(false).await;
-        assert_eq!(catalog.get_model("anthropic", "claude-base").unwrap()["id"], "claude-base");
+        assert_eq!(
+            catalog.get_model("anthropic", "claude-base").unwrap()["id"],
+            "claude-base"
+        );
         assert!(catalog.get_model("anthropic", "nope").is_none());
         assert!(catalog.get_models(Some("unknown")).is_empty());
     }
 
     #[tokio::test]
     async fn pi_catalog_merges_overlay_and_persists() {
-        let (url, calls, server) = serve(|_| (200, serde_json::json!({
-            "claude-new": {"id":"claude-new","name":"New","contextWindow":500000},
-            "claude-base": {"id":"claude-base","name":"Baseline v2","contextWindow":400000},
-            "future": {"id":"future","type":"video"},
-        }))).await;
+        let (url, calls, server) = serve(|_| {
+            (
+                200,
+                serde_json::json!({
+                    "claude-new": {"id":"claude-new","name":"New","contextWindow":500000},
+                    "claude-base": {"id":"claude-base","name":"Baseline v2","contextWindow":400000},
+                    "future": {"id":"future","type":"video"},
+                }),
+            )
+        })
+        .await;
         let dir = std::env::temp_dir().join(format!("trefoil-picat-{}", std::process::id()));
         let path = dir.join("nested/models-store.json");
         let catalog = make(&url, anthropic(), ModelsStore::file(&path), None);
         catalog.init(false).await;
         let result = catalog.refresh(false, true).await;
-        assert_eq!(serde_json::to_value(&result).unwrap(), serde_json::json!({"refreshed":1,"errors":{}}));
-        assert_eq!(catalog.get_model("anthropic", "claude-new").unwrap()["contextWindow"], 500000);
-        assert_eq!(catalog.get_model("anthropic", "claude-new").unwrap()["provider"], "anthropic");
-        assert_eq!(catalog.get_model("anthropic", "claude-base").unwrap()["name"], "Baseline v2");
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            serde_json::json!({"refreshed":1,"errors":{}})
+        );
+        assert_eq!(
+            catalog.get_model("anthropic", "claude-new").unwrap()["contextWindow"],
+            500000
+        );
+        assert_eq!(
+            catalog.get_model("anthropic", "claude-new").unwrap()["provider"],
+            "anthropic"
+        );
+        assert_eq!(
+            catalog.get_model("anthropic", "claude-base").unwrap()["name"],
+            "Baseline v2"
+        );
         // Baseline order is kept; new models append; unknown types are dropped.
-        let ids: Vec<_> = catalog.get_all_models(None).iter().map(|m| m["id"].clone()).collect();
-        assert_eq!(ids, vec![serde_json::json!("claude-base"), serde_json::json!("claude-new")]);
+        let ids: Vec<_> = catalog
+            .get_all_models(None)
+            .iter()
+            .map(|m| m["id"].clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                serde_json::json!("claude-base"),
+                serde_json::json!("claude-new")
+            ]
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(stored["anthropic"]["models"].as_array().unwrap().len(), 2);
         assert!(stored["anthropic"]["checkedAt"].is_i64());
 
-        let second = make("http://127.0.0.1:9", anthropic(), ModelsStore::file(&path), None);
+        let second = make(
+            "http://127.0.0.1:9",
+            anthropic(),
+            ModelsStore::file(&path),
+            None,
+        );
         second.init(false).await;
-        assert_eq!(second.get_model("anthropic", "claude-new").unwrap()["id"], "claude-new");
+        assert_eq!(
+            second.get_model("anthropic", "claude-new").unwrap()["id"],
+            "claude-new"
+        );
         server.abort();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -798,13 +992,22 @@ mod tests {
     async fn pi_catalog_throttles_unless_forced() {
         let now = Arc::new(std::sync::atomic::AtomicI64::new(system_now_ms()));
         let clock = now.clone();
-        let (url, calls, server) = serve(|_| (200, serde_json::json!({"claude-new":{"id":"claude-new"}}))).await;
-        let catalog = make(&url, anthropic(), ModelsStore::memory(), Some(Arc::new(move || clock.load(Ordering::SeqCst))));
+        let (url, calls, server) =
+            serve(|_| (200, serde_json::json!({"claude-new":{"id":"claude-new"}}))).await;
+        let catalog = make(
+            &url,
+            anthropic(),
+            ModelsStore::memory(),
+            Some(Arc::new(move || clock.load(Ordering::SeqCst))),
+        );
         catalog.refresh(false, true).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         catalog.refresh(false, true).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        now.store(system_now_ms() + REMOTE_CATALOG_REFRESH_INTERVAL_MS as i64 + 1, Ordering::SeqCst);
+        now.store(
+            system_now_ms() + REMOTE_CATALOG_REFRESH_INTERVAL_MS as i64 + 1,
+            Ordering::SeqCst,
+        );
         catalog.refresh(false, true).await;
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         catalog.refresh(true, true).await;
@@ -816,39 +1019,94 @@ mod tests {
 
     #[tokio::test]
     async fn pi_catalog_404_records_check_and_failures_keep_stored() {
-        let (url, calls, server) = serve(|id| if id == "anthropic" { (404, serde_json::json!({})) } else { (500, serde_json::json!({})) }).await;
+        let (url, calls, server) = serve(|id| {
+            if id == "anthropic" {
+                (404, serde_json::json!({}))
+            } else {
+                (500, serde_json::json!({}))
+            }
+        })
+        .await;
         let catalog = make(&url, anthropic(), ModelsStore::memory(), None);
         assert!(catalog.refresh(false, true).await.errors.is_empty());
-        assert_eq!(catalog.get_model("anthropic", "claude-base").unwrap()["id"], "claude-base");
+        assert_eq!(
+            catalog.get_model("anthropic", "claude-base").unwrap()["id"],
+            "claude-base"
+        );
         catalog.refresh(false, true).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         let store = ModelsStore::memory();
-        store.write("p", ModelsStoreEntry { models: vec![serde_json::json!({"id":"stored","provider":"p"}), serde_json::json!({"id":"other","provider":"q"})], checked_at: Some(1), extra: Map::new() }).await.unwrap();
-        let catalog = make(&url, vec![("p", false, vec![])], store, Some(Arc::new(|| 2_000_000_000)));
+        store
+            .write(
+                "p",
+                ModelsStoreEntry {
+                    models: vec![
+                        serde_json::json!({"id":"stored","provider":"p"}),
+                        serde_json::json!({"id":"other","provider":"q"}),
+                    ],
+                    checked_at: Some(1),
+                    extra: Map::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let catalog = make(
+            &url,
+            vec![("p", false, vec![])],
+            store,
+            Some(Arc::new(|| 2_000_000_000)),
+        );
         let result = catalog.refresh(false, true).await;
-        assert_eq!(result.errors["p"], "Model catalog request failed for p: 500");
+        assert_eq!(
+            result.errors["p"],
+            "Model catalog request failed for p: 500"
+        );
         assert_eq!(result.refreshed, 0);
         assert_eq!(catalog.get_model("p", "stored").unwrap()["id"], "stored");
         assert!(catalog.get_model("p", "other").is_none());
         server.abort();
-        let down = make("http://127.0.0.1:9", vec![("p", false, vec![])], ModelsStore::memory(), None);
+        let down = make(
+            "http://127.0.0.1:9",
+            vec![("p", false, vec![])],
+            ModelsStore::memory(),
+            None,
+        );
         assert!(down.refresh(false, true).await.errors.contains_key("p"));
     }
 
     #[tokio::test]
     async fn pi_catalog_accepts_catalog_shapes_and_skips_self_refreshing() {
-        for body in [serde_json::json!({"m1":{"id":"m1"}}), serde_json::json!([{"id":"m1"}, 3, {"name":"x"}]), serde_json::json!({"models":[{"id":"m1"}]})] {
+        for body in [
+            serde_json::json!({"m1":{"id":"m1"}}),
+            serde_json::json!([{"id":"m1"}, 3, {"name":"x"}]),
+            serde_json::json!({"models":[{"id":"m1"}]}),
+        ] {
             let (url, _, server) = serve(move |_| (200, body.clone())).await;
-            let catalog = make(&url, vec![("p", false, vec![])], ModelsStore::memory(), None);
+            let catalog = make(
+                &url,
+                vec![("p", false, vec![])],
+                ModelsStore::memory(),
+                None,
+            );
             catalog.refresh(false, true).await;
             assert_eq!(catalog.get_model("p", "m1").unwrap()["provider"], "p");
             assert_eq!(catalog.get_all_models(Some("p")).len(), 1);
             server.abort();
         }
-        assert!(parse_catalog("p", serde_json::json!("x")).unwrap_err().contains("Invalid model catalog for provider \"p\""));
+        assert!(parse_catalog("p", serde_json::json!("x"))
+            .unwrap_err()
+            .contains("Invalid model catalog for provider \"p\""));
         let (url, calls, server) = serve(|_| (200, serde_json::json!({"m1":{"id":"m1"}}))).await;
-        let catalog = make(&url, vec![("radius", true, vec![]), ("anthropic", false, vec![baseline()])], ModelsStore::memory(), None);
+        let catalog = make(
+            &url,
+            vec![
+                ("radius", true, vec![]),
+                ("anthropic", false, vec![baseline()]),
+            ],
+            ModelsStore::memory(),
+            None,
+        );
         assert_eq!(catalog.refresh(false, true).await.refreshed, 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         server.abort();
@@ -856,7 +1114,8 @@ mod tests {
 
     #[tokio::test]
     async fn pi_catalog_background_and_periodic_refresh() {
-        let (url, calls, server) = serve(|_| (200, serde_json::json!({"claude-new":{"id":"claude-new"}}))).await;
+        let (url, calls, server) =
+            serve(|_| (200, serde_json::json!({"claude-new":{"id":"claude-new"}}))).await;
         let mut deps = ModelCatalogDeps::new(snapshot(anthropic()), ModelsStore::memory());
         deps.catalog_base_url = url;
         deps.now = Arc::new(|| system_now_ms() + REMOTE_CATALOG_REFRESH_INTERVAL_MS as i64);
@@ -864,7 +1123,9 @@ mod tests {
         let catalog = Arc::new(ModelCatalog::new(deps));
         catalog.init(true).await;
         for _ in 0..200 {
-            if calls.load(Ordering::SeqCst) >= 2 && catalog.get_model("anthropic", "claude-new").is_some() {
+            if calls.load(Ordering::SeqCst) >= 2
+                && catalog.get_model("anthropic", "claude-new").is_some()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -879,11 +1140,22 @@ mod tests {
 
     #[tokio::test]
     async fn pi_catalog_file_store_tolerates_corrupt_file() {
-        let path = std::env::temp_dir().join(format!("trefoil-picat-corrupt-{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("trefoil-picat-corrupt-{}.json", std::process::id()));
         std::fs::write(&path, b"{not json").unwrap();
         let store = ModelsStore::file(&path);
         assert!(store.read("p").await.unwrap().is_none());
-        store.write("p", ModelsStoreEntry { models: vec![], checked_at: Some(5), extra: Map::new() }).await.unwrap();
+        store
+            .write(
+                "p",
+                ModelsStoreEntry {
+                    models: vec![],
+                    checked_at: Some(5),
+                    extra: Map::new(),
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(store.read("p").await.unwrap().unwrap().checked_at, Some(5));
         store.delete("p").await.unwrap();
         assert!(ModelsStore::file(&path).read("p").await.unwrap().is_none());
@@ -892,13 +1164,19 @@ mod tests {
 
     #[test]
     fn pi_catalog_builtin_snapshot_matches_pinned_pi_ai() {
-        let catalog = ModelCatalog::new(ModelCatalogDeps::new(builtin_snapshot(), ModelsStore::memory()));
+        let catalog = ModelCatalog::new(ModelCatalogDeps::new(
+            builtin_snapshot(),
+            ModelsStore::memory(),
+        ));
         assert_eq!(catalog.builtin_provider_ids().len(), 42);
         assert_eq!(catalog.get_all_models(None).len(), 1649);
         assert_eq!(catalog.get_models(None).len(), 1554);
         assert_eq!(catalog.get_models_of_type("image", None).len(), 61);
         assert_eq!(catalog.get_models_of_type("classifier", None).len(), 34);
-        assert_eq!(catalog.get_model("openai", "gpt-4o").unwrap()["api"], "openai-responses");
+        assert_eq!(
+            catalog.get_model("openai", "gpt-4o").unwrap()["api"],
+            "openai-responses"
+        );
         assert_eq!(encode_uri_component("a b/c"), "a%20b%2Fc");
     }
 
@@ -909,17 +1187,34 @@ mod tests {
         use tower::ServiceExt;
         let response = app
             .clone()
-            .oneshot(axum::http::Request::get("/v0/management/catalog/status").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                axum::http::Request::get("/v0/management/catalog/status")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let response = app
-            .oneshot(axum::http::Request::get("/v0/management/catalog/status").header("x-admin-key", "admin").body(axum::body::Body::empty()).unwrap())
+            .oneshot(
+                axum::http::Request::get("/v0/management/catalog/status")
+                    .header("x-admin-key", "admin")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-        assert_eq!(body["intervals"], serde_json::json!({"metadataMinutes":60,"piCatalogMs":14400000,"versionMinutes":60}));
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            body["intervals"],
+            serde_json::json!({"metadataMinutes":60,"piCatalogMs":14400000,"versionMinutes":60})
+        );
         assert!(body["piCatalog"]["modelCount"].as_u64().unwrap() >= 1649);
         assert!(body["metadata"]["modelsDev"]["initialized"].is_boolean());
         assert!(body["versions"]["codex"].is_string());

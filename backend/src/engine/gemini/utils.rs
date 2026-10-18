@@ -12,14 +12,22 @@ use serde_json::{json, Map, Value};
 fn matches_base64_pattern(s: &str) -> bool {
     let body = s.trim_end_matches('=');
     let pad = s.len() - body.len();
-    !body.is_empty() && pad <= 2 && body.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+    !body.is_empty()
+        && pad <= 2
+        && body
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
 }
 
 /// `isValidThoughtSignature`: undefined/empty signatures are valid (no thinking).
 pub fn is_valid_thought_signature(signature: Option<&str>) -> bool {
-    let Some(sig) = signature.filter(|s| !s.is_empty()) else { return true };
+    let Some(sig) = signature.filter(|s| !s.is_empty()) else {
+        return true;
+    };
     // `signature.length` is UTF-16 length; non-ASCII input fails the pattern anyway.
-    if sig.encode_utf16().count() % 4 != 0 { return false; }
+    if sig.encode_utf16().count() % 4 != 0 {
+        return false;
+    }
     matches_base64_pattern(sig)
 }
 
@@ -27,14 +35,23 @@ pub fn is_valid_thought_signature(signature: Option<&str>) -> bool {
 /// short-circuits falsy values; other non-strings have no usable `length`
 /// and fail).
 pub fn is_valid_thought_signature_value(signature: Option<&Value>) -> bool {
-    if !truthy(signature) { return true; }
-    match signature { Some(Value::String(s)) => is_valid_thought_signature(Some(s)), _ => false }
+    if !truthy(signature) {
+        return true;
+    }
+    match signature {
+        Some(Value::String(s)) => is_valid_thought_signature(Some(s)),
+        _ => false,
+    }
 }
 
 /// `sanitizeThoughtSignature`.
 pub fn sanitize_thought_signature(signature: Option<&str>) -> Option<&str> {
     let sig = signature.filter(|s| !s.is_empty())?;
-    if is_valid_thought_signature(Some(sig)) { Some(sig) } else { None }
+    if is_valid_thought_signature(Some(sig)) {
+        Some(sig)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +61,9 @@ pub fn sanitize_thought_signature(signature: Option<&str>) -> Option<&str> {
 /// `normalizeJsonSchemaTypes`: lowercases string `type` members recursively.
 pub fn normalize_json_schema_types(schema: &Value) -> Value {
     match schema {
-        Value::Array(items) => Value::Array(items.iter().map(normalize_json_schema_types).collect()),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(normalize_json_schema_types).collect())
+        }
         Value::Object(map) => {
             let mut out = Map::new();
             for (k, v) in map {
@@ -69,21 +88,31 @@ const TEXT_ONLY_MODEL_PART_KEYS: [&str; 3] = ["text", "thought", "thoughtSignatu
 
 /// `isTextOnlyModelContent`.
 pub fn is_text_only_model_content(content: &Value) -> bool {
-    if get_str(content, &["role"]) != Some("model") { return false; }
-    let Some(parts) = get_arr(content, &["parts"]).filter(|p| !p.is_empty()) else { return false };
+    if get_str(content, &["role"]) != Some("model") {
+        return false;
+    }
+    let Some(parts) = get_arr(content, &["parts"]).filter(|p| !p.is_empty()) else {
+        return false;
+    };
     parts.iter().all(|part| match part.as_object() {
-        Some(map) if map.contains_key("text") => map.keys().all(|k| TEXT_ONLY_MODEL_PART_KEYS.contains(&k.as_str())),
+        Some(map) if map.contains_key("text") => map
+            .keys()
+            .all(|k| TEXT_ONLY_MODEL_PART_KEYS.contains(&k.as_str())),
         _ => false,
     })
 }
 
-fn user_placeholder() -> Value { json!({"role": "user", "parts": [{"text": "."}]}) }
+fn user_placeholder() -> Value {
+    json!({"role": "user", "parts": [{"text": "."}]})
+}
 
 /// `appendUserAfterTextOnlyModelTail`: returns `None` when the input is
 /// returned unchanged (same reference in TS), otherwise the new array.
 pub fn append_user_after_text_only_model_tail(contents: &[Value]) -> Option<Vec<Value>> {
     let last = contents.last()?;
-    if !is_text_only_model_content(last) { return None; }
+    if !is_text_only_model_content(last) {
+        return None;
+    }
     let mut out = contents.to_vec();
     out.push(user_placeholder());
     Some(out)
@@ -92,7 +121,10 @@ pub fn append_user_after_text_only_model_tail(contents: &[Value]) -> Option<Vec<
 /// `ensureContentsEndWithUser`: mutating variant; true when a turn was appended.
 pub fn ensure_contents_end_with_user(contents: &mut Vec<Value>) -> bool {
     match contents.last() {
-        Some(last) if is_text_only_model_content(last) => { contents.push(user_placeholder()); true }
+        Some(last) if is_text_only_model_content(last) => {
+            contents.push(user_placeholder());
+            true
+        }
         _ => false,
     }
 }
@@ -102,12 +134,20 @@ pub fn ensure_contents_end_with_user(contents: &mut Vec<Value>) -> bool {
 // ---------------------------------------------------------------------------
 
 /// A `TypeError` thrown by the TS source (surfaced as an engine error).
-pub fn type_error(message: impl Into<String>) -> EngineError { EngineError::new(message) }
+pub fn type_error(message: impl Into<String>) -> EngineError {
+    EngineError::new(message)
+}
 
 /// `Cannot read properties of undefined|null (reading 'key')` for a nullish receiver.
 pub fn read_error(receiver: Option<&Value>, key: &str) -> EngineError {
-    let what = if receiver.is_none() { "undefined" } else { "null" };
-    type_error(format!("Cannot read properties of {what} (reading '{key}')"))
+    let what = if receiver.is_none() {
+        "undefined"
+    } else {
+        "null"
+    };
+    type_error(format!(
+        "Cannot read properties of {what} (reading '{key}')"
+    ))
 }
 
 /// `v.key` with JS semantics: throws on a nullish receiver; primitives have no
@@ -122,15 +162,25 @@ pub fn read<'a>(v: Option<&'a Value>, key: &str) -> EngineResult<Option<&'a Valu
 }
 
 /// `JSON.stringify(v)` where `undefined` yields `undefined`.
-pub fn stringify_opt(v: Option<&Value>) -> Option<Value> { v.map(|v| Value::String(stringify(v))) }
+pub fn stringify_opt(v: Option<&Value>) -> Option<Value> {
+    v.map(|v| Value::String(stringify(v)))
+}
 
 /// `JSON.parse(v)`: strings parse as-is, other values are coerced with `String(v)`.
 pub fn json_parse_js(v: Option<&Value>) -> EngineResult<Value> {
-    let text = match v { Some(Value::String(s)) => s.clone(), other => to_string(other) };
+    let text = match v {
+        Some(Value::String(s)) => s.clone(),
+        other => to_string(other),
+    };
     serde_json::from_str(&text).map_err(|e| EngineError::new(format!("JSON Parse error: {e}")))
 }
 
-fn is_stringish(v: Option<&Value>) -> bool { matches!(v, Some(Value::String(_) | Value::Array(_) | Value::Object(_))) }
+fn is_stringish(v: Option<&Value>) -> bool {
+    matches!(
+        v,
+        Some(Value::String(_) | Value::Array(_) | Value::Object(_))
+    )
+}
 
 /// JS binary `a + b` over JSON values (NaN/Infinity serialize as `null`).
 pub fn js_plus(a: Option<&Value>, b: Option<&Value>) -> Value {
@@ -142,11 +192,16 @@ pub fn js_plus(a: Option<&Value>, b: Option<&Value>) -> Value {
 }
 
 /// `'call_' + Math.random().toString(36).substring(7)`.
-pub fn random_call_id() -> String { format!("call_{}", random_base36(6)) }
+pub fn random_call_id() -> String {
+    format!("call_{}", random_base36(6))
+}
 
 /// `String.prototype.toLowerCase` on a value that must be a string.
 pub fn lower(v: &Value, expr: &str) -> EngineResult<String> {
-    match v { Value::String(s) => Ok(s.to_lowercase()), _ => Err(type_error(format!("{expr}.toLowerCase is not a function"))) }
+    match v {
+        Value::String(s) => Ok(s.to_lowercase()),
+        _ => Err(type_error(format!("{expr}.toLowerCase is not a function"))),
+    }
 }
 
 #[cfg(test)]
@@ -170,28 +225,50 @@ mod tests {
         assert!(!is_valid_thought_signature(Some("aGVsbG8===")));
         assert!(!is_valid_thought_signature(Some("====")));
         assert_eq!(sanitize_thought_signature(None), None);
-        assert_eq!(sanitize_thought_signature(Some("aGVsbG8=")), Some("aGVsbG8="));
+        assert_eq!(
+            sanitize_thought_signature(Some("aGVsbG8=")),
+            Some("aGVsbG8=")
+        );
         assert_eq!(sanitize_thought_signature(Some("invalid!")), None);
         assert_eq!(sanitize_thought_signature(Some("abcde")), None);
     }
 
     #[test]
     fn model_tail() {
-        assert!(is_text_only_model_content(&json!({"role": "model", "parts": [{"text": "stored"}]})));
-        assert!(is_text_only_model_content(&json!({"role": "model", "parts": [{"text": "s", "thought": true, "thoughtSignature": "aGVsbG8="}]})));
-        assert!(!is_text_only_model_content(&json!({"role": "user", "parts": [{"text": "hi"}]})));
-        assert!(!is_text_only_model_content(&json!({"role": "model", "parts": []})));
-        assert!(!is_text_only_model_content(&json!({"role": "model", "parts": [{"functionCall": {"name": "lookup", "args": {}}}]})));
-        assert!(!is_text_only_model_content(&json!({"role": "model", "parts": [{"inlineData": {"mimeType": "image/png", "data": "abcd"}}]})));
-        assert!(!is_text_only_model_content(&json!({"role": "model", "parts": [{"text": "stored", "media_resolution": "low"}]})));
+        assert!(is_text_only_model_content(
+            &json!({"role": "model", "parts": [{"text": "stored"}]})
+        ));
+        assert!(is_text_only_model_content(
+            &json!({"role": "model", "parts": [{"text": "s", "thought": true, "thoughtSignature": "aGVsbG8="}]})
+        ));
+        assert!(!is_text_only_model_content(
+            &json!({"role": "user", "parts": [{"text": "hi"}]})
+        ));
+        assert!(!is_text_only_model_content(
+            &json!({"role": "model", "parts": []})
+        ));
+        assert!(!is_text_only_model_content(
+            &json!({"role": "model", "parts": [{"functionCall": {"name": "lookup", "args": {}}}]})
+        ));
+        assert!(!is_text_only_model_content(
+            &json!({"role": "model", "parts": [{"inlineData": {"mimeType": "image/png", "data": "abcd"}}]})
+        ));
+        assert!(!is_text_only_model_content(
+            &json!({"role": "model", "parts": [{"text": "stored", "media_resolution": "low"}]})
+        ));
 
-        let contents = vec![json!({"role": "user", "parts": [{"text": "Remember cobalt"}]}), json!({"role": "model", "parts": [{"text": "stored"}]})];
+        let contents = vec![
+            json!({"role": "user", "parts": [{"text": "Remember cobalt"}]}),
+            json!({"role": "model", "parts": [{"text": "stored"}]}),
+        ];
         let out = append_user_after_text_only_model_tail(&contents).unwrap();
         assert_eq!(out.len(), 3);
         assert_eq!(out[2], json!({"role": "user", "parts": [{"text": "."}]}));
         let user_tail = vec![json!({"role": "user", "parts": [{"text": "hi"}]})];
         assert!(append_user_after_text_only_model_tail(&user_tail).is_none());
-        let fc_tail = vec![json!({"role": "model", "parts": [{"functionCall": {"name": "lookup", "args": {}}}]})];
+        let fc_tail = vec![
+            json!({"role": "model", "parts": [{"functionCall": {"name": "lookup", "args": {}}}]}),
+        ];
         assert!(append_user_after_text_only_model_tail(&fc_tail).is_none());
 
         let mut c = vec![json!({"role": "model", "parts": [{"text": "stored"}]})];
@@ -205,7 +282,9 @@ mod tests {
     #[test]
     fn json_schema_and_plus() {
         assert_eq!(
-            normalize_json_schema_types(&json!({"type": "OBJECT", "properties": {"a": {"type": "STRING"}}, "items": [{"type": "INTEGER"}], "n": null})),
+            normalize_json_schema_types(
+                &json!({"type": "OBJECT", "properties": {"a": {"type": "STRING"}}, "items": [{"type": "INTEGER"}], "n": null})
+            ),
             json!({"type": "object", "properties": {"a": {"type": "string"}}, "items": [{"type": "integer"}], "n": null})
         );
         assert_eq!(js_plus(Some(&json!(100)), Some(&json!(20))), json!(120));

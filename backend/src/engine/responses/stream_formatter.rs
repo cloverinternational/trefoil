@@ -2,7 +2,9 @@
 //! Responses API SSE (`response.created` … `response.completed` /
 //! `response.incomplete` / `response.failed`, with `sequence_number`s).
 use super::js_ext::{js_trim, js_trim_start, strict_eq};
-use super::tool_mapper::{custom_tool_input, resolve_output_tool_call, ResolvedToolType, ResponsesToolState};
+use super::tool_mapper::{
+    custom_tool_input, resolve_output_tool_call, ResolvedToolType, ResponsesToolState,
+};
 use super::utils::{build_responses_usage_payload, generate_item_id, generate_response_id};
 use crate::engine::js::*;
 use crate::engine::sse;
@@ -25,9 +27,15 @@ struct ToolEntry {
 /// `normalizeToolArgs`: a delta that is itself a complete JSON object
 /// snapshot extending what we have replaces the buffer; otherwise append.
 pub fn normalize_tool_args(previous: &str, delta: &str) -> String {
-    if delta.is_empty() { return previous.to_owned(); }
+    if delta.is_empty() {
+        return previous.to_owned();
+    }
     let trimmed = js_trim(delta);
-    if trimmed.starts_with('{') && trimmed.ends_with('}') && parse(trimmed).is_some() && (previous.is_empty() || trimmed.starts_with(js_trim_start(previous))) {
+    if trimmed.starts_with('{')
+        && trimmed.ends_with('}')
+        && parse(trimmed).is_some()
+        && (previous.is_empty() || trimmed.starts_with(js_trim_start(previous)))
+    {
         return trimmed.to_owned();
     }
     format!("{previous}{delta}")
@@ -115,16 +123,27 @@ impl ResponsesStreamFormatter {
     }
 
     fn created_at_or_now(&self) -> Value {
-        if truthy(Some(&self.response_created_at)) { self.response_created_at.clone() } else { json!(now_secs()) }
+        if truthy(Some(&self.response_created_at)) {
+            self.response_created_at.clone()
+        } else {
+            json!(now_secs())
+        }
     }
 
-    fn response_id_or_undefined(&self) -> Option<Value> { Some(self.response_id.clone()).filter(|v| truthy(Some(v))) }
+    fn response_id_or_undefined(&self) -> Option<Value> {
+        Some(self.response_id.clone()).filter(|v| truthy(Some(v)))
+    }
 
     fn ensure_created(&mut self, out: &mut Vec<String>, chunk: &Value) {
-        if self.has_sent_created { return; }
-        self.response_id = or(chunk.get("id"), None).unwrap_or_else(|| Value::String(generate_response_id()));
-        self.response_model = or(chunk.get("model"), Some(&self.response_model)).unwrap_or_default();
-        self.response_created_at = or(chunk.get("created"), None).unwrap_or_else(|| json!(now_secs()));
+        if self.has_sent_created {
+            return;
+        }
+        self.response_id =
+            or(chunk.get("id"), None).unwrap_or_else(|| Value::String(generate_response_id()));
+        self.response_model =
+            or(chunk.get("model"), Some(&self.response_model)).unwrap_or_default();
+        self.response_created_at =
+            or(chunk.get("created"), None).unwrap_or_else(|| json!(now_secs()));
         let data = json!({
             "type": "response.created",
             "response": {
@@ -141,7 +160,9 @@ impl ResponsesStreamFormatter {
     }
 
     fn reserve_output_index(&mut self) -> u64 {
-        while self.used_output_indices.contains(&self.next_output_index) { self.next_output_index += 1; }
+        while self.used_output_indices.contains(&self.next_output_index) {
+            self.next_output_index += 1;
+        }
         let index = self.next_output_index;
         self.used_output_indices.insert(index);
         self.next_output_index += 1;
@@ -149,7 +170,9 @@ impl ResponsesStreamFormatter {
     }
 
     fn ensure_in_progress(&mut self, out: &mut Vec<String>) {
-        if self.has_sent_in_progress { return; }
+        if self.has_sent_in_progress {
+            return;
+        }
         let data = json!({
             "type": "response.in_progress",
             "response": {
@@ -166,8 +189,12 @@ impl ResponsesStreamFormatter {
     }
 
     fn ensure_message_item(&mut self, out: &mut Vec<String>) {
-        if self.message_item_sent { return; }
-        if self.message_output_index.is_none() { self.message_output_index = Some(self.reserve_output_index()); }
+        if self.message_item_sent {
+            return;
+        }
+        if self.message_output_index.is_none() {
+            self.message_output_index = Some(self.reserve_output_index());
+        }
         let index = self.message_output_index.unwrap_or(0);
         self.message_item_id = generate_item_id("msg");
         let added = json!({
@@ -191,7 +218,9 @@ impl ResponsesStreamFormatter {
     }
 
     fn ensure_reasoning_item(&mut self, out: &mut Vec<String>) {
-        if self.reasoning_item_sent { return; }
+        if self.reasoning_item_sent {
+            return;
+        }
         let index = self.reserve_output_index();
         self.reasoning_output_index = Some(index);
         self.reasoning_item_id = generate_item_id("rs");
@@ -204,15 +233,31 @@ impl ResponsesStreamFormatter {
         self.reasoning_item_sent = true;
     }
 
-    fn tool_position(&self, key: &Value) -> Option<usize> { self.tools.iter().position(|t| strict_eq(Some(&t.key), Some(key))) }
+    fn tool_position(&self, key: &Value) -> Option<usize> {
+        self.tools
+            .iter()
+            .position(|t| strict_eq(Some(&t.key), Some(key)))
+    }
 
     fn ensure_tool_item(&mut self, out: &mut Vec<String>, key: &Value, tool_call: &Value) {
-        if self.tool_position(key).is_some() { return; }
+        if self.tool_position(key).is_some() {
+            return;
+        }
         let output_index = self.reserve_output_index();
-        let call_id = or(tool_call.get("id"), None).unwrap_or_else(|| Value::String(generate_item_id("call")));
+        let call_id = or(tool_call.get("id"), None)
+            .unwrap_or_else(|| Value::String(generate_item_id("call")));
         let item_id = generate_item_id("fc");
-        let flat_name = or(get(tool_call, &["function", "name"]), tool_call.get("name")).filter(|v| truthy(Some(v))).unwrap_or_else(|| json!(""));
-        self.tools.push(ToolEntry { key: key.clone(), output_index, call_id: call_id.clone(), item_id: item_id.clone(), args: String::new(), flat_name: flat_name.clone() });
+        let flat_name = or(get(tool_call, &["function", "name"]), tool_call.get("name"))
+            .filter(|v| truthy(Some(v)))
+            .unwrap_or_else(|| json!(""));
+        self.tools.push(ToolEntry {
+            key: key.clone(),
+            output_index,
+            call_id: call_id.clone(),
+            item_id: item_id.clone(),
+            args: String::new(),
+            flat_name: flat_name.clone(),
+        });
 
         // Namespace/custom split-back for the streamed "added" event.
         let resolved = self.resolve(&flat_name);
@@ -243,7 +288,8 @@ impl ResponsesStreamFormatter {
     fn emit_image_generation_call_items(&mut self, out: &mut Vec<String>, image_calls: &[Value]) {
         for image_call in image_calls {
             let output_index = self.reserve_output_index();
-            let item_id = or(image_call.get("id"), None).unwrap_or_else(|| Value::String(generate_item_id("ig")));
+            let item_id = or(image_call.get("id"), None)
+                .unwrap_or_else(|| Value::String(generate_item_id("ig")));
             let done_item = json!({
                 "id": item_id,
                 "type": "image_generation_call",
@@ -266,7 +312,8 @@ impl ResponsesStreamFormatter {
             let added_item = spread(call, &json!({"status": "in_progress"}));
             self.send(out, json!({"type": "response.output_item.added", "output_index": output_index, "item": added_item}));
             self.send(out, json!({"type": "response.output_item.done", "output_index": output_index, "item": call}));
-            self.output_items_by_index.insert(output_index, call.clone());
+            self.output_items_by_index
+                .insert(output_index, call.clone());
         }
     }
 
@@ -274,8 +321,16 @@ impl ResponsesStreamFormatter {
     /// and returns all items ordered by output index.
     fn finalize_output_items(&mut self, out: &mut Vec<String>, item_status: &str) -> Vec<Value> {
         if let (true, Some(index)) = (self.reasoning_item_sent, self.reasoning_output_index) {
-            let content = if self.reasoning_text.is_empty() { json!([]) } else { json!([{"type": "reasoning_text", "text": self.reasoning_text}]) };
-            let summary = if self.reasoning_summary_text.is_empty() { json!([]) } else { json!([{"type": "summary_text", "text": self.reasoning_summary_text}]) };
+            let content = if self.reasoning_text.is_empty() {
+                json!([])
+            } else {
+                json!([{"type": "reasoning_text", "text": self.reasoning_text}])
+            };
+            let summary = if self.reasoning_summary_text.is_empty() {
+                json!([])
+            } else {
+                json!([{"type": "summary_text", "text": self.reasoning_summary_text}])
+            };
             let item = json!({"id": self.reasoning_item_id, "type": "reasoning", "status": item_status, "content": content, "summary": summary});
             if !self.reasoning_text.is_empty() {
                 let e = json!({"type": "response.reasoning_text.done", "output_index": index, "item_id": self.reasoning_item_id, "content_index": self.reasoning_content_index, "text": self.reasoning_text});
@@ -289,7 +344,10 @@ impl ResponsesStreamFormatter {
                     self.send(out, e);
                 }
             }
-            self.send(out, json!({"type": "response.output_item.done", "output_index": index, "item": item}));
+            self.send(
+                out,
+                json!({"type": "response.output_item.done", "output_index": index, "item": item}),
+            );
             self.output_items_by_index.insert(index, item);
         }
 
@@ -306,7 +364,10 @@ impl ResponsesStreamFormatter {
             self.send(out, e);
             let e = json!({"type": "response.content_part.done", "output_index": index, "item_id": self.message_item_id, "content_index": 0, "part": {"type": "output_text", "annotations": [], "logprobs": [], "text": self.message_text}});
             self.send(out, e);
-            self.send(out, json!({"type": "response.output_item.done", "output_index": index, "item": item}));
+            self.send(
+                out,
+                json!({"type": "response.output_item.done", "output_index": index, "item": item}),
+            );
             self.output_items_by_index.insert(index, item);
         }
 
@@ -319,7 +380,12 @@ impl ResponsesStreamFormatter {
                     ("status", Some(json!(item_status))),
                     ("call_id", Some(entry.call_id)),
                     ("name", resolved.name),
-                    ("input", Some(Value::String(custom_tool_input(Some(&Value::String(entry.args)))))),
+                    (
+                        "input",
+                        Some(Value::String(custom_tool_input(Some(&Value::String(
+                            entry.args,
+                        ))))),
+                    ),
                 ])
             } else {
                 obj(vec![
@@ -339,7 +405,12 @@ impl ResponsesStreamFormatter {
         self.output_items_by_index.values().cloned().collect()
     }
 
-    fn terminal_response(&self, status: &str, output: Vec<Value>, extra: Vec<(&str, Option<Value>)>) -> Value {
+    fn terminal_response(
+        &self,
+        status: &str,
+        output: Vec<Value>,
+        extra: Vec<(&str, Option<Value>)>,
+    ) -> Value {
         let mut pairs = vec![
             ("id", self.response_id_or_undefined()),
             ("object", Some(json!("response"))),
@@ -349,14 +420,20 @@ impl ResponsesStreamFormatter {
             ("output", Some(Value::Array(output))),
         ];
         pairs.extend(extra);
-        pairs.push(("usage", build_responses_usage_payload(self.last_usage.as_ref())));
+        pairs.push((
+            "usage",
+            build_responses_usage_payload(self.last_usage.as_ref()),
+        ));
         obj(pairs)
     }
 
     fn complete(&mut self, out: &mut Vec<String>) {
         let output = self.finalize_output_items(out, "completed");
         let response = self.terminal_response("completed", output, vec![]);
-        self.send(out, json!({"type": "response.completed", "response": response}));
+        self.send(
+            out,
+            json!({"type": "response.completed", "response": response}),
+        );
         self.finished = true;
     }
 }
@@ -364,45 +441,83 @@ impl ResponsesStreamFormatter {
 impl StreamFormatter for ResponsesStreamFormatter {
     fn on_chunk(&mut self, chunk: &Value) -> Vec<String> {
         let mut out = Vec::new();
-        if self.finished { return out; }
+        if self.finished {
+            return out;
+        }
         self.ensure_created(&mut out, chunk);
         self.ensure_in_progress(&mut out);
 
         if get_str(chunk, &["event"]) == Some("error") {
-            if truthy(chunk.get("usage")) { self.last_usage = chunk.get("usage").cloned(); }
-            let incomplete = chunk.get("incomplete_details").filter(|d| truthy(Some(d))).cloned();
-            let output = self.finalize_output_items(&mut out, if incomplete.is_some() { "incomplete" } else { "completed" });
+            if truthy(chunk.get("usage")) {
+                self.last_usage = chunk.get("usage").cloned();
+            }
+            let incomplete = chunk
+                .get("incomplete_details")
+                .filter(|d| truthy(Some(d)))
+                .cloned();
+            let output = self.finalize_output_items(
+                &mut out,
+                if incomplete.is_some() {
+                    "incomplete"
+                } else {
+                    "completed"
+                },
+            );
             let empty = json!({});
             let err = or(chunk.get("error"), Some(&empty)).unwrap_or_default();
             if let Some(details) = incomplete {
-                let response = self.terminal_response("incomplete", output, vec![("incomplete_details", Some(details))]);
-                self.send(&mut out, json!({"type": "response.incomplete", "response": response}));
+                let response = self.terminal_response(
+                    "incomplete",
+                    output,
+                    vec![("incomplete_details", Some(details))],
+                );
+                self.send(
+                    &mut out,
+                    json!({"type": "response.incomplete", "response": response}),
+                );
             } else {
                 let error = json!({
                     "code": or(err.get("code"), Some(&json!("server_error"))),
                     "message": or(err.get("message"), Some(&json!("The model response failed to complete."))),
                 });
-                let response = self.terminal_response("failed", output, vec![("error", Some(error))]);
-                self.send(&mut out, json!({"type": "response.failed", "response": response}));
+                let response =
+                    self.terminal_response("failed", output, vec![("error", Some(error))]);
+                self.send(
+                    &mut out,
+                    json!({"type": "response.failed", "response": response}),
+                );
             }
             self.finished = true;
             return out;
         }
 
-        if truthy(chunk.get("usage")) { self.last_usage = chunk.get("usage").cloned(); }
+        if truthy(chunk.get("usage")) {
+            self.last_usage = chunk.get("usage").cloned();
+        }
 
         let empty = json!({});
-        let delta = chunk.get("delta").filter(|d| truthy(Some(d))).unwrap_or(&empty);
+        let delta = chunk
+            .get("delta")
+            .filter(|d| truthy(Some(d)))
+            .unwrap_or(&empty);
         let reasoning_delta = delta.get("reasoning_content").and_then(Value::as_str);
         let summary_delta = get_str(delta, &["thinking", "content"]);
 
         // Typed image carries re-emit natively; the paired markdown content
         // delta on the same chunk is skipped below.
         let typed_image_calls: Vec<Value> = match chunk.get("image_generation_calls") {
-            Some(Value::Array(calls)) => calls.iter().filter(|c| truthy(Some(c)) && get_str(c, &["result"]).is_some_and(|r| !r.is_empty())).cloned().collect(),
+            Some(Value::Array(calls)) => calls
+                .iter()
+                .filter(|c| {
+                    truthy(Some(c)) && get_str(c, &["result"]).is_some_and(|r| !r.is_empty())
+                })
+                .cloned()
+                .collect(),
             _ => Vec::new(),
         };
-        if !typed_image_calls.is_empty() { self.emit_image_generation_call_items(&mut out, &typed_image_calls); }
+        if !typed_image_calls.is_empty() {
+            self.emit_image_generation_call_items(&mut out, &typed_image_calls);
+        }
 
         if let Some(Value::Array(calls)) = chunk.get("client_tool_calls") {
             if !calls.is_empty() {
@@ -430,7 +545,11 @@ impl StreamFormatter for ResponsesStreamFormatter {
             self.send(&mut out, e);
         }
 
-        if let Some(content) = delta.get("content").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+        if let Some(content) = delta
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty())
+        {
             if typed_image_calls.is_empty() {
                 self.ensure_message_item(&mut out);
                 self.message_text.push_str(content);
@@ -449,14 +568,20 @@ impl StreamFormatter for ResponsesStreamFormatter {
                 let key = coalesce(tool_call.get("index"), None).unwrap_or_else(|| json!(0));
                 self.ensure_tool_item(&mut out, &key, tool_call);
                 if let Some(args) = get_str(tool_call, &["function", "arguments"]) {
-                    let Some(pos) = self.tool_position(&key) else { continue };
+                    let Some(pos) = self.tool_position(&key) else {
+                        continue;
+                    };
                     let output_index = self.tools[pos].output_index;
                     let item_id = self.tools[pos].item_id.clone();
                     self.tools[pos].args = normalize_tool_args(&self.tools[pos].args, args);
                     // Custom tool input can't be unwrapped from partial JSON;
                     // it is emitted once, complete, at finalization.
                     let flat_name = self.tools[pos].flat_name.clone();
-                    let flat_name = if truthy(Some(&flat_name)) { flat_name } else { json!("") };
+                    let flat_name = if truthy(Some(&flat_name)) {
+                        flat_name
+                    } else {
+                        json!("")
+                    };
                     if self.resolve(&flat_name).kind != ResolvedToolType::CustomToolCall {
                         let e = json!({"type": "response.function_call_arguments.delta", "output_index": output_index, "item_id": item_id, "delta": args});
                         self.send(&mut out, e);
@@ -473,9 +598,12 @@ impl StreamFormatter for ResponsesStreamFormatter {
 
     fn finish(&mut self) -> Vec<String> {
         let mut out = Vec::new();
-        if self.finished { return out; }
+        if self.finished {
+            return out;
+        }
         if !self.has_sent_created {
-            let synthetic = json!({"model": self.response_model, "created": self.response_created_at});
+            let synthetic =
+                json!({"model": self.response_model, "created": self.response_created_at});
             self.ensure_created(&mut out, &synthetic);
         }
         self.complete(&mut out);

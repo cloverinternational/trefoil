@@ -41,36 +41,64 @@ async fn refresh_one(state: &AppState, provider: String, account: String, refres
     let _guard = gate.lock().await;
     // The scheduler snapshot may be stale after another waiter rotated tokens.
     // Re-read under the account gate and never overwrite newer credentials.
-    let Some(pool) = &state.inner.database else { return };
-    let Ok(credentials) = crate::database::load_oauth_credentials(pool).await else { return };
-    let Some((_, _, _, current_refresh, expires)) = credentials.into_iter()
-        .find(|(p, a, _, _, _)| p == &provider && a == &account) else { return };
-    if !refresh_due(now_ms(), expires) || current_refresh.is_empty() { return; }
+    let Some(pool) = &state.inner.database else {
+        return;
+    };
+    let Ok(credentials) = crate::database::load_oauth_credentials(pool).await else {
+        return;
+    };
+    let Some((_, _, _, current_refresh, expires)) = credentials
+        .into_iter()
+        .find(|(p, a, _, _, _)| p == &provider && a == &account)
+    else {
+        return;
+    };
+    if !refresh_due(now_ms(), expires) || current_refresh.is_empty() {
+        return;
+    }
     let refresh_token = current_refresh;
     if provider == "github-copilot" {
         // The stored value carries a GitHub Enterprise domain as
         // `<domain>\n<github_token>` (see `OAuthCredentials::stored_refresh`).
-        if let Ok((access, stored, expires)) = crate::copilot_oauth::refresh_stored(&refresh_token).await {
-            let _ = crate::database::upsert_oauth_credential(pool, &provider, &account, &access, &stored, expires).await;
+        if let Ok((access, stored, expires)) =
+            crate::copilot_oauth::refresh_stored(&refresh_token).await
+        {
+            let _ = crate::database::upsert_oauth_credential(
+                pool, &provider, &account, &access, &stored, expires,
+            )
+            .await;
         }
         return;
     }
     if provider == "kimi-coding" {
         if let Ok((access, refresh, expires)) = crate::kimi_oauth::refresh(&refresh_token).await {
-            let _ = crate::database::upsert_oauth_credential(pool, &provider, &account, &access, &refresh, expires).await;
+            let _ = crate::database::upsert_oauth_credential(
+                pool, &provider, &account, &access, &refresh, expires,
+            )
+            .await;
         }
         return;
     }
     if provider == "meta" || provider == "openai" {
-        let refreshed = if provider == "meta" { crate::meta_oauth::mint(&refresh_token).await } else { crate::openai_chatgpt_oauth::refresh(&refresh_token).await };
+        let refreshed = if provider == "meta" {
+            crate::meta_oauth::mint(&refresh_token).await
+        } else {
+            crate::openai_chatgpt_oauth::refresh(&refresh_token).await
+        };
         if let Ok((access, refresh, expires)) = refreshed {
-            let _ = crate::database::upsert_oauth_credential(pool, &provider, &account, &access, &refresh, expires).await;
+            let _ = crate::database::upsert_oauth_credential(
+                pool, &provider, &account, &access, &refresh, expires,
+            )
+            .await;
         }
         return;
     }
     if provider == "xai" {
         if let Ok((access, refresh, expires)) = crate::xai_oauth::refresh(&refresh_token).await {
-            let _ = crate::database::upsert_oauth_credential(pool, &provider, &account, &access, &refresh, expires).await;
+            let _ = crate::database::upsert_oauth_credential(
+                pool, &provider, &account, &access, &refresh, expires,
+            )
+            .await;
         }
         return;
     }

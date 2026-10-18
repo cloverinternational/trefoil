@@ -170,9 +170,16 @@ async fn config(
     }
     if mode == "local_http" {
         // Plexus `ensureRunning` before proxying to the local process.
-        let view = crate::mcp::load_server(state, name).await.ok().flatten().unwrap_or(serde_json::Value::Null);
+        let view = crate::mcp::load_server(state, name)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(serde_json::Value::Null);
         let Some(config) = crate::mcp_local::LocalConfig::from_view(&view) else {
-            return Err(error(StatusCode::BAD_GATEWAY, "Local MCP server failed to start"));
+            return Err(error(
+                StatusCode::BAD_GATEWAY,
+                "Local MCP server failed to start",
+            ));
         };
         if let Err(message) = state.inner.mcp_manager.ensure_running(name, &config).await {
             return Err(error(StatusCode::BAD_GATEWAY, &message));

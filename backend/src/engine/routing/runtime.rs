@@ -22,7 +22,9 @@ pub trait RoutingRuntime: Send + Sync {
 
     /// `Date.now()` in epoch milliseconds (usage-selector window, quota
     /// selector reset arithmetic).
-    fn now_ms(&self) -> i64 { crate::engine::js::now_ms() }
+    fn now_ms(&self) -> i64 {
+        crate::engine::js::now_ms()
+    }
 
     /// `CooldownManager.getInstance().isProviderHealthy(provider, model)`:
     /// `false` while a provider-wide cooldown (`model == ""` key) or the
@@ -43,7 +45,9 @@ pub trait RoutingRuntime: Send + Sync {
     /// Whether `SelectorFactory.setUsageStorage` was called. When `false`, the
     /// `performance`, `e2e_performance`, `latency` and `usage` selectors throw
     /// `UsageStorageService not initialized in SelectorFactory. Call setUsageStorage first.`
-    fn usage_storage_ready(&self) -> bool { true }
+    fn usage_storage_ready(&self) -> bool {
+        true
+    }
 
     /// `UsageStorageService.getProviderPerformance(provider, model)`: rows as
     /// JSON objects with the snake_case fields Plexus maps:
@@ -64,12 +68,20 @@ pub trait RoutingRuntime: Send + Sync {
     /// endDate }, { limit: 1000, offset: 0 }).total`: the number of request
     /// usage rows for that provider and selected (provider-side) model with
     /// `date` between the two ISO-8601 timestamps (inclusive).
-    async fn usage_total(&self, provider: &str, selected_model_name: &str, start_date: &str, end_date: &str) -> f64;
+    async fn usage_total(
+        &self,
+        provider: &str,
+        selected_model_name: &str,
+        start_date: &str,
+        end_date: &str,
+    ) -> f64;
 
     /// Whether `SelectorFactory.setQuotaScheduler` was called with a scheduler.
     /// When `false`, the `quota` selector throws
     /// `QuotaScheduler not initialized in SelectorFactory. Call setQuotaScheduler first.`
-    fn quota_scheduler_ready(&self) -> bool { true }
+    fn quota_scheduler_ready(&self) -> bool {
+        true
+    }
 
     /// `QuotaScheduler.getLatestQuotaForProvider(provider)`: the latest
     /// non-stale, fresh `MeterCheckResult` JSON for the first quota checker
@@ -89,17 +101,25 @@ pub trait RoutingRuntime: Send + Sync {
 
     /// `StickySessionManager.getInstance()`: the process-wide sticky map,
     /// shared with the dispatcher that records successful targets.
-    fn sticky_sessions(&self) -> &StickySessionManager { StickySessionManager::global() }
+    fn sticky_sessions(&self) -> &StickySessionManager {
+        StickySessionManager::global()
+    }
 
     /// `BackgroundExplorer.getInstance()`: `None` until initialised.
-    fn background_explorer(&self) -> Option<Arc<BackgroundExplorer>> { None }
+    fn background_explorer(&self) -> Option<Arc<BackgroundExplorer>> {
+        None
+    }
 
     /// `buildQuotaExceededError(blocking, retryHistory)`: the default builds
     /// the message and `routingContext.{statusCode: 429, code:
     /// 'quota_exceeded'}`; Trefoil should additionally carry
     /// `body = route_candidates::build_quota_exceeded_body(blocking)` and,
     /// when non-empty, `retryHistory = JSON.stringify(retry_history)`.
-    fn build_quota_exceeded_error(&self, blocking: &[Value], _retry_history: &[Value]) -> EngineError {
+    fn build_quota_exceeded_error(
+        &self,
+        blocking: &[Value],
+        _retry_history: &[Value],
+    ) -> EngineError {
         super::route_candidates::default_quota_exceeded_error(blocking)
     }
 }
@@ -132,33 +152,69 @@ pub mod mock {
     }
 
     impl MockRuntime {
-        pub fn new(root: Value) -> Self { Self { cfg: Arc::new(Config::new(root)), ..Default::default() } }
-        pub fn with_randoms(self, r: &[f64]) -> Self { *self.randoms.lock().unwrap() = r.iter().copied().collect(); self }
+        pub fn new(root: Value) -> Self {
+            Self {
+                cfg: Arc::new(Config::new(root)),
+                ..Default::default()
+            }
+        }
+        pub fn with_randoms(self, r: &[f64]) -> Self {
+            *self.randoms.lock().unwrap() = r.iter().copied().collect();
+            self
+        }
     }
 
     #[async_trait::async_trait]
     impl RoutingRuntime for MockRuntime {
-        fn config(&self) -> Arc<Config> { self.cfg.clone() }
-        fn random(&self) -> f64 { self.randoms.lock().unwrap().pop_front().unwrap_or(0.0) }
-        fn now_ms(&self) -> i64 { self.now.unwrap_or_else(crate::engine::js::now_ms) }
-        async fn is_provider_healthy(&self, provider: &str, model: &str) -> bool {
-            !self.unhealthy.contains(&format!("{provider}/{model}")) && !self.unhealthy.contains(&format!("{provider}/"))
+        fn config(&self) -> Arc<Config> {
+            self.cfg.clone()
         }
-        fn provider_concurrency(&self, provider: &str) -> f64 { self.provider_counts.get(provider).copied().unwrap_or(0.0) }
-        fn target_concurrency(&self, provider: &str, model: &str) -> f64 { self.target_counts.get(&format!("{provider}/{model}")).copied().unwrap_or(0.0) }
-        fn usage_storage_ready(&self) -> bool { !self.no_usage_storage }
+        fn random(&self) -> f64 {
+            self.randoms.lock().unwrap().pop_front().unwrap_or(0.0)
+        }
+        fn now_ms(&self) -> i64 {
+            self.now.unwrap_or_else(crate::engine::js::now_ms)
+        }
+        async fn is_provider_healthy(&self, provider: &str, model: &str) -> bool {
+            !self.unhealthy.contains(&format!("{provider}/{model}"))
+                && !self.unhealthy.contains(&format!("{provider}/"))
+        }
+        fn provider_concurrency(&self, provider: &str) -> f64 {
+            self.provider_counts.get(provider).copied().unwrap_or(0.0)
+        }
+        fn target_concurrency(&self, provider: &str, model: &str) -> f64 {
+            self.target_counts
+                .get(&format!("{provider}/{model}"))
+                .copied()
+                .unwrap_or(0.0)
+        }
+        fn usage_storage_ready(&self) -> bool {
+            !self.no_usage_storage
+        }
         async fn provider_performance(&self, provider: &str, model: &str) -> Vec<Value> {
-            self.performance.get(&format!("{provider}/{model}")).cloned().unwrap_or_default()
+            self.performance
+                .get(&format!("{provider}/{model}"))
+                .cloned()
+                .unwrap_or_default()
         }
         async fn usage_total(&self, provider: &str, model: &str, _s: &str, _e: &str) -> f64 {
-            self.usage.get(&format!("{provider}/{model}")).copied().unwrap_or(0.0)
+            self.usage
+                .get(&format!("{provider}/{model}"))
+                .copied()
+                .unwrap_or(0.0)
         }
         async fn latest_quota_for_provider(&self, provider: &str) -> Option<Value> {
             self.quota_calls.lock().unwrap().push(provider.to_owned());
             self.quotas.get(provider).cloned()
         }
-        fn openrouter_pricing(&self, slug: &str) -> Option<Value> { self.pricing.get(slug).cloned() }
-        fn sticky_sessions(&self) -> &StickySessionManager { &self.sticky }
-        fn background_explorer(&self) -> Option<Arc<BackgroundExplorer>> { self.explorer.clone() }
+        fn openrouter_pricing(&self, slug: &str) -> Option<Value> {
+            self.pricing.get(slug).cloned()
+        }
+        fn sticky_sessions(&self) -> &StickySessionManager {
+            &self.sticky
+        }
+        fn background_explorer(&self) -> Option<Arc<BackgroundExplorer>> {
+            self.explorer.clone()
+        }
     }
 }

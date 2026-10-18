@@ -9,25 +9,53 @@
 use crate::state::{AppState, CooldownEntry};
 use serde_json::Value;
 
-const DEADLINE_EXPIRED_PATTERNS: [&str; 3] = ["deadline expired", "deadline_exceeded", "deadline exceeded"];
+const DEADLINE_EXPIRED_PATTERNS: [&str; 3] =
+    ["deadline expired", "deadline_exceeded", "deadline exceeded"];
 
-fn now_ms() -> i64 { chrono::Utc::now().timestamp_millis() }
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
 
 fn provider_view(state: &AppState, provider: &str) -> Option<Value> {
-    state.inner.providers.read().unwrap().get(provider).map(|p| p.public_view())
+    state
+        .inner
+        .providers
+        .read()
+        .unwrap()
+        .get(provider)
+        .map(|p| p.public_view())
 }
 
 fn cooldown_disabled(state: &AppState, provider: &str) -> bool {
-    provider_view(state, provider).is_some_and(|p| p.get("disable_cooldown") == Some(&Value::Bool(true)))
+    provider_view(state, provider)
+        .is_some_and(|p| p.get("disable_cooldown") == Some(&Value::Bool(true)))
 }
 
 fn stall_cooldown_enabled(state: &AppState, provider: &str) -> bool {
-    if provider_view(state, provider).is_some_and(|p| p.get("stall_cooldown") == Some(&Value::Bool(true))) { return true; }
-    state.inner.settings.read().unwrap().get("stall.stallCooldown").and_then(Value::as_bool).unwrap_or(false)
+    if provider_view(state, provider)
+        .is_some_and(|p| p.get("stall_cooldown") == Some(&Value::Bool(true)))
+    {
+        return true;
+    }
+    state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get("stall.stallCooldown")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn setting_f64(state: &AppState, key: &str, default: f64) -> f64 {
-    state.inner.settings.read().unwrap().get(key).and_then(Value::as_f64).unwrap_or(default)
+    state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get(key)
+        .and_then(Value::as_f64)
+        .unwrap_or(default)
 }
 
 /// `calculateCooldownDuration(consecutiveFailures)`.
@@ -38,15 +66,34 @@ pub fn duration_ms(state: &AppState, consecutive_failures: u32) -> i64 {
 }
 
 /// `markProviderFailure(provider, model, durationMs?, lastError?)`.
-pub async fn mark_failure(state: &AppState, provider: &str, model: &str, duration: Option<i64>, last_error: Option<String>) {
-    if cooldown_disabled(state, provider) { return; }
-    if last_error.as_ref().is_some_and(|e| { let l = e.to_lowercase(); DEADLINE_EXPIRED_PATTERNS.iter().any(|p| l.contains(p)) }) { return; }
+pub async fn mark_failure(
+    state: &AppState,
+    provider: &str,
+    model: &str,
+    duration: Option<i64>,
+    last_error: Option<String>,
+) {
+    if cooldown_disabled(state, provider) {
+        return;
+    }
+    if last_error.as_ref().is_some_and(|e| {
+        let l = e.to_lowercase();
+        DEADLINE_EXPIRED_PATTERNS.iter().any(|p| l.contains(p))
+    }) {
+        return;
+    }
     let entry = {
         let mut map = state.inner.cooldowns.write().unwrap();
         let key = (provider.to_owned(), model.to_owned());
         let failures = map.get(&key).map(|e| e.consecutive_failures).unwrap_or(0) + 1;
-        let duration = duration.filter(|d| *d != 0).unwrap_or_else(|| duration_ms(state, failures - 1));
-        let entry = CooldownEntry { expiry_ms: now_ms() + duration, consecutive_failures: failures, last_error };
+        let duration = duration
+            .filter(|d| *d != 0)
+            .unwrap_or_else(|| duration_ms(state, failures - 1));
+        let entry = CooldownEntry {
+            expiry_ms: now_ms() + duration,
+            consecutive_failures: failures,
+            last_error,
+        };
         map.insert(key, entry.clone());
         entry
     };
@@ -58,15 +105,29 @@ pub async fn mark_failure(state: &AppState, provider: &str, model: &str, duratio
 }
 
 /// `markProviderStallFailure`.
-pub async fn mark_stall_failure(state: &AppState, provider: &str, model: &str, last_error: Option<String>) {
-    if !stall_cooldown_enabled(state, provider) { return; }
+pub async fn mark_stall_failure(
+    state: &AppState,
+    provider: &str,
+    model: &str,
+    last_error: Option<String>,
+) {
+    if !stall_cooldown_enabled(state, provider) {
+        return;
+    }
     mark_failure(state, provider, model, None, last_error).await;
 }
 
 /// `markProviderSuccess`.
 pub async fn mark_success(state: &AppState, provider: &str, model: &str) {
-    let removed = state.inner.cooldowns.write().unwrap().remove(&(provider.to_owned(), model.to_owned()));
-    if removed.is_none() { return; }
+    let removed = state
+        .inner
+        .cooldowns
+        .write()
+        .unwrap()
+        .remove(&(provider.to_owned(), model.to_owned()));
+    if removed.is_none() {
+        return;
+    }
     if let Some(pool) = &state.inner.database {
         let _ = crate::database::delete_cooldown(pool, provider, model).await;
     }
@@ -74,18 +135,35 @@ pub async fn mark_success(state: &AppState, provider: &str, model: &str) {
 
 /// `isProviderHealthy` (provider-wide entry checked first).
 pub async fn is_healthy(state: &AppState, provider: &str, model: &str) -> bool {
-    if !model.is_empty() && !Box::pin(is_healthy(state, provider, "")).await { return false; }
+    if !model.is_empty() && !Box::pin(is_healthy(state, provider, "")).await {
+        return false;
+    }
     let key = (provider.to_owned(), model.to_owned());
     let expired = {
         let mut map = state.inner.cooldowns.write().unwrap();
-        let Some(entry) = map.get(&key).cloned() else { return true };
-        if entry.expiry_ms == 0 { return true; }
-        if now_ms() <= entry.expiry_ms { return false; }
-        map.insert(key.clone(), CooldownEntry { expiry_ms: 0, consecutive_failures: entry.consecutive_failures, last_error: None });
+        let Some(entry) = map.get(&key).cloned() else {
+            return true;
+        };
+        if entry.expiry_ms == 0 {
+            return true;
+        }
+        if now_ms() <= entry.expiry_ms {
+            return false;
+        }
+        map.insert(
+            key.clone(),
+            CooldownEntry {
+                expiry_ms: 0,
+                consecutive_failures: entry.consecutive_failures,
+                last_error: None,
+            },
+        );
         true
     };
     if expired {
-        if let Some(pool) = &state.inner.database { let _ = crate::database::delete_cooldown(pool, provider, model).await; }
+        if let Some(pool) = &state.inner.database {
+            let _ = crate::database::delete_cooldown(pool, provider, model).await;
+        }
     }
     true
 }

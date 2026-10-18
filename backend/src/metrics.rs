@@ -106,7 +106,9 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let now_ms = chrono::Utc::now().timestamp_millis();
     let owner = std::sync::Arc::as_ptr(&state.inner) as usize;
     if let Some((cached_owner, expires, body)) = metrics_cache().lock().unwrap().clone() {
-        if cached_owner == owner && now_ms < expires { return exposition_response(body, "HIT"); }
+        if cached_owner == owner && now_ms < expires {
+            return exposition_response(body, "HIT");
+        }
     }
 
     let mut body = String::new();
@@ -247,7 +249,11 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
     }
     body.push('\n');
     let rendered = render_exposition(&body);
-    *metrics_cache().lock().unwrap() = Some((owner, chrono::Utc::now().timestamp_millis() + metrics_cache_ttl_ms(), rendered.clone()));
+    *metrics_cache().lock().unwrap() = Some((
+        owner,
+        chrono::Utc::now().timestamp_millis() + metrics_cache_ttl_ms(),
+        rendered.clone(),
+    ));
     exposition_response(rendered, "MISS")
 }
 
@@ -259,15 +265,25 @@ fn metrics_cache() -> &'static MetricsCache {
 }
 
 fn metrics_cache_ttl_ms() -> i64 {
-    std::env::var("PLEXUS_METRICS_CACHE_TTL_MS").ok().and_then(|v| crate::usage::parse_int(&v)).filter(|n| *n > 0).unwrap_or(15_000)
+    std::env::var("PLEXUS_METRICS_CACHE_TTL_MS")
+        .ok()
+        .and_then(|v| crate::usage::parse_int(&v))
+        .filter(|n| *n > 0)
+        .unwrap_or(15_000)
 }
 
 fn exposition_response(body: String, cache: &'static str) -> Response {
     (
         StatusCode::OK,
         [
-            (axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8"),
-            (axum::http::HeaderName::from_static("x-metrics-cache"), cache),
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            ),
+            (
+                axum::http::HeaderName::from_static("x-metrics-cache"),
+                cache,
+            ),
         ],
         body,
     )
@@ -278,15 +294,40 @@ fn exposition_response(body: String, cache: &'static str) -> Response {
 /// merged per (provider, model) label pair with sample-weighted averages.
 async fn performance_metrics(state: &AppState) -> String {
     let mut body = String::new();
-    let Some(storage) = crate::usage::usage_storage(state) else { return body };
-    struct Perf { provider: String, model: String, avg_ttft: f64, min_ttft: f64, max_ttft: f64, avg_tps: f64, min_tps: f64, max_tps: f64, samples: f64, successes: f64, failures: f64 }
+    let Some(storage) = crate::usage::usage_storage(state) else {
+        return body;
+    };
+    struct Perf {
+        provider: String,
+        model: String,
+        avg_ttft: f64,
+        min_ttft: f64,
+        max_ttft: f64,
+        avg_tps: f64,
+        min_tps: f64,
+        max_tps: f64,
+        samples: f64,
+        successes: f64,
+        failures: f64,
+    }
     let mut rows: Vec<Perf> = Vec::new();
     for r in storage.get_provider_performance(None, None).await {
         let provider = r.provider.clone().unwrap_or_else(|| "unknown".into());
-        let model = if r.model.is_empty() { "unknown".to_string() } else { r.model.clone() };
-        if let Some(e) = rows.iter_mut().find(|e| e.provider == provider && e.model == model) {
+        let model = if r.model.is_empty() {
+            "unknown".to_string()
+        } else {
+            r.model.clone()
+        };
+        if let Some(e) = rows
+            .iter_mut()
+            .find(|e| e.provider == provider && e.model == model)
+        {
             let total = e.samples + r.sample_count;
-            let (w1, w2) = if total > 0.0 { (e.samples / total, r.sample_count / total) } else { (0.5, 0.5) };
+            let (w1, w2) = if total > 0.0 {
+                (e.samples / total, r.sample_count / total)
+            } else {
+                (0.5, 0.5)
+            };
             e.avg_ttft = e.avg_ttft * w1 + r.avg_ttft_ms * w2;
             e.min_ttft = e.min_ttft.min(r.min_ttft_ms);
             e.max_ttft = e.max_ttft.max(r.max_ttft_ms);
@@ -297,16 +338,37 @@ async fn performance_metrics(state: &AppState) -> String {
             e.successes += r.success_count;
             e.failures += r.failure_count;
         } else {
-            rows.push(Perf { provider, model, avg_ttft: r.avg_ttft_ms, min_ttft: r.min_ttft_ms, max_ttft: r.max_ttft_ms, avg_tps: r.avg_tokens_per_sec, min_tps: r.min_tokens_per_sec, max_tps: r.max_tokens_per_sec, samples: r.sample_count, successes: r.success_count, failures: r.failure_count });
+            rows.push(Perf {
+                provider,
+                model,
+                avg_ttft: r.avg_ttft_ms,
+                min_ttft: r.min_ttft_ms,
+                max_ttft: r.max_ttft_ms,
+                avg_tps: r.avg_tokens_per_sec,
+                min_tps: r.min_tokens_per_sec,
+                max_tps: r.max_tokens_per_sec,
+                samples: r.sample_count,
+                successes: r.success_count,
+                failures: r.failure_count,
+            });
         }
     }
     for (name, help) in [
         ("plexus_perf_avg_ttft_ms", "Average time to first token."),
         ("plexus_perf_min_ttft_ms", "Minimum time to first token."),
         ("plexus_perf_max_ttft_ms", "Maximum time to first token."),
-        ("plexus_perf_avg_tokens_per_sec", "Average token throughput."),
-        ("plexus_perf_min_tokens_per_sec", "Minimum token throughput."),
-        ("plexus_perf_max_tokens_per_sec", "Maximum token throughput."),
+        (
+            "plexus_perf_avg_tokens_per_sec",
+            "Average token throughput.",
+        ),
+        (
+            "plexus_perf_min_tokens_per_sec",
+            "Minimum token throughput.",
+        ),
+        (
+            "plexus_perf_max_tokens_per_sec",
+            "Maximum token throughput.",
+        ),
         ("plexus_perf_sample_count", "Performance sample count."),
         ("plexus_perf_success_count", "Successful samples."),
         ("plexus_perf_failure_count", "Failed samples."),
@@ -314,13 +376,26 @@ async fn performance_metrics(state: &AppState) -> String {
         body.push_str(&block(name, "gauge", help));
     }
     for r in rows {
-        let labels = [("provider", r.provider.as_str()), ("model", r.model.as_str())];
+        let labels = [
+            ("provider", r.provider.as_str()),
+            ("model", r.model.as_str()),
+        ];
         for (name, value) in [
-            ("plexus_perf_avg_ttft_ms", r.avg_ttft), ("plexus_perf_min_ttft_ms", r.min_ttft), ("plexus_perf_max_ttft_ms", r.max_ttft),
-            ("plexus_perf_avg_tokens_per_sec", r.avg_tps), ("plexus_perf_min_tokens_per_sec", r.min_tps), ("plexus_perf_max_tokens_per_sec", r.max_tps),
-            ("plexus_perf_sample_count", r.samples), ("plexus_perf_success_count", r.successes), ("plexus_perf_failure_count", r.failures),
+            ("plexus_perf_avg_ttft_ms", r.avg_ttft),
+            ("plexus_perf_min_ttft_ms", r.min_ttft),
+            ("plexus_perf_max_ttft_ms", r.max_ttft),
+            ("plexus_perf_avg_tokens_per_sec", r.avg_tps),
+            ("plexus_perf_min_tokens_per_sec", r.min_tps),
+            ("plexus_perf_max_tokens_per_sec", r.max_tps),
+            ("plexus_perf_sample_count", r.samples),
+            ("plexus_perf_success_count", r.successes),
+            ("plexus_perf_failure_count", r.failures),
         ] {
-            body.push_str(&line(name, &labels, crate::engine::js::js_number_text(value)));
+            body.push_str(&line(
+                name,
+                &labels,
+                crate::engine::js::js_number_text(value),
+            ));
         }
     }
     body

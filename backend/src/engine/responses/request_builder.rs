@@ -30,11 +30,20 @@ pub const PASSTHROUGH_FIELDS: [&str; 14] = [
 pub fn project_reasoning_for_responses(reasoning: Option<&Value>) -> Option<Value> {
     let reasoning = reasoning.filter(|r| truthy(Some(r)))?;
     let effort = reasoning.get("effort");
-    if reasoning.get("enabled") == Some(&Value::Bool(false)) || matches!(effort.and_then(Value::as_str), Some("off") | Some("none")) {
+    if reasoning.get("enabled") == Some(&Value::Bool(false))
+        || matches!(effort.and_then(Value::as_str), Some("off") | Some("none"))
+    {
         return Some(json!({"effort": "none"}));
     }
-    let projected = obj(vec![("effort", effort.cloned()), ("summary", reasoning.get("summary").cloned())]);
-    if projected.as_object().is_some_and(|m| !m.is_empty()) { Some(projected) } else { None }
+    let projected = obj(vec![
+        ("effort", effort.cloned()),
+        ("summary", reasoning.get("summary").cloned()),
+    ]);
+    if projected.as_object().is_some_and(|m| !m.is_empty()) {
+        Some(projected)
+    } else {
+        None
+    }
 }
 
 /// JS `x.length > 0` for arrays and strings (other values have no length).
@@ -57,17 +66,28 @@ pub fn build_responses_request(request: &Value) -> EngineResult<Value> {
         match role {
             Some("system") => {}
             Some(r @ ("user" | "assistant")) => {
-                let text_type = if r == "user" { "input_text" } else { "output_text" };
+                let text_type = if r == "user" {
+                    "input_text"
+                } else {
+                    "output_text"
+                };
                 let mut content: Vec<Value> = Vec::new();
                 match msg.get("content") {
                     Some(Value::String(s)) => content.push(json!({"type": text_type, "text": s})),
                     Some(Value::Array(parts)) => {
                         for part in parts {
                             match prop(Some(part), "part.type")?.and_then(Value::as_str) {
-                                Some("text") => content.push(obj(vec![("type", Some(json!(text_type))), ("text", part.get("text").cloned())])),
+                                Some("text") => content.push(obj(vec![
+                                    ("type", Some(json!(text_type))),
+                                    ("text", part.get("text").cloned()),
+                                ])),
                                 Some("image_url") => {
                                     let url = prop(part.get("image_url"), "part.image_url.url")?;
-                                    content.push(obj(vec![("type", Some(json!("input_image"))), ("image_url", url.cloned()), ("detail", Some(json!("auto")))]));
+                                    content.push(obj(vec![
+                                        ("type", Some(json!("input_image"))),
+                                        ("image_url", url.cloned()),
+                                        ("detail", Some(json!("auto"))),
+                                    ]));
                                 }
                                 _ => {}
                             }
@@ -82,7 +102,11 @@ pub fn build_responses_request(request: &Value) -> EngineResult<Value> {
                     Some(Value::String(s)) => Some(Value::String(s.clone())),
                     other => stringify_opt(other).map(Value::String),
                 };
-                input_items.push(obj(vec![("type", Some(json!("function_call_output"))), ("call_id", msg.get("tool_call_id").cloned()), ("output", output)]));
+                input_items.push(obj(vec![
+                    ("type", Some(json!("function_call_output"))),
+                    ("call_id", msg.get("tool_call_id").cloned()),
+                    ("output", output),
+                ]));
             }
             _ => {}
         }
@@ -95,7 +119,10 @@ pub fn build_responses_request(request: &Value) -> EngineResult<Value> {
                     ("type", Some(json!("function_call"))),
                     ("call_id", call_id.cloned()),
                     ("name", prop(function, "tc.function.name")?.cloned()),
-                    ("arguments", function.and_then(|f| f.get("arguments")).cloned()),
+                    (
+                        "arguments",
+                        function.and_then(|f| f.get("arguments")).cloned(),
+                    ),
                 ]));
             }
         }
@@ -106,7 +133,9 @@ pub fn build_responses_request(request: &Value) -> EngineResult<Value> {
             "request.messages.find is not a function. (In 'request.messages.find((m) => m.role === \"system\")', 'request.messages.find' is undefined)",
         ));
     }
-    let system = messages.iter().find(|m| get_str(m, &["role"]) == Some("system"));
+    let system = messages
+        .iter()
+        .find(|m| get_str(m, &["role"]) == Some("system"));
     let instructions: Option<Value> = system.and_then(|s| match s.get("content") {
         Some(Value::String(c)) => Some(Value::String(c.clone())),
         other => stringify_opt(other).map(Value::String),
@@ -118,13 +147,22 @@ pub fn build_responses_request(request: &Value) -> EngineResult<Value> {
             tools
                 .iter()
                 .map(|tool| {
-                    if get_str(tool, &["type"]) != Some("function") || !truthy(tool.get("function")) { return tool.clone(); }
+                    if get_str(tool, &["type"]) != Some("function") || !truthy(tool.get("function"))
+                    {
+                        return tool.clone();
+                    }
                     let f = &tool["function"];
                     obj(vec![
                         ("type", Some(json!("function"))),
                         ("name", coalesce(f.get("name"), Some(&json!("")))),
-                        ("description", coalesce(f.get("description"), Some(&json!("")))),
-                        ("parameters", coalesce(f.get("parameters"), Some(&json!({})))),
+                        (
+                            "description",
+                            coalesce(f.get("description"), Some(&json!(""))),
+                        ),
+                        (
+                            "parameters",
+                            coalesce(f.get("parameters"), Some(&json!({}))),
+                        ),
                         ("strict", f.get("strict").cloned()),
                     ])
                 })
@@ -138,17 +176,45 @@ pub fn build_responses_request(request: &Value) -> EngineResult<Value> {
     payload.insert("input".into(), Value::Array(input_items));
     set_opt(&mut payload, "stream", request.get("stream").cloned());
 
-    if let Some(i) = instructions.filter(|i| truthy(Some(i))) { payload.insert("instructions".into(), i); }
-    if truthy(request.get("max_tokens")) { payload.insert("max_output_tokens".into(), request["max_tokens"].clone()); }
-    set_opt(&mut payload, "temperature", request.get("temperature").cloned());
-    if let Some(t) = tools.filter(|t| !t.is_empty()) { payload.insert("tools".into(), Value::Array(t)); }
-    if truthy(request.get("tool_choice")) { payload.insert("tool_choice".into(), request["tool_choice"].clone()); }
-    if truthy(request.get("reasoning")) {
-        if let Some(r) = project_reasoning_for_responses(request.get("reasoning")) { payload.insert("reasoning".into(), r); }
+    if let Some(i) = instructions.filter(|i| truthy(Some(i))) {
+        payload.insert("instructions".into(), i);
     }
-    if request.get("include").is_some_and(|i| truthy(Some(i)) && has_length(i)) { payload.insert("include".into(), request["include"].clone()); }
-    if truthy(request.get("prompt_cache_key")) { payload.insert("prompt_cache_key".into(), request["prompt_cache_key"].clone()); }
-    set_opt(&mut payload, "parallel_tool_calls", request.get("parallel_tool_calls").cloned());
+    if truthy(request.get("max_tokens")) {
+        payload.insert("max_output_tokens".into(), request["max_tokens"].clone());
+    }
+    set_opt(
+        &mut payload,
+        "temperature",
+        request.get("temperature").cloned(),
+    );
+    if let Some(t) = tools.filter(|t| !t.is_empty()) {
+        payload.insert("tools".into(), Value::Array(t));
+    }
+    if truthy(request.get("tool_choice")) {
+        payload.insert("tool_choice".into(), request["tool_choice"].clone());
+    }
+    if truthy(request.get("reasoning")) {
+        if let Some(r) = project_reasoning_for_responses(request.get("reasoning")) {
+            payload.insert("reasoning".into(), r);
+        }
+    }
+    if request
+        .get("include")
+        .is_some_and(|i| truthy(Some(i)) && has_length(i))
+    {
+        payload.insert("include".into(), request["include"].clone());
+    }
+    if truthy(request.get("prompt_cache_key")) {
+        payload.insert(
+            "prompt_cache_key".into(),
+            request["prompt_cache_key"].clone(),
+        );
+    }
+    set_opt(
+        &mut payload,
+        "parallel_tool_calls",
+        request.get("parallel_tool_calls").cloned(),
+    );
     if truthy(request.get("text")) {
         payload.insert("text".into(), request["text"].clone());
     } else if let Some(rf) = request.get("response_format").filter(|r| truthy(Some(r))) {
@@ -164,7 +230,10 @@ pub fn build_responses_request(request: &Value) -> EngineResult<Value> {
                 ("schema", rf.get("json_schema").cloned()),
             ])}));
         } else {
-            payload.insert("text".into(), json!({"format": obj(vec![("type", rf.get("type").cloned())])}));
+            payload.insert(
+                "text".into(),
+                json!({"format": obj(vec![("type", rf.get("type").cloned())])}),
+            );
         }
     }
 
@@ -178,7 +247,9 @@ pub fn build_responses_request(request: &Value) -> EngineResult<Value> {
         let original = &request["originalBody"];
         for field in PASSTHROUGH_FIELDS {
             if let Some(v) = original.get(field) {
-                if !payload.contains_key(field) { payload.insert(field.into(), v.clone()); }
+                if !payload.contains_key(field) {
+                    payload.insert(field.into(), v.clone());
+                }
             }
         }
     }

@@ -7,8 +7,9 @@
 //! polls OpenAI's device-auth endpoints. Refresh stays with the generic
 //! transport (`oauth_transport`).
 use crate::oauth_login::{
-    callback_host, generate_pkce, js_stringify, now_ms, poll_device_code_flow, random_bytes, status_text, wait_for_callback_or_manual_input, AuthEvent, AuthPrompt, CallbackOrManual, DevicePoll,
-    Interaction, OAuthCallbackServer, OAuthCredentials, OAuthSelectOption,
+    callback_host, generate_pkce, js_stringify, now_ms, poll_device_code_flow, random_bytes,
+    status_text, wait_for_callback_or_manual_input, AuthEvent, AuthPrompt, CallbackOrManual,
+    DevicePoll, Interaction, OAuthCallbackServer, OAuthCredentials, OAuthSelectOption,
 };
 use serde_json::Value;
 
@@ -27,7 +28,10 @@ pub struct Endpoints {
 
 impl Default for Endpoints {
     fn default() -> Self {
-        Self { auth_base: "https://auth.openai.com".into(), callback_port: 1455 }
+        Self {
+            auth_base: "https://auth.openai.com".into(),
+            callback_port: 1455,
+        }
     }
 }
 
@@ -59,7 +63,11 @@ fn atob(input: &str) -> Option<Vec<u8>> {
             s.truncate(s.len() - 1);
         }
     }
-    if s.len() % 4 == 1 || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/') {
+    if s.len() % 4 == 1
+        || !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/')
+    {
         return None;
     }
     base64::Engine::decode(&base64::engine::general_purpose::STANDARD_NO_PAD, s).ok()
@@ -72,43 +80,84 @@ pub fn jwt_account_id(token: &str) -> Option<String> {
         return None;
     }
     let payload: Value = serde_json::from_slice(&atob(parts[1])?).ok()?;
-    payload[JWT_CLAIM_PATH]["chatgpt_account_id"].as_str().filter(|v| !v.is_empty()).map(str::to_owned)
+    payload[JWT_CLAIM_PATH]["chatgpt_account_id"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
 }
 
-async fn read_token_response(response: reqwest::Response, operation: &str) -> Result<OAuthCredentials, String> {
+async fn read_token_response(
+    response: reqwest::Response,
+    operation: &str,
+) -> Result<OAuthCredentials, String> {
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("OpenAI Codex token {operation} failed ({}): {}", status.as_u16(), if text.is_empty() { status_text(status).to_string() } else { text }));
+        return Err(format!(
+            "OpenAI Codex token {operation} failed ({}): {}",
+            status.as_u16(),
+            if text.is_empty() {
+                status_text(status).to_string()
+            } else {
+                text
+            }
+        ));
     }
     let json: Value = response.json().await.map_err(|e| e.to_string())?;
     let access = json["access_token"].as_str().filter(|v| !v.is_empty());
     let refresh = json["refresh_token"].as_str().filter(|v| !v.is_empty());
-    let (Some(access), Some(refresh), Some(expires_in)) = (access, refresh, json["expires_in"].as_f64()) else {
-        return Err(format!("OpenAI Codex token {operation} response missing fields: {}", js_stringify(Some(&json))));
+    let (Some(access), Some(refresh), Some(expires_in)) =
+        (access, refresh, json["expires_in"].as_f64())
+    else {
+        return Err(format!(
+            "OpenAI Codex token {operation} response missing fields: {}",
+            js_stringify(Some(&json))
+        ));
     };
-    Ok(OAuthCredentials::new(access, refresh, now_ms() + (expires_in * 1000.0) as i64))
+    Ok(OAuthCredentials::new(
+        access,
+        refresh,
+        now_ms() + (expires_in * 1000.0) as i64,
+    ))
 }
 
 /// Exchange an authorization code and require the ChatGPT account claim.
-async fn exchange_for_credentials(endpoints: &Endpoints, code: &str, verifier: &str, redirect_uri: &str) -> Result<OAuthCredentials, String> {
+async fn exchange_for_credentials(
+    endpoints: &Endpoints,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+) -> Result<OAuthCredentials, String> {
     let response = reqwest::Client::new()
         .post(endpoints.token_url())
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(crate::oauth_login::search_params(&[("grant_type", "authorization_code"), ("client_id", CLIENT_ID), ("code", code), ("code_verifier", verifier), ("redirect_uri", redirect_uri)]))
+        .body(crate::oauth_login::search_params(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", CLIENT_ID),
+            ("code", code),
+            ("code_verifier", verifier),
+            ("redirect_uri", redirect_uri),
+        ]))
         .send()
         .await
         .map_err(|e| e.to_string())?;
     let mut credentials = read_token_response(response, "exchange").await?;
-    let account = jwt_account_id(&credentials.access).ok_or("Failed to extract accountId from token")?;
+    let account =
+        jwt_account_id(&credentials.access).ok_or("Failed to extract accountId from token")?;
     credentials.account_id = Some(account);
     Ok(credentials)
 }
 
-async fn login_device_code(interaction: &Interaction, endpoints: &Endpoints) -> Result<OAuthCredentials, String> {
+async fn login_device_code(
+    interaction: &Interaction,
+    endpoints: &Endpoints,
+) -> Result<OAuthCredentials, String> {
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{}/api/accounts/deviceauth/usercode", endpoints.auth_base))
+        .post(format!(
+            "{}/api/accounts/deviceauth/usercode",
+            endpoints.auth_base
+        ))
         .header("Content-Type", "application/json")
         .body(serde_json::json!({"client_id": CLIENT_ID}).to_string())
         .send()
@@ -120,56 +169,105 @@ async fn login_device_code(interaction: &Interaction, endpoints: &Endpoints) -> 
             return Err("OpenAI Codex device code login is not enabled for this server. Use browser login or verify the server URL.".into());
         }
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("OpenAI Codex device code request failed with status {}{}", status.as_u16(), if body.is_empty() { String::new() } else { format!(": {body}") }));
+        return Err(format!(
+            "OpenAI Codex device code request failed with status {}{}",
+            status.as_u16(),
+            if body.is_empty() {
+                String::new()
+            } else {
+                format!(": {body}")
+            }
+        ));
     }
     let json: Value = response.json().await.map_err(|e| e.to_string())?;
     let interval = match &json["interval"] {
         Value::String(s) => {
             let t = s.trim();
-            if t.is_empty() { Some(0.0) } else { t.parse::<f64>().ok() }
+            if t.is_empty() {
+                Some(0.0)
+            } else {
+                t.parse::<f64>().ok()
+            }
         }
         other => other.as_f64(),
     };
     let device_id = json["device_auth_id"].as_str().filter(|v| !v.is_empty());
     let user_code = json["user_code"].as_str().filter(|v| !v.is_empty());
-    let (Some(device_id), Some(user_code), Some(interval)) = (device_id, user_code, interval.filter(|v| v.is_finite() && *v >= 0.0)) else {
-        return Err(format!("Invalid OpenAI Codex device code response: {}", js_stringify(Some(&json))));
+    let (Some(device_id), Some(user_code), Some(interval)) = (
+        device_id,
+        user_code,
+        interval.filter(|v| v.is_finite() && *v >= 0.0),
+    ) else {
+        return Err(format!(
+            "Invalid OpenAI Codex device code response: {}",
+            js_stringify(Some(&json))
+        ));
     };
-    interaction.notify(AuthEvent::DeviceCode { user_code: user_code.into(), verification_uri: DEVICE_VERIFICATION_URI.into() });
+    interaction.notify(AuthEvent::DeviceCode {
+        user_code: user_code.into(),
+        verification_uri: DEVICE_VERIFICATION_URI.into(),
+    });
     let token_url = format!("{}/api/accounts/deviceauth/token", endpoints.auth_base);
-    let (code, verifier) = poll_device_code_flow(Some(interval), Some(DEVICE_CODE_TIMEOUT_SECONDS), false, || async {
-        let response = client
-            .post(&token_url)
-            .header("Content-Type", "application/json")
-            .body(serde_json::json!({"device_auth_id": device_id, "user_code": user_code}).to_string())
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        let status = response.status();
-        if status.is_success() {
-            let json: Value = response.json().await.map_err(|e| e.to_string())?;
-            let code = json["authorization_code"].as_str().filter(|v| !v.is_empty());
-            let verifier = json["code_verifier"].as_str().filter(|v| !v.is_empty());
-            return Ok(match (code, verifier) {
-                (Some(code), Some(verifier)) => DevicePoll::Complete((code.to_string(), verifier.to_string())),
-                _ => DevicePoll::Failed(format!("Invalid OpenAI Codex device auth token response: {}", js_stringify(Some(&json)))),
-            });
-        }
-        if matches!(status.as_u16(), 403 | 404) {
-            return Ok(DevicePoll::Pending);
-        }
-        let body = response.text().await.unwrap_or_default();
-        let error_code = serde_json::from_str::<Value>(&body).ok().and_then(|json| match &json["error"] {
-            Value::Object(map) => map.get("code").and_then(Value::as_str).map(str::to_owned),
-            Value::String(s) => Some(s.clone()),
-            _ => None,
-        });
-        Ok(match error_code.as_deref() {
-            Some("deviceauth_authorization_pending") => DevicePoll::Pending,
-            Some("slow_down") => DevicePoll::SlowDown(None),
-            _ => DevicePoll::Failed(format!("OpenAI Codex device auth failed with status {}{}", status.as_u16(), if body.is_empty() { String::new() } else { format!(": {body}") })),
-        })
-    })
+    let (code, verifier) = poll_device_code_flow(
+        Some(interval),
+        Some(DEVICE_CODE_TIMEOUT_SECONDS),
+        false,
+        || async {
+            let response = client
+                .post(&token_url)
+                .header("Content-Type", "application/json")
+                .body(
+                    serde_json::json!({"device_auth_id": device_id, "user_code": user_code})
+                        .to_string(),
+                )
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            let status = response.status();
+            if status.is_success() {
+                let json: Value = response.json().await.map_err(|e| e.to_string())?;
+                let code = json["authorization_code"]
+                    .as_str()
+                    .filter(|v| !v.is_empty());
+                let verifier = json["code_verifier"].as_str().filter(|v| !v.is_empty());
+                return Ok(match (code, verifier) {
+                    (Some(code), Some(verifier)) => {
+                        DevicePoll::Complete((code.to_string(), verifier.to_string()))
+                    }
+                    _ => DevicePoll::Failed(format!(
+                        "Invalid OpenAI Codex device auth token response: {}",
+                        js_stringify(Some(&json))
+                    )),
+                });
+            }
+            if matches!(status.as_u16(), 403 | 404) {
+                return Ok(DevicePoll::Pending);
+            }
+            let body = response.text().await.unwrap_or_default();
+            let error_code = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|json| match &json["error"] {
+                    Value::Object(map) => {
+                        map.get("code").and_then(Value::as_str).map(str::to_owned)
+                    }
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                });
+            Ok(match error_code.as_deref() {
+                Some("deviceauth_authorization_pending") => DevicePoll::Pending,
+                Some("slow_down") => DevicePoll::SlowDown(None),
+                _ => DevicePoll::Failed(format!(
+                    "OpenAI Codex device auth failed with status {}{}",
+                    status.as_u16(),
+                    if body.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {body}")
+                    }
+                )),
+            })
+        },
+    )
     .await?;
     exchange_for_credentials(endpoints, &code, &verifier, DEVICE_REDIRECT_URI).await
 }
@@ -193,11 +291,27 @@ fn create_authorization_flow(endpoints: &Endpoints) -> (String, String, String) 
     (verifier, state, url.to_string())
 }
 
-async fn login_browser(interaction: &Interaction, endpoints: &Endpoints) -> Result<OAuthCredentials, String> {
+async fn login_browser(
+    interaction: &Interaction,
+    endpoints: &Endpoints,
+) -> Result<OAuthCredentials, String> {
     let (verifier, state, url) = create_authorization_flow(endpoints);
     // Port 1455 is shared with the Codex CLI; when taken, only the paste works.
-    let callback = OAuthCallbackServer::start("OpenAI", &callback_host(), endpoints.callback_port, "/auth/callback", None, Some(state.clone()), None).await.ok();
-    interaction.notify(AuthEvent::AuthUrl { url, instructions: Some("A browser window should open. Complete login to finish.".into()) });
+    let callback = OAuthCallbackServer::start(
+        "OpenAI",
+        &callback_host(),
+        endpoints.callback_port,
+        "/auth/callback",
+        None,
+        Some(state.clone()),
+        None,
+    )
+    .await
+    .ok();
+    interaction.notify(AuthEvent::AuthUrl {
+        url,
+        instructions: Some("A browser window should open. Complete login to finish.".into()),
+    });
     let result = wait_for_callback_or_manual_input(
         interaction,
         callback.as_ref(),
@@ -218,17 +332,30 @@ async fn login_browser(interaction: &Interaction, endpoints: &Endpoints) -> Resu
             code
         }
     };
-    let code = code.filter(|c| !c.is_empty()).ok_or("Missing authorization code")?;
+    let code = code
+        .filter(|c| !c.is_empty())
+        .ok_or("Missing authorization code")?;
     exchange_for_credentials(endpoints, &code, &verifier, REDIRECT_URI).await
 }
 
-pub async fn login(interaction: Interaction, endpoints: Endpoints) -> Result<OAuthCredentials, String> {
+pub async fn login(
+    interaction: Interaction,
+    endpoints: Endpoints,
+) -> Result<OAuthCredentials, String> {
     let method = interaction
         .prompt(AuthPrompt::Select {
             message: "Select OpenAI Codex login method:".into(),
             options: vec![
-                OAuthSelectOption { id: "browser".into(), label: "Browser login (default)".into(), description: None },
-                OAuthSelectOption { id: "device_code".into(), label: "Device code login (headless)".into(), description: None },
+                OAuthSelectOption {
+                    id: "browser".into(),
+                    label: "Browser login (default)".into(),
+                    description: None,
+                },
+                OAuthSelectOption {
+                    id: "device_code".into(),
+                    label: "Device code login (headless)".into(),
+                    description: None,
+                },
             ],
         })
         .await?;
@@ -246,8 +373,14 @@ mod tests {
 
     #[test]
     fn account_claim_uses_atob_semantics() {
-        let payload = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, br#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct"}}"#);
-        assert_eq!(jwt_account_id(&format!("h.{payload}.s")).as_deref(), Some("acct"));
+        let payload = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            br#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct"}}"#,
+        );
+        assert_eq!(
+            jwt_account_id(&format!("h.{payload}.s")).as_deref(),
+            Some("acct")
+        );
         assert_eq!(jwt_account_id("not-a-jwt"), None);
         assert_eq!(jwt_account_id("a.b-_.c"), None);
     }
@@ -257,7 +390,21 @@ mod tests {
         let (_, state, url) = create_authorization_flow(&Endpoints::default());
         let parsed = url::Url::parse(&url).unwrap();
         let keys: Vec<String> = parsed.query_pairs().map(|(k, _)| k.into_owned()).collect();
-        assert_eq!(keys, ["response_type", "client_id", "redirect_uri", "scope", "code_challenge", "code_challenge_method", "state", "id_token_add_organizations", "codex_cli_simplified_flow", "originator"]);
+        assert_eq!(
+            keys,
+            [
+                "response_type",
+                "client_id",
+                "redirect_uri",
+                "scope",
+                "code_challenge",
+                "code_challenge_method",
+                "state",
+                "id_token_add_organizations",
+                "codex_cli_simplified_flow",
+                "originator"
+            ]
+        );
         assert_eq!(url_param(&parsed, "state").unwrap(), state);
         assert_eq!(state.len(), 32);
     }

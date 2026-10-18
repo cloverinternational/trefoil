@@ -163,7 +163,12 @@ fn key_schema() -> &'static crate::zod::Schema {
 fn normalize_key_config(mut value: Value) -> Value {
     if let Some(map) = value.as_object_mut() {
         if !map.contains_key("quotas") {
-            if let Some(quota) = map.get("quota").and_then(Value::as_str).filter(|q| !q.is_empty()).map(str::to_owned) {
+            if let Some(quota) = map
+                .get("quota")
+                .and_then(Value::as_str)
+                .filter(|q| !q.is_empty())
+                .map(str::to_owned)
+            {
                 map.insert("quotas".into(), serde_json::json!([quota]));
             }
         }
@@ -172,17 +177,32 @@ fn normalize_key_config(mut value: Value) -> Value {
 }
 
 fn validation_failed(details: Vec<Value>) -> Response {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Validation failed", "details": details}))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": "Validation failed", "details": details})),
+    )
+        .into_response()
 }
 
 /// `KeyRepository.saveKey` from a parsed config. Expiry is fixed at creation.
 fn key_from_parsed(parsed: &Value, existing: Option<&KeyConfig>) -> KeyConfig {
-    let list = |key: &str| parsed.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect::<Vec<_>>());
+    let list = |key: &str| {
+        parsed.get(key).and_then(Value::as_array).map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+    };
     let quotas = list("quotas");
     KeyConfig {
         secret: parsed["secret"].as_str().unwrap_or_default().to_owned(),
         permission_group: None,
-        comment: parsed.get("comment").and_then(Value::as_str).map(str::to_owned),
+        comment: parsed
+            .get("comment")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         quotas_defined: quotas.is_some(),
         quota_names: quotas.unwrap_or_default(),
         allowed_providers: list("allowedProviders").unwrap_or_default(),
@@ -193,20 +213,38 @@ fn key_from_parsed(parsed: &Value, existing: Option<&KeyConfig>) -> KeyConfig {
         allowed_ips: list("allowedIps").unwrap_or_default(),
         expires_at: match existing {
             Some(existing) => existing.expires_at,
-            None => parsed.get("expiresInMinutes").and_then(Value::as_i64).map(|minutes| now_ms() + minutes * 60_000),
+            None => parsed
+                .get("expiresInMinutes")
+                .and_then(Value::as_i64)
+                .map(|minutes| now_ms() + minutes * 60_000),
         },
         disabled_at: existing.and_then(|e| e.disabled_at),
-        default_service_tier: parsed.get("defaultServiceTier").and_then(Value::as_str).map(str::to_owned),
+        default_service_tier: parsed
+            .get("defaultServiceTier")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     }
 }
 
 async fn save_key(state: &AppState, name: &str, config: KeyConfig) -> Response {
     if let Some(pool) = &state.inner.database {
-        if crate::database::upsert_key(pool, name, &config).await.is_err() {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()).into_response();
+        if crate::database::upsert_key(pool, name, &config)
+            .await
+            .is_err()
+        {
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+            .into_response();
         }
     }
-    state.inner.keys.write().unwrap().insert(name.to_owned(), config);
+    state
+        .inner
+        .keys
+        .write()
+        .unwrap()
+        .insert(name.to_owned(), config);
     Json(serde_json::json!({ "success": true, "name": name })).into_response()
 }
 
@@ -220,17 +258,33 @@ async fn put_key(
         return e.into_response();
     }
     if name.contains('*') {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Key name cannot contain '*' (reserved for the shared-quota bucket)".to_string()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Key name cannot contain '*' (reserved for the shared-quota bucket)".to_string(),
+        )
+        .into_response();
     }
     if !raw.is_object() {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Object body is required".to_string()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Object body is required".to_string(),
+        )
+        .into_response();
     }
     let existing = state.inner.keys.read().unwrap().get(&name).cloned();
     if existing.is_some() && has_expiry_fields(&raw) {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Key expiry cannot be changed after creation".to_string()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Key expiry cannot be changed after creation".to_string(),
+        )
+        .into_response();
     }
     if raw.get("expiresAt").is_some() || raw.get("disabledAt").is_some() {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Expiry timestamps are managed by Plexus".to_string()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Expiry timestamps are managed by Plexus".to_string(),
+        )
+        .into_response();
     }
     let parsed = match key_schema().safe_parse(&raw) {
         Ok(parsed) => normalize_key_config(parsed),
@@ -249,17 +303,28 @@ async fn patch_key(
         return e.into_response();
     }
     if !raw.is_object() {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Object body is required".to_string()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Object body is required".to_string(),
+        )
+        .into_response();
     }
     if has_expiry_fields(&raw) {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Key expiry cannot be changed after creation".to_string()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Key expiry cannot be changed after creation".to_string(),
+        )
+        .into_response();
     }
     let Some(existing) = state.inner.keys.read().unwrap().get(&name).cloned() else {
-        return ApiError::Simple(StatusCode::NOT_FOUND, format!("API key '{name}' not found")).into_response();
+        return ApiError::Simple(StatusCode::NOT_FOUND, format!("API key '{name}' not found"))
+            .into_response();
     };
     let mut merged = serde_json::to_value(&existing).unwrap_or(Value::Null);
     if let (Some(map), Value::Object(body)) = (merged.as_object_mut(), normalize_key_config(raw)) {
-        for (key, value) in body { map.insert(key, value); }
+        for (key, value) in body {
+            map.insert(key, value);
+        }
     }
     let parsed = match key_schema().safe_parse(&merged) {
         Ok(parsed) => parsed,

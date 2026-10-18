@@ -20,7 +20,12 @@ pub enum UsageEventKind {
 
 impl UsageEventKind {
     pub fn as_str(self) -> &'static str {
-        match self { Self::Started => "started", Self::Updated => "updated", Self::Created => "created", Self::Completed => "completed" }
+        match self {
+            Self::Started => "started",
+            Self::Updated => "updated",
+            Self::Created => "created",
+            Self::Completed => "completed",
+        }
     }
 }
 
@@ -50,7 +55,10 @@ pub struct ErrorInfo {
 impl ErrorInfo {
     pub fn new(message: impl Into<String>) -> Self {
         let message = message.into();
-        Self { stack: Some(format!("Error: {message}")), message }
+        Self {
+            stack: Some(format!("Error: {message}")),
+            message,
+        }
     }
 }
 
@@ -74,7 +82,13 @@ pub trait UsageSink: Send + Sync {
     /// `saveRequest(record)`: full upsert of the `request_usage` row.
     async fn save_request(&self, record: &UsageRecord);
     /// `saveError(requestId, error, details, apiKey)`.
-    async fn save_error(&self, request_id: &str, error: &ErrorInfo, details: Option<&Value>, api_key: Option<&str>);
+    async fn save_error(
+        &self,
+        request_id: &str,
+        error: &ErrorInfo,
+        details: Option<&Value>,
+        api_key: Option<&str>,
+    );
     /// `updatePerformanceMetrics(...)`.
     async fn update_performance_metrics(&self, sample: &PerformanceSample);
     /// `registerInFlight(requestId, stallInspector, apiKey, isStreamed)`;
@@ -96,8 +110,17 @@ pub trait DebugHooks: Send + Sync {
     fn set_provider_for_request(&self, _request_id: &str, _provider: &str) {}
     /// `setModelAliasForRequest(requestId, alias, originalRequest, sanitizeHeaders(headers))`;
     /// headers are passed raw — sanitize in the implementation.
-    fn set_model_alias_for_request(&self, _request_id: &str, _alias: Option<&str>, _original_request: Option<&Value>, _headers: &[(String, String)]) {}
-    fn is_enabled(&self) -> bool { false }
+    fn set_model_alias_for_request(
+        &self,
+        _request_id: &str,
+        _alias: Option<&str>,
+        _original_request: Option<&Value>,
+        _headers: &[(String, String)],
+    ) {
+    }
+    fn is_enabled(&self) -> bool {
+        false
+    }
     fn set_enabled(&self, _enabled: bool) {}
     fn mark_ephemeral(&self, _request_id: &str) {}
     fn discard_ephemeral(&self, _request_id: &str) {}
@@ -107,11 +130,17 @@ pub trait DebugHooks: Send + Sync {
     /// True when `raw_end` runs the real `DebugLoggingInspector`
     /// reconstruction; the response handler then never substitutes its
     /// built-in observation for a missing snapshot.
-    fn reconstructs(&self) -> bool { false }
+    fn reconstructs(&self) -> bool {
+        false
+    }
     /// `getReconstructedRawResponse(requestId)` (`rawResponseSnapshot || null`).
-    fn reconstructed_raw_response(&self, _request_id: &str) -> Option<Value> { None }
+    fn reconstructed_raw_response(&self, _request_id: &str) -> Option<Value> {
+        None
+    }
     /// `getPendingLog(requestId)?.transformedResponseSnapshot`.
-    fn transformed_response_snapshot(&self, _request_id: &str) -> Option<Value> { None }
+    fn transformed_response_snapshot(&self, _request_id: &str) -> Option<Value> {
+        None
+    }
     /// Raw provider bytes (`DebugLoggingInspector(requestId, 'raw')` tap), keyed by provider api type.
     fn raw_chunk(&self, _request_id: &str, _provider_api_type: &str, _text: &str) {}
     /// Raw tap ended / `finalize()` (idempotent; called on normal end and on teardown).
@@ -140,7 +169,14 @@ pub struct QuotaUsage {
 impl QuotaUsage {
     pub fn from_record(r: &UsageRecord) -> Self {
         let n = |k: &str| r.f64(k);
-        Self { tokens_input: n("tokensInput"), tokens_output: n("tokensOutput"), tokens_cached: n("tokensCached"), tokens_cache_write: n("tokensCacheWrite"), tokens_reasoning: n("tokensReasoning"), cost_total: n("costTotal") }
+        Self {
+            tokens_input: n("tokensInput"),
+            tokens_output: n("tokensOutput"),
+            tokens_cached: n("tokensCached"),
+            tokens_cache_write: n("tokensCacheWrite"),
+            tokens_reasoning: n("tokensReasoning"),
+            cost_total: n("costTotal"),
+        }
     }
 }
 
@@ -148,10 +184,24 @@ impl QuotaUsage {
 #[async_trait::async_trait]
 pub trait QuotaHooks: Send + Sync {
     /// `buildQuotaHeaders(request.quotaContext, finalProvider || '', finalModel || '')`.
-    fn quota_headers(&self, _quota_context: &Value, _provider: &str, _model: &str) -> Vec<(String, String)> { Vec::new() }
+    fn quota_headers(
+        &self,
+        _quota_context: &Value,
+        _provider: &str,
+        _model: &str,
+    ) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// `recordQuotaUsage(keyName, finalProvider, finalModel, usage, quotaEnforcer)`
     /// → `quotaEnforcer.recordUsage(keyName, provider ?? '', model ?? '', usage)`; errors are swallowed.
-    async fn record_usage(&self, _key_name: &str, _provider: &str, _model: &str, _usage: &QuotaUsage) {}
+    async fn record_usage(
+        &self,
+        _key_name: &str,
+        _provider: &str,
+        _model: &str,
+        _usage: &QuotaUsage,
+    ) {
+    }
 }
 
 /// Provider/model cooldown seam (`CooldownManager.markProviderStallFailure`).
@@ -161,7 +211,10 @@ pub trait CooldownHooks: Send + Sync {
 
 /// `TransformerFactory.getTransformer(apiType)` for the provider side of a stream.
 pub trait TransformerRegistry: Send + Sync {
-    fn transformer(&self, api_type: &str) -> Option<Arc<dyn crate::engine::transformer::Transformer>>;
+    fn transformer(
+        &self,
+        api_type: &str,
+    ) -> Option<Arc<dyn crate::engine::transformer::Transformer>>;
 }
 
 /// Defect signalled by a raw-stream rewriter (Gemini `MALFORMED_FUNCTION_CALL`).

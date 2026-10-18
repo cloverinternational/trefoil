@@ -53,16 +53,38 @@ impl serde::Serialize for KeyConfig {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut out = serde_json::Map::new();
         out.insert("secret".into(), Value::String(self.secret.clone()));
-        if let Some(comment) = self.comment.as_ref().filter(|c| !c.is_empty()) { out.insert("comment".into(), Value::String(comment.clone())); }
-        if let Some(v) = self.expires_at { out.insert("expiresAt".into(), v.into()); }
-        if let Some(v) = self.disabled_at { out.insert("disabledAt".into(), v.into()); }
-        if self.quotas_defined || !self.quota_names.is_empty() { out.insert("quotas".into(), serde_json::json!(self.quota_names)); }
-        for (key, list) in [("allowedModels", &self.allowed_models), ("allowedProviders", &self.allowed_providers), ("excludedModels", &self.excluded_models), ("excludedProviders", &self.excluded_providers)] {
-            if !list.is_empty() { out.insert(key.into(), serde_json::json!(list)); }
+        if let Some(comment) = self.comment.as_ref().filter(|c| !c.is_empty()) {
+            out.insert("comment".into(), Value::String(comment.clone()));
         }
-        out.insert("allowRawPassthrough".into(), Value::Bool(self.allow_raw_passthrough));
-        if !self.allowed_ips.is_empty() { out.insert("allowedIps".into(), serde_json::json!(self.allowed_ips)); }
-        if let Some(tier) = &self.default_service_tier { out.insert("defaultServiceTier".into(), Value::String(tier.clone())); }
+        if let Some(v) = self.expires_at {
+            out.insert("expiresAt".into(), v.into());
+        }
+        if let Some(v) = self.disabled_at {
+            out.insert("disabledAt".into(), v.into());
+        }
+        if self.quotas_defined || !self.quota_names.is_empty() {
+            out.insert("quotas".into(), serde_json::json!(self.quota_names));
+        }
+        for (key, list) in [
+            ("allowedModels", &self.allowed_models),
+            ("allowedProviders", &self.allowed_providers),
+            ("excludedModels", &self.excluded_models),
+            ("excludedProviders", &self.excluded_providers),
+        ] {
+            if !list.is_empty() {
+                out.insert(key.into(), serde_json::json!(list));
+            }
+        }
+        out.insert(
+            "allowRawPassthrough".into(),
+            Value::Bool(self.allow_raw_passthrough),
+        );
+        if !self.allowed_ips.is_empty() {
+            out.insert("allowedIps".into(), serde_json::json!(self.allowed_ips));
+        }
+        if let Some(tier) = &self.default_service_tier {
+            out.insert("defaultServiceTier".into(), Value::String(tier.clone()));
+        }
         Value::Object(out).serialize(serializer)
     }
 }
@@ -176,10 +198,7 @@ pub struct ProviderConfig {
     pub raw_passthrough: Option<RawPassthroughConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_checker: Option<QuotaCheckerConfig>,
-    #[serde(
-        default,
-        rename = "retryPolicy"
-    )]
+    #[serde(default, rename = "retryPolicy")]
     pub retry_policy: RetryPolicy,
     /// Plexus repository view (`provider_view`); the served JSON shape.
     #[serde(skip)]
@@ -196,8 +215,6 @@ pub struct ProviderModel {
     pub upstream_id: Option<String>,
 }
 
-
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct QuotaCheckerConfig {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
@@ -206,7 +223,11 @@ pub struct QuotaCheckerConfig {
     pub id: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_quota_interval", rename = "intervalMinutes", alias = "interval")]
+    #[serde(
+        default = "default_quota_interval",
+        rename = "intervalMinutes",
+        alias = "interval"
+    )]
     pub interval: u64,
     #[serde(default)]
     pub options: Value,
@@ -235,7 +256,10 @@ impl Default for ModelAutosync {
 impl ProviderConfig {
     /// Resolve an endpoint override, retaining the legacy scalar fallback.
     pub fn api_url_for(&self, api_type: &str) -> &str {
-        self.api_base_urls.get(api_type).map(String::as_str).unwrap_or(&self.api_base_url)
+        self.api_base_urls
+            .get(api_type)
+            .map(String::as_str)
+            .unwrap_or(&self.api_base_url)
     }
 
     /// Mirrors `isOAuthProviderConfig`: `api_base_url` is an `oauth://`
@@ -276,7 +300,8 @@ pub struct AppStateInner {
     pub oauth_refresh_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub usage_events: Option<tokio::sync::broadcast::Sender<crate::usage::UsageEvent>>,
     /// Bounded recent logs, newest entries at the back.
-    pub recent_system_logs: std::sync::Mutex<std::collections::VecDeque<crate::system_logs::SystemLog>>,
+    pub recent_system_logs:
+        std::sync::Mutex<std::collections::VecDeque<crate::system_logs::SystemLog>>,
     /// Subscribers for the admin-only live system log stream.
     pub system_logs: Option<tokio::sync::broadcast::Sender<crate::system_logs::SystemLog>>,
     /// Production state is being migrated to PostgreSQL repository by
@@ -312,7 +337,9 @@ pub struct AppStateInner {
 pub struct EngineUsage(pub std::sync::OnceLock<Arc<crate::engine::observability::UsageStorage>>);
 
 impl std::fmt::Debug for EngineUsage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("EngineUsage") }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EngineUsage")
+    }
 }
 
 impl AppState {
@@ -396,16 +423,30 @@ pub struct QuotaDefinition {
     pub excluded_models: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shared: Option<bool>,
-    #[serde(rename = "warnAt", skip_serializing_if = "Option::is_none", serialize_with = "js_number_opt")]
+    #[serde(
+        rename = "warnAt",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_number_opt"
+    )]
     pub warn_at: Option<f64>,
 }
 
 /// Serialize like a JavaScript number: integral values without `.0`.
 pub fn js_number<S: serde::Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
-    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 { serializer.serialize_i64(*value as i64) } else { serializer.serialize_f64(*value) }
+    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
+        serializer.serialize_i64(*value as i64)
+    } else {
+        serializer.serialize_f64(*value)
+    }
 }
-pub fn js_number_opt<S: serde::Serializer>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error> {
-    match value { Some(v) => js_number(v, serializer), None => serializer.serialize_none() }
+pub fn js_number_opt<S: serde::Serializer>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(v) => js_number(v, serializer),
+        None => serializer.serialize_none(),
+    }
 }
 
 /// A single dispatch target within a `ModelTargetGroup`.

@@ -11,10 +11,12 @@ async fn main() {
         std::process::exit(1);
     });
     let encryption_warning = !trefoil_backend::secret_crypto::enabled();
-    database::encrypt_plaintext_secrets(&pool).await.unwrap_or_else(|error| {
-        eprintln!("failed to encrypt plaintext secrets: {error}");
-        std::process::exit(1);
-    });
+    database::encrypt_plaintext_secrets(&pool)
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("failed to encrypt plaintext secrets: {error}");
+            std::process::exit(1);
+        });
     let keys = database::load_keys(&pool).await.unwrap_or_else(|error| {
         eprintln!("failed to load API keys from PostgreSQL: {error}");
         std::process::exit(1);
@@ -64,14 +66,40 @@ async fn main() {
         use trefoil_backend::engine::observability::estimate;
         match estimate::O200k::load() {
             Some(enc) => estimate::set_tokenizer(Some(std::sync::Arc::new(enc))),
-            None => trefoil_backend::system_logs::event(&state, "warn", "o200k_base encoder failed to load; falling back to heuristic", [("module".to_owned(), serde_json::json!("estimate-tokens"))]),
+            None => trefoil_backend::system_logs::event(
+                &state,
+                "warn",
+                "o200k_base encoder failed to load; falling back to heuristic",
+                [("module".to_owned(), serde_json::json!("estimate-tokens"))],
+            ),
         }
     }
     trefoil_backend::custom_checkers::start_poller(state.clone());
     // Startup order mirrors pinned Plexus index.ts: restore capture-on-error,
     // schedule metadata, then the CLI version services.
-    let capture = state.inner.settings.read().unwrap().get("debug.captureOnError").and_then(|v| v.as_bool()).unwrap_or(false);
-    trefoil_backend::system_logs::event(&state, "warn", format!("Debug capture-on-error {}", if capture { "enabled" } else { "disabled" }), [("module".into(), serde_json::json!("debug-manager")), ("functionName".into(), serde_json::json!("setCaptureOnError"))]);
+    let capture = state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get("debug.captureOnError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    trefoil_backend::system_logs::event(
+        &state,
+        "warn",
+        format!(
+            "Debug capture-on-error {}",
+            if capture { "enabled" } else { "disabled" }
+        ),
+        [
+            ("module".into(), serde_json::json!("debug-manager")),
+            (
+                "functionName".into(),
+                serde_json::json!("setCaptureOnError"),
+            ),
+        ],
+    );
     let _metadata_refresh = trefoil_backend::metadata::start_scheduler(state.clone());
     trefoil_backend::cli_versions::start(state.clone());
 
@@ -82,8 +110,16 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .expect("failed to bind configured port");
-    trefoil_backend::system_logs::event(&state, "info", format!("Server listening on http://localhost:{port}"), [("module".into(), serde_json::json!("src"))]);
-    axum::serve(listener, app(state).into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .await
-        .expect("server error");
+    trefoil_backend::system_logs::event(
+        &state,
+        "info",
+        format!("Server listening on http://localhost:{port}"),
+        [("module".into(), serde_json::json!("src"))],
+    );
+    axum::serve(
+        listener,
+        app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }

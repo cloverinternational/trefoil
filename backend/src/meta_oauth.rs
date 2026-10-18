@@ -5,7 +5,10 @@
 //! key. The identity token is stored as `refresh` and the minted key as
 //! `access`, so the refresh scheduler re-mints the key. A 401/403 from mint
 //! means the identity session is dead and the user must sign in again.
-use crate::oauth_login::{js_stringify, now_ms, poll_device_code_flow, search_params, AuthEvent, DevicePoll, Interaction, OAuthCredentials};
+use crate::oauth_login::{
+    js_stringify, now_ms, poll_device_code_flow, search_params, AuthEvent, DevicePoll, Interaction,
+    OAuthCredentials,
+};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -31,12 +34,20 @@ impl Default for Endpoints {
 }
 
 async fn read_json(response: reqwest::Response) -> Option<Value> {
-    response.json::<Value>().await.ok().filter(|v| v.is_object() || v.is_array())
+    response
+        .json::<Value>()
+        .await
+        .ok()
+        .filter(|v| v.is_object() || v.is_array())
 }
 
 fn error_detail(json: Option<&Value>) -> String {
     for key in ["error_description", "detail", "message", "error"] {
-        if let Some(value) = json.and_then(|j| j[key].as_str()).map(str::trim).filter(|v| !v.is_empty()) {
+        if let Some(value) = json
+            .and_then(|j| j[key].as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             return format!(": {value}");
         }
     }
@@ -60,7 +71,10 @@ struct Device {
     expires_in: Option<f64>,
 }
 
-async fn start_device_authorization(client: &reqwest::Client, endpoints: &Endpoints) -> Result<Device, String> {
+async fn start_device_authorization(
+    client: &reqwest::Client,
+    endpoints: &Endpoints,
+) -> Result<Device, String> {
     let response = client
         .post(&endpoints.device_authorization_url)
         .header("Content-Type", "application/x-www-form-urlencoded")
@@ -73,24 +87,53 @@ async fn start_device_authorization(client: &reqwest::Client, endpoints: &Endpoi
     let status = response.status();
     let json = read_json(response).await;
     if !status.is_success() {
-        return Err(format!("Meta device authorization failed with status {}{}", status.as_u16(), error_detail(json.as_ref())));
+        return Err(format!(
+            "Meta device authorization failed with status {}{}",
+            status.as_u16(),
+            error_detail(json.as_ref())
+        ));
     }
     let value = json.clone().unwrap_or(Value::Null);
-    let field = |key: &str| value[key].as_str().filter(|v| !v.is_empty()).map(str::to_owned);
-    let uri = trusted_http_url(&value["verification_uri_complete"]).or_else(|| trusted_http_url(&value["verification_uri"]));
-    let (Some(device_code), Some(user_code), Some(verification_uri)) = (field("device_code"), field("user_code"), uri) else {
-        return Err(format!("Invalid Meta device authorization response: {}", js_stringify(json.as_ref())));
+    let field = |key: &str| {
+        value[key]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
     };
-    Ok(Device { device_code, user_code, verification_uri, interval: positive(&value["interval"]), expires_in: positive(&value["expires_in"]) })
+    let uri = trusted_http_url(&value["verification_uri_complete"])
+        .or_else(|| trusted_http_url(&value["verification_uri"]));
+    let (Some(device_code), Some(user_code), Some(verification_uri)) =
+        (field("device_code"), field("user_code"), uri)
+    else {
+        return Err(format!(
+            "Invalid Meta device authorization response: {}",
+            js_stringify(json.as_ref())
+        ));
+    };
+    Ok(Device {
+        device_code,
+        user_code,
+        verification_uri,
+        interval: positive(&value["interval"]),
+        expires_in: positive(&value["expires_in"]),
+    })
 }
 
-async fn poll_for_identity_token(client: &reqwest::Client, endpoints: &Endpoints, device: &Device) -> Result<String, String> {
+async fn poll_for_identity_token(
+    client: &reqwest::Client,
+    endpoints: &Endpoints,
+    device: &Device,
+) -> Result<String, String> {
     poll_device_code_flow(device.interval, device.expires_in, true, || async {
         let response = client
             .post(&endpoints.device_token_url)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("Accept", "application/json")
-            .body(search_params(&[("grant_type", "urn:ietf:params:oauth:grant-type:device_code"), ("device_code", &device.device_code), ("client_id", CLIENT_ID)]))
+            .body(search_params(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", &device.device_code),
+                ("client_id", CLIENT_ID),
+            ]))
             .timeout(REQUEST_TIMEOUT)
             .send()
             .await
@@ -98,16 +141,28 @@ async fn poll_for_identity_token(client: &reqwest::Client, endpoints: &Endpoints
         let status = response.status();
         let json = read_json(response).await;
         if status.is_success() {
-            if let Some(token) = json.as_ref().and_then(|j| j["access_token"].as_str()).filter(|v| !v.is_empty()) {
+            if let Some(token) = json
+                .as_ref()
+                .and_then(|j| j["access_token"].as_str())
+                .filter(|v| !v.is_empty())
+            {
                 return Ok(DevicePoll::Complete(token.to_string()));
             }
         }
         Ok(match json.as_ref().and_then(|j| j["error"].as_str()) {
             Some("authorization_pending") => DevicePoll::Pending,
-            Some("slow_down") => DevicePoll::SlowDown(json.as_ref().and_then(|j| positive(&j["interval"]))),
+            Some("slow_down") => {
+                DevicePoll::SlowDown(json.as_ref().and_then(|j| positive(&j["interval"])))
+            }
             Some("access_denied") => DevicePoll::Failed("Meta login was denied.".into()),
-            Some("expired_token") => DevicePoll::Failed("Meta device authorization expired. Please restart login.".into()),
-            _ => DevicePoll::Failed(format!("Meta device token request failed with status {}{}", status.as_u16(), error_detail(json.as_ref()))),
+            Some("expired_token") => DevicePoll::Failed(
+                "Meta device authorization expired. Please restart login.".into(),
+            ),
+            _ => DevicePoll::Failed(format!(
+                "Meta device token request failed with status {}{}",
+                status.as_u16(),
+                error_detail(json.as_ref())
+            )),
         })
     })
     .await
@@ -128,10 +183,16 @@ async fn mint_api_key(url: &str, identity: &str) -> Result<OAuthCredentials, Str
     let status = response.status().as_u16();
     let json = read_json(response).await;
     if status == 401 || status == 403 {
-        return Err(format!("Meta session expired (status {status}). Run `/login meta` to sign in again.{}", error_detail(json.as_ref())));
+        return Err(format!(
+            "Meta session expired (status {status}). Run `/login meta` to sign in again.{}",
+            error_detail(json.as_ref())
+        ));
     }
     if !(200..300).contains(&status) {
-        return Err(format!("Meta API key mint failed with status {status}{}", error_detail(json.as_ref())));
+        return Err(format!(
+            "Meta API key mint failed with status {status}{}",
+            error_detail(json.as_ref())
+        ));
     }
     let value = json.unwrap_or(Value::Null);
     let Some(key) = value["api_key"].as_str().filter(|v| !v.is_empty()) else {
@@ -140,20 +201,38 @@ async fn mint_api_key(url: &str, identity: &str) -> Result<OAuthCredentials, Str
             None => "Meta did not issue an API key.".into(),
         });
     };
-    Ok(OAuthCredentials::new(key, identity, now_ms() + API_KEY_LIFETIME_MS))
+    Ok(OAuthCredentials::new(
+        key,
+        identity,
+        now_ms() + API_KEY_LIFETIME_MS,
+    ))
 }
 
-pub async fn login(interaction: Interaction, endpoints: Endpoints) -> Result<OAuthCredentials, String> {
+pub async fn login(
+    interaction: Interaction,
+    endpoints: Endpoints,
+) -> Result<OAuthCredentials, String> {
     let client = reqwest::Client::new();
     let result = async {
         let device = start_device_authorization(&client, &endpoints).await?;
-        interaction.notify(AuthEvent::DeviceCode { user_code: device.user_code.clone(), verification_uri: device.verification_uri.clone() });
+        interaction.notify(AuthEvent::DeviceCode {
+            user_code: device.user_code.clone(),
+            verification_uri: device.verification_uri.clone(),
+        });
         let identity = poll_for_identity_token(&client, &endpoints, &device).await?;
-        interaction.notify(AuthEvent::Progress("Enabling Meta Model API access...".into()));
+        interaction.notify(AuthEvent::Progress(
+            "Enabling Meta Model API access...".into(),
+        ));
         mint_api_key(&endpoints.api_key_mint_url, &identity).await
     }
     .await;
-    result.map_err(|error| if interaction.is_aborted() { "Login cancelled".into() } else { error })
+    result.map_err(|error| {
+        if interaction.is_aborted() {
+            "Login cancelled".into()
+        } else {
+            error
+        }
+    })
 }
 
 /// Exchange an identity token for a Model API key: (access, refresh, expires).

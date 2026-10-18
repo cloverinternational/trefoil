@@ -22,20 +22,49 @@ use std::time::Duration;
 
 /// Plexus `isKnownOAuthProviderId`.
 pub(crate) fn is_supported_provider(provider: &str) -> bool {
-    crate::oauth_login::PROVIDERS.iter().any(|(id, _, _)| *id == provider)
+    crate::oauth_login::PROVIDERS
+        .iter()
+        .any(|(id, _, _)| *id == provider)
 }
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v0/management/oauth/providers", axum::routing::get(providers))
-        .route("/v0/management/oauth/sessions", axum::routing::post(create_session))
-        .route("/v0/management/oauth/credentials", axum::routing::delete(delete_credentials))
-        .route("/v0/management/oauth/credentials/status", axum::routing::get(credential_status))
-        .route("/v0/management/oauth/sessions/:id", axum::routing::get(get_session))
-        .route("/v0/management/oauth/sessions/:id/prompt", axum::routing::post(prompt_session))
-        .route("/v0/management/oauth/sessions/:id/manual-code", axum::routing::post(manual_code))
-        .route("/v0/management/oauth/sessions/:id/select", axum::routing::post(select_session))
-        .route("/v0/management/oauth/sessions/:id/cancel", axum::routing::post(cancel_session))
+        .route(
+            "/v0/management/oauth/providers",
+            axum::routing::get(providers),
+        )
+        .route(
+            "/v0/management/oauth/sessions",
+            axum::routing::post(create_session),
+        )
+        .route(
+            "/v0/management/oauth/credentials",
+            axum::routing::delete(delete_credentials),
+        )
+        .route(
+            "/v0/management/oauth/credentials/status",
+            axum::routing::get(credential_status),
+        )
+        .route(
+            "/v0/management/oauth/sessions/:id",
+            axum::routing::get(get_session),
+        )
+        .route(
+            "/v0/management/oauth/sessions/:id/prompt",
+            axum::routing::post(prompt_session),
+        )
+        .route(
+            "/v0/management/oauth/sessions/:id/manual-code",
+            axum::routing::post(manual_code),
+        )
+        .route(
+            "/v0/management/oauth/sessions/:id/select",
+            axum::routing::post(select_session),
+        )
+        .route(
+            "/v0/management/oauth/sessions/:id/cancel",
+            axum::routing::post(cancel_session),
+        )
         .route("/v0/management/oauth/models", axum::routing::get(models))
 }
 
@@ -74,7 +103,13 @@ fn parse_body(schema: &crate::zod::Schema, body: &Bytes, label: &str) -> Result<
         )
             .into_response());
     };
-    schema.safe_parse(&value).map_err(|details| (StatusCode::BAD_REQUEST, Json(json!({"error": label, "details": details}))).into_response())
+    schema.safe_parse(&value).map_err(|details| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": label, "details": details})),
+        )
+            .into_response()
+    })
 }
 
 /// Fastify query object (`fast-querystring`: repeated keys become arrays).
@@ -98,7 +133,10 @@ fn query_value(raw: Option<String>) -> Value {
 
 fn provider_account_schema() -> crate::zod::Schema {
     use crate::zod::*;
-    object(vec![("providerId", string().min(1.0)), ("accountId", string().min(1.0))])
+    object(vec![
+        ("providerId", string().min(1.0)),
+        ("accountId", string().min(1.0)),
+    ])
 }
 
 fn input_schema() -> crate::zod::Schema {
@@ -110,12 +148,22 @@ async fn providers(State(state): State<AppState>, headers: HeaderMap) -> Respons
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    let data: Vec<Value> = state.inner.oauth_sessions.list_providers().into_iter().map(|(id, name, cb)| json!({"id": id, "name": name, "usesCallbackServer": cb})).collect();
+    let data: Vec<Value> = state
+        .inner
+        .oauth_sessions
+        .list_providers()
+        .into_iter()
+        .map(|(id, name, cb)| json!({"id": id, "name": name, "usesCallbackServer": cb}))
+        .collect();
     let total = data.len();
     Json(json!({"data": data, "total": total})).into_response()
 }
 
-async fn create_session(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn create_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
@@ -125,13 +173,22 @@ async fn create_session(State(state): State<AppState>, headers: HeaderMap, body:
     };
     let provider = parsed["providerId"].as_str().unwrap_or_default();
     let account = parsed["accountId"].as_str().unwrap_or_default();
-    match state.inner.oauth_sessions.create_session(provider, account, database_store(state.clone())).await {
+    match state
+        .inner
+        .oauth_sessions
+        .create_session(provider, account, database_store(state.clone()))
+        .await
+    {
         Ok(session) => session_response(session),
         Err(message) => error(StatusCode::BAD_REQUEST, message),
     }
 }
 
-async fn get_session(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+async fn get_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
@@ -148,7 +205,13 @@ enum InputKind {
     Select,
 }
 
-async fn submit_input(state: AppState, headers: HeaderMap, id: String, body: Bytes, kind: InputKind) -> Response {
+async fn submit_input(
+    state: AppState,
+    headers: HeaderMap,
+    id: String,
+    body: Bytes,
+    kind: InputKind,
+) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
@@ -169,19 +232,38 @@ async fn submit_input(state: AppState, headers: HeaderMap, id: String, body: Byt
     }
 }
 
-async fn prompt_session(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, body: Bytes) -> Response {
+async fn prompt_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
     submit_input(state, headers, id, body, InputKind::Prompt).await
 }
 
-async fn manual_code(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, body: Bytes) -> Response {
+async fn manual_code(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
     submit_input(state, headers, id, body, InputKind::ManualCode).await
 }
 
-async fn select_session(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, body: Bytes) -> Response {
+async fn select_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
     submit_input(state, headers, id, body, InputKind::Select).await
 }
 
-async fn cancel_session(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+async fn cancel_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
@@ -191,7 +273,11 @@ async fn cancel_session(State(state): State<AppState>, headers: HeaderMap, Path(
     }
 }
 
-async fn delete_credentials(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn delete_credentials(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
@@ -205,12 +291,19 @@ async fn delete_credentials(State(state): State<AppState>, headers: HeaderMap, b
     if account.trim().is_empty() {
         return not_found();
     }
-    let Some(pool) = state.inner.database.as_ref() else { return not_found() };
+    let Some(pool) = state.inner.database.as_ref() else {
+        return not_found();
+    };
     match crate::database::delete_oauth_credential(pool, provider, account).await {
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         Ok(false) => not_found(),
         Ok(true) => {
-            state.inner.oauth_accounts.write().unwrap().retain(|(p, a)| !(p == provider && a == account));
+            state
+                .inner
+                .oauth_accounts
+                .write()
+                .unwrap()
+                .retain(|(p, a)| !(p == provider && a == account));
             Json(json!({"data": {"deleted": true}})).into_response()
         }
     }
@@ -218,11 +311,19 @@ async fn delete_credentials(State(state): State<AppState>, headers: HeaderMap, b
 
 /// Plexus `resolveAccountId` over persisted accounts: an explicit account,
 /// else `legacy`, else the provider's single account.
-fn resolve_account(accounts: &[(String, String, i64)], provider: &str, account: Option<&str>) -> Option<String> {
+fn resolve_account(
+    accounts: &[(String, String, i64)],
+    provider: &str,
+    account: Option<&str>,
+) -> Option<String> {
     if let Some(account) = account.map(str::trim).filter(|a| !a.is_empty()) {
         return Some(account.to_string());
     }
-    let mine: Vec<&String> = accounts.iter().filter(|(p, _, _)| p == provider).map(|(_, a, _)| a).collect();
+    let mine: Vec<&String> = accounts
+        .iter()
+        .filter(|(p, _, _)| p == provider)
+        .map(|(_, a, _)| a)
+        .collect();
     if mine.is_empty() {
         return None;
     }
@@ -232,26 +333,56 @@ fn resolve_account(accounts: &[(String, String, i64)], provider: &str, account: 
     (mine.len() == 1).then(|| mine[0].clone())
 }
 
-async fn credential_status(State(state): State<AppState>, headers: HeaderMap, RawQuery(raw): RawQuery) -> Response {
+async fn credential_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
+) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
     let parsed = match provider_account_schema().safe_parse(&query_value(raw)) {
         Ok(parsed) => parsed,
-        Err(details) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid query parameters", "details": details}))).into_response(),
+        Err(details) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid query parameters", "details": details})),
+            )
+                .into_response()
+        }
     };
     let provider = parsed["providerId"].as_str().unwrap_or_default();
-    let account = parsed["accountId"].as_str().unwrap_or_default().trim().to_string();
+    let account = parsed["accountId"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let Some(pool) = state.inner.database.as_ref() else {
         return Json(json!({"data": {"ready": false}})).into_response();
     };
-    let accounts = crate::database::list_oauth_credential_accounts(pool).await.unwrap_or_default();
-    let ready = if account.is_empty() { accounts.iter().any(|(p, _, _)| p == provider) } else { accounts.iter().any(|(p, a, _)| p == provider && *a == account) };
+    let accounts = crate::database::list_oauth_credential_accounts(pool)
+        .await
+        .unwrap_or_default();
+    let ready = if account.is_empty() {
+        accounts.iter().any(|(p, _, _)| p == provider)
+    } else {
+        accounts
+            .iter()
+            .any(|(p, a, _)| p == provider && *a == account)
+    };
     if !ready {
         return Json(json!({"data": {"ready": ready}})).into_response();
     }
-    let timestamps = crate::database::oauth_credential_timestamps(pool, provider, &account).await.ok().flatten();
-    let expires = resolve_account(&accounts, provider, Some(&account)).and_then(|resolved| accounts.iter().find(|(p, a, _)| p == provider && *a == resolved).map(|(_, _, e)| *e));
+    let timestamps = crate::database::oauth_credential_timestamps(pool, provider, &account)
+        .await
+        .ok()
+        .flatten();
+    let expires = resolve_account(&accounts, provider, Some(&account)).and_then(|resolved| {
+        accounts
+            .iter()
+            .find(|(p, a, _)| p == provider && *a == resolved)
+            .map(|(_, _, e)| *e)
+    });
     let mut data = Map::new();
     data.insert("ready".into(), json!(true));
     if let Some((created, updated, _)) = timestamps {
@@ -270,8 +401,19 @@ async fn credential_status(State(state): State<AppState>, headers: HeaderMap, Ra
 
 // ─── /v0/management/oauth/models ─────────────────────────────────────────
 
-const MUSE_STATIC_MODELS: [&str; 6] = ["muse-spark-1.1", "muse-spark-1.2", "muse-spark-1.2-contributor", "muse-spark-1.3", "muse-spark-1.3-contributor", "muse-wonder-1.0"];
-const CODEX_IMAGE_MODELS: [&str; 3] = ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"];
+const MUSE_STATIC_MODELS: [&str; 6] = [
+    "muse-spark-1.1",
+    "muse-spark-1.2",
+    "muse-spark-1.2-contributor",
+    "muse-spark-1.3",
+    "muse-spark-1.3-contributor",
+    "muse-wonder-1.0",
+];
+const CODEX_IMAGE_MODELS: [&str; 3] = [
+    "gpt-image-2",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+];
 
 /// JavaScript `Number.prototype.toString` for catalog prices.
 fn js_number(value: f64) -> String {
@@ -286,8 +428,13 @@ fn js_number(value: f64) -> String {
 
 /// Plexus `getOAuthProviderModels` over the embedded pi-ai catalog.
 fn catalog_models(provider: &str) -> Vec<Value> {
-    let catalog: Value = serde_json::from_str(include_str!("assets/pi-catalog.json")).unwrap_or(Value::Null);
-    let Some(models) = catalog["providers"].as_array().and_then(|providers| providers.iter().find(|p| p["id"] == provider)).and_then(|p| p["models"].as_array()) else {
+    let catalog: Value =
+        serde_json::from_str(include_str!("assets/pi-catalog.json")).unwrap_or(Value::Null);
+    let Some(models) = catalog["providers"]
+        .as_array()
+        .and_then(|providers| providers.iter().find(|p| p["id"] == provider))
+        .and_then(|p| p["models"].as_array())
+    else {
         return vec![];
     };
     models
@@ -302,8 +449,13 @@ fn catalog_models(provider: &str) -> Vec<Value> {
             if let Some(context) = m.get("contextWindow").filter(|v| !v.is_null()) {
                 out.insert("context_length".into(), context.clone());
             }
-            if let (Some(input), Some(output)) = (m["cost"]["input"].as_f64(), m["cost"]["output"].as_f64()) {
-                out.insert("pricing".into(), json!({"prompt": js_number(input), "completion": js_number(output)}));
+            if let (Some(input), Some(output)) =
+                (m["cost"]["input"].as_f64(), m["cost"]["output"].as_f64())
+            {
+                out.insert(
+                    "pricing".into(),
+                    json!({"prompt": js_number(input), "completion": js_number(output)}),
+                );
             }
             Value::Object(out)
         })
@@ -321,15 +473,31 @@ fn with_codex_image_models(mut models: Vec<Value>) -> Vec<Value> {
 
 /// Plexus `OAuthAuthManager.getApiKey` error semantics over persisted
 /// credentials (no refresh is attempted here).
-async fn oauth_api_key(state: &AppState, provider: &str, account: Option<&str>) -> Result<String, String> {
+async fn oauth_api_key(
+    state: &AppState,
+    provider: &str,
+    account: Option<&str>,
+) -> Result<String, String> {
     let not_authenticated = format!("OAuth: Not authenticated for provider '{provider}'. Please run OAuth login for this provider.");
-    let pool = state.inner.database.as_ref().ok_or_else(|| not_authenticated.clone())?;
-    let credentials = crate::database::load_oauth_credentials(pool).await.map_err(|e| e.to_string())?;
-    let accounts: Vec<(String, String, i64)> = credentials.iter().filter(|(p, ..)| p == provider).map(|(p, a, _, _, e)| (p.clone(), a.clone(), *e)).collect();
+    let pool = state
+        .inner
+        .database
+        .as_ref()
+        .ok_or_else(|| not_authenticated.clone())?;
+    let credentials = crate::database::load_oauth_credentials(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let accounts: Vec<(String, String, i64)> = credentials
+        .iter()
+        .filter(|(p, ..)| p == provider)
+        .map(|(p, a, _, _, e)| (p.clone(), a.clone(), *e))
+        .collect();
     if accounts.is_empty() {
         return Err(not_authenticated);
     }
-    let resolved = resolve_account(&accounts, provider, account).ok_or_else(|| format!("OAuth: accountId is required to resolve credentials for provider '{provider}'."))?;
+    let resolved = resolve_account(&accounts, provider, account).ok_or_else(|| {
+        format!("OAuth: accountId is required to resolve credentials for provider '{provider}'.")
+    })?;
     credentials
         .into_iter()
         .find(|(p, a, ..)| p == provider && *a == resolved)
@@ -348,7 +516,12 @@ fn fetch_error(error: reqwest::Error) -> String {
 async fn list_codex_models(state: &AppState, account: Option<&str>) -> Result<Vec<Value>, String> {
     let token = oauth_api_key(state, "openai-codex", account).await?;
     let version = crate::cli_versions::codex_version();
-    let url = format!("https://chatgpt.com/backend-api/codex/models?client_version={}", url::form_urlencoded::byte_serialize(version.as_bytes()).collect::<String>().replace('+', "%20"));
+    let url = format!(
+        "https://chatgpt.com/backend-api/codex/models?client_version={}",
+        url::form_urlencoded::byte_serialize(version.as_bytes())
+            .collect::<String>()
+            .replace('+', "%20")
+    );
     let mut request = reqwest::Client::new()
         .get(url)
         .header("Accept", "application/json")
@@ -363,14 +536,26 @@ async fn list_codex_models(state: &AppState, account: Option<&str>) -> Result<Ve
     let response = request.send().await.map_err(fetch_error)?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("Codex model list returned {} {}", status.as_u16(), crate::oauth_login::status_text(status)));
+        return Err(format!(
+            "Codex model list returned {} {}",
+            status.as_u16(),
+            crate::oauth_login::status_text(status)
+        ));
     }
     let body: Value = response.json().await.map_err(fetch_error)?;
-    let records = body["models"].as_array().ok_or("Codex model list response had no models array")?;
-    let mut records: Vec<&Value> = records.iter().filter(|r| r["slug"].as_str().is_some_and(|s| !s.is_empty()) && r["visibility"] != "none").collect();
+    let records = body["models"]
+        .as_array()
+        .ok_or("Codex model list response had no models array")?;
+    let mut records: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["slug"].as_str().is_some_and(|s| !s.is_empty()) && r["visibility"] != "none")
+        .collect();
     records.sort_by(|a, b| {
         let priority = |r: &Value| r["priority"].as_f64().unwrap_or(0.0);
-        priority(b).partial_cmp(&priority(a)).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a["slug"].as_str().cmp(&b["slug"].as_str()))
+        priority(b)
+            .partial_cmp(&priority(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a["slug"].as_str().cmp(&b["slug"].as_str()))
     });
     Ok(records
         .into_iter()
@@ -407,7 +592,11 @@ async fn list_muse_models(state: &AppState, account: Option<&str>) -> Result<Vec
         .map_err(fetch_error)?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("Muse model list returned {} {}", status.as_u16(), crate::oauth_login::status_text(status)));
+        return Err(format!(
+            "Muse model list returned {} {}",
+            status.as_u16(),
+            crate::oauth_login::status_text(status)
+        ));
     }
     let body: Value = response.json().await.map_err(fetch_error)?;
     let entries: Vec<Value> = if let Some(data) = body["data"].as_array() {
@@ -419,29 +608,55 @@ async fn list_muse_models(state: &AppState, account: Option<&str>) -> Result<Vec
     } else {
         vec![]
     };
-    let mut ids: Vec<String> = entries.iter().filter_map(|m| m["id"].as_str().filter(|s| !s.is_empty()).map(str::to_owned)).collect();
+    let mut ids: Vec<String> = entries
+        .iter()
+        .filter_map(|m| {
+            m["id"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        })
+        .collect();
     if ids.is_empty() {
         return Err("Muse model list response had no model ids".into());
     }
     ids.sort();
-    Ok(ids.into_iter().map(|id| json!({"id": id, "name": id})).collect())
+    Ok(ids
+        .into_iter()
+        .map(|id| json!({"id": id, "name": id}))
+        .collect())
 }
 
-async fn models(State(state): State<AppState>, headers: HeaderMap, RawQuery(raw): RawQuery) -> Response {
+async fn models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
+) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
     let schema = {
         use crate::zod::*;
-        object(vec![("providerId", string().min(1.0)), ("accountId", string().optional())])
+        object(vec![
+            ("providerId", string().min(1.0)),
+            ("accountId", string().optional()),
+        ])
     };
     let parsed = match schema.safe_parse(&query_value(raw)) {
         Ok(parsed) => parsed,
-        Err(details) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid query parameters", "details": details}))).into_response(),
+        Err(details) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid query parameters", "details": details})),
+            )
+                .into_response()
+        }
     };
     let provider = parsed["providerId"].as_str().unwrap_or_default();
     let account = parsed["accountId"].as_str().filter(|a| !a.is_empty());
-    let fallback_warning = |label: &str, reason: &str| format!("Could not reach the {label} model list ({reason}); showing the static catalog. Log in with OAuth to see your account's models.");
+    let fallback_warning = |label: &str, reason: &str| {
+        format!("Could not reach the {label} model list ({reason}); showing the static catalog. Log in with OAuth to see your account's models.")
+    };
     match provider {
         "openai-codex" => match list_codex_models(&state, account).await {
             Ok(models) => Json(json!({"data": with_codex_image_models(models), "source": "codex-backend"})).into_response(),

@@ -18,55 +18,112 @@ fn synthetic_tools() -> [Value; 2] {
 }
 
 fn inject_tools(result: &mut Value) {
-    let Some(tools) = result.get_mut("tools").and_then(Value::as_array_mut) else { return };
-    let mut names = tools.iter().filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_owned)).collect::<std::collections::HashSet<_>>();
+    let Some(tools) = result.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut names = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect::<std::collections::HashSet<_>>();
     let mut injected = Vec::with_capacity(tools.len() + 2);
     for tool in synthetic_tools() {
-        if names.insert(tool["name"].as_str().unwrap().to_owned()) { injected.push(tool); }
+        if names.insert(tool["name"].as_str().unwrap().to_owned()) {
+            injected.push(tool);
+        }
     }
     injected.append(tools);
     *tools = injected;
 }
 
 fn rename_mcp_tools(result: &mut Value) {
-    let Some(tools) = result.get("tools").and_then(Value::as_array) else { return };
+    let Some(tools) = result.get("tools").and_then(Value::as_array) else {
+        return;
+    };
     let mut clusters = std::collections::HashMap::<String, usize>::new();
     for tool in tools {
-        let Some(name) = tool.get("name").and_then(Value::as_str) else { continue };
-        if name.starts_with("mcp__") { continue; }
+        let Some(name) = tool.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if name.starts_with("mcp__") {
+            continue;
+        }
         if let Some((prefix, rest)) = name.split_once('_') {
-            if !prefix.is_empty() && !rest.is_empty() { *clusters.entry(prefix.to_owned()).or_default() += 1; }
+            if !prefix.is_empty() && !rest.is_empty() {
+                *clusters.entry(prefix.to_owned()).or_default() += 1;
+            }
         }
     }
-    if !clusters.values().any(|count| *count >= 4) { return; }
-    let mut used = tools.iter().filter_map(|tool| tool.get("name").and_then(Value::as_str)).map(str::to_owned).collect::<std::collections::HashSet<_>>();
+    if !clusters.values().any(|count| *count >= 4) {
+        return;
+    }
+    let mut used = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<std::collections::HashSet<_>>();
     let mut mapping = std::collections::HashMap::new();
     for tool in tools {
-        let Some(original) = tool.get("name").and_then(Value::as_str) else { continue };
-        let Some((prefix, rest)) = original.split_once('_') else { continue };
-        if clusters.get(prefix).copied().unwrap_or(0) < 4 || original.starts_with("mcp__") { continue; }
+        let Some(original) = tool.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some((prefix, rest)) = original.split_once('_') else {
+            continue;
+        };
+        if clusters.get(prefix).copied().unwrap_or(0) < 4 || original.starts_with("mcp__") {
+            continue;
+        }
         let base = format!("mcp__{prefix}__{rest}");
         let mut candidate = base.clone();
         let mut suffix = 2;
-        while used.contains(&candidate) && candidate != *original { candidate = format!("{base}__{suffix}"); suffix += 1; }
+        while used.contains(&candidate) && candidate != *original {
+            candidate = format!("{base}__{suffix}");
+            suffix += 1;
+        }
         used.insert(candidate.clone());
         mapping.insert(original.to_owned(), candidate);
     }
     let rename = |name: &str| mapping.get(name).cloned();
     if let Some(tools) = result.get_mut("tools").and_then(Value::as_array_mut) {
-        for tool in tools { if let Some(name) = tool.get("name").and_then(Value::as_str).and_then(rename) { tool["name"] = Value::String(name); } }
+        for tool in tools {
+            if let Some(name) = tool.get("name").and_then(Value::as_str).and_then(rename) {
+                tool["name"] = Value::String(name);
+            }
+        }
     }
     if let Some(choice) = result.get_mut("tool_choice") {
-        if let Some(name) = choice.get("name").and_then(Value::as_str).and_then(rename) { choice["name"] = Value::String(name); }
+        if let Some(name) = choice.get("name").and_then(Value::as_str).and_then(rename) {
+            choice["name"] = Value::String(name);
+        }
     }
     fn walk(value: &mut Value, mapping: &std::collections::HashMap<String, String>) {
         if let Some(object) = value.as_object_mut() {
-            let key = match object.get("type").and_then(Value::as_str) { Some("tool_use") => Some("name"), Some("tool_reference") => Some("tool_name"), _ => None };
-            if let Some(key) = key { if let Some(name) = object.get(key).and_then(Value::as_str).and_then(|name| mapping.get(name)).cloned() { object.insert(key.into(), Value::String(name)); } }
-            for child in object.values_mut() { walk(child, mapping); }
-        } else if let Some(array) = value.as_array_mut() { for child in array { walk(child, mapping); } }
+            let key = match object.get("type").and_then(Value::as_str) {
+                Some("tool_use") => Some("name"),
+                Some("tool_reference") => Some("tool_name"),
+                _ => None,
+            };
+            if let Some(key) = key {
+                if let Some(name) = object
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .and_then(|name| mapping.get(name))
+                    .cloned()
+                {
+                    object.insert(key.into(), Value::String(name));
+                }
+            }
+            for child in object.values_mut() {
+                walk(child, mapping);
+            }
+        } else if let Some(array) = value.as_array_mut() {
+            for child in array {
+                walk(child, mapping);
+            }
+        }
     }
-    if let Some(messages) = result.get_mut("messages") { walk(messages, &mapping); }
+    if let Some(messages) = result.get_mut("messages") {
+        walk(messages, &mapping);
+    }
 }
 
 pub fn headers() -> Vec<(&'static str, String)> {
@@ -74,13 +131,32 @@ pub fn headers() -> Vec<(&'static str, String)> {
     let session = SESSION.get_or_init(|| {
         let bytes: [u8; 16] = rand::random();
         let hex = hex::encode(bytes);
-        format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+        format!(
+            "{}-{}-{}-{}-{}",
+            &hex[0..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+            &hex[20..32]
+        )
     });
-    vec![("anthropic-beta", REQUIRED_BETAS.into()), ("x-claude-code-session-id", session.clone()), ("x-stainless-arch", std::env::consts::ARCH.into()), ("x-stainless-lang", "rust".into()), ("x-stainless-os", std::env::consts::OS.into()), ("x-stainless-runtime", "trefoil".into()), ("x-stainless-retry-count", "0".into()), ("x-stainless-timeout", "600".into())]
+    vec![
+        ("anthropic-beta", REQUIRED_BETAS.into()),
+        ("x-claude-code-session-id", session.clone()),
+        ("x-stainless-arch", std::env::consts::ARCH.into()),
+        ("x-stainless-lang", "rust".into()),
+        ("x-stainless-os", std::env::consts::OS.into()),
+        ("x-stainless-runtime", "trefoil".into()),
+        ("x-stainless-retry-count", "0".into()),
+        ("x-stainless-timeout", "600".into()),
+    ]
 }
 
 pub fn user_agent() -> String {
-    format!("claude-cli/{} (external, cli)", crate::cli_versions::claude_code_version())
+    format!(
+        "claude-cli/{} (external, cli)",
+        crate::cli_versions::claude_code_version()
+    )
 }
 
 fn first_user_text(body: &Value) -> String {
@@ -108,7 +184,10 @@ fn billing_header(body: &Value) -> String {
         .map(|&i| text.chars().nth(i).unwrap_or('0'))
         .collect();
     let mut hash = Sha256::new();
-    hash.update(format!("{SALT}{chars}{}", crate::cli_versions::claude_code_version()));
+    hash.update(format!(
+        "{SALT}{chars}{}",
+        crate::cli_versions::claude_code_version()
+    ));
     let digest = hex::encode(hash.finalize());
     let unsigned = format!(
         "{BILLING_PREFIX} cc_version={}.{}; cc_entrypoint=cli; cch=00000;",
@@ -180,30 +259,60 @@ mod tests {
     fn headers_include_oauth_beta_and_stable_session_identity() {
         let first = headers();
         let second = headers();
-        assert!(first.iter().any(|(name, value)| *name == "anthropic-beta" && value.contains("oauth-2025-04-20")));
-        assert_eq!(first.iter().find(|(name, _)| *name == "x-claude-code-session-id").unwrap().1, second.iter().find(|(name, _)| *name == "x-claude-code-session-id").unwrap().1);
+        assert!(first
+            .iter()
+            .any(|(name, value)| *name == "anthropic-beta" && value.contains("oauth-2025-04-20")));
+        assert_eq!(
+            first
+                .iter()
+                .find(|(name, _)| *name == "x-claude-code-session-id")
+                .unwrap()
+                .1,
+            second
+                .iter()
+                .find(|(name, _)| *name == "x-claude-code-session-id")
+                .unwrap()
+                .1
+        );
     }
 
     #[test]
     fn injects_synthetic_tools_without_duplicate_names() {
         let body = mask_body(&json!({"tools":[{"name":"Agent","description":"custom"}]}));
         let tools = body["tools"].as_array().unwrap();
-        assert_eq!(tools.iter().filter(|tool| tool["name"] == "Agent").count(), 1);
+        assert_eq!(
+            tools.iter().filter(|tool| tool["name"] == "Agent").count(),
+            1
+        );
         assert!(tools.iter().any(|tool| tool["name"] == "NotebookEdit"));
     }
 
     #[test]
     fn normalizes_mcp_clusters_and_history_references() {
-        let tools = (0..4).map(|i| json!({"name": format!("github_tool_{i}")})).collect::<Vec<_>>();
-        let body = mask_body(&json!({"tools":tools,"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"github_tool_2"}]}]}));
+        let tools = (0..4)
+            .map(|i| json!({"name": format!("github_tool_{i}")}))
+            .collect::<Vec<_>>();
+        let body = mask_body(
+            &json!({"tools":tools,"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"github_tool_2"}]}]}),
+        );
         assert_eq!(body["tools"][4]["name"], "mcp__github__tool_2");
-        assert_eq!(body["messages"][0]["content"][0]["name"], "mcp__github__tool_2");
+        assert_eq!(
+            body["messages"][0]["content"][0]["name"],
+            "mcp__github__tool_2"
+        );
     }
 
     #[test]
     fn renames_nested_tool_result_references() {
-        let tools = (0..4).map(|i| json!({"name": format!("github_tool_{i}")})).collect::<Vec<_>>();
-        let body = mask_body(&json!({"tools":tools,"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"tool_reference","tool_name":"github_tool_2"}]}]}]}));
-        assert_eq!(body["messages"][0]["content"][0]["content"][0]["tool_name"], "mcp__github__tool_2");
+        let tools = (0..4)
+            .map(|i| json!({"name": format!("github_tool_{i}")}))
+            .collect::<Vec<_>>();
+        let body = mask_body(
+            &json!({"tools":tools,"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"tool_reference","tool_name":"github_tool_2"}]}]}]}),
+        );
+        assert_eq!(
+            body["messages"][0]["content"][0]["content"][0]["tool_name"],
+            "mcp__github__tool_2"
+        );
     }
 }

@@ -89,7 +89,9 @@ fn quota_schema() -> &'static crate::zod::Schema {
                 ("limitType", enumeration(&["requests", "tokens", "cost"])),
                 ("limit", number().min(1.0)),
             ];
-            if rolling { shape.push(("duration", string().min(1.0))); }
+            if rolling {
+                shape.push(("duration", string().min(1.0)));
+            }
             shape.extend([
                 ("allowedProviders", array(string()).optional()),
                 ("excludedProviders", array(string()).optional()),
@@ -100,7 +102,15 @@ fn quota_schema() -> &'static crate::zod::Schema {
             ]);
             object(shape)
         };
-        discriminated("type", vec![variant("rolling", true), variant("daily", false), variant("weekly", false), variant("monthly", false)])
+        discriminated(
+            "type",
+            vec![
+                variant("rolling", true),
+                variant("daily", false),
+                variant("weekly", false),
+                variant("monthly", false),
+            ],
+        )
     })
 }
 
@@ -109,14 +119,25 @@ fn quota_schema() -> &'static crate::zod::Schema {
 fn validate_quota(value: &Value) -> Result<(Value, QuotaDefinition), Vec<Value>> {
     let parsed = quota_schema().safe_parse(value)?;
     let list = |key: &str| -> Option<Vec<String>> {
-        let items: Vec<String> = parsed.get(key)?.as_array()?.iter().filter_map(Value::as_str).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+        let items: Vec<String> = parsed
+            .get(key)?
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
         (!items.is_empty()).then_some(items)
     };
     let stored = QuotaDefinition {
         quota_type: parsed["type"].as_str().unwrap_or_default().to_owned(),
         limit_type: parsed["limitType"].as_str().unwrap_or_default().to_owned(),
         limit: parsed["limit"].as_f64().unwrap_or_default(),
-        duration: parsed.get("duration").and_then(Value::as_str).filter(|d| !d.is_empty()).map(str::to_owned),
+        duration: parsed
+            .get("duration")
+            .and_then(Value::as_str)
+            .filter(|d| !d.is_empty())
+            .map(str::to_owned),
         allowed_providers: list("allowedProviders"),
         excluded_providers: list("excludedProviders"),
         allowed_models: list("allowedModels"),

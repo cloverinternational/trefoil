@@ -11,14 +11,19 @@ pub const GEMINI_MALFORMED_FUNCTION_CALL_MESSAGE: &str =
 /// `/(?:print\()?call:\s*default_api[.:]|default_api\.\w+\s*\(/` (JS `\w` is ASCII).
 fn leak_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?:print\()?call:\s*default_api[.:]|default_api\.[A-Za-z0-9_]+\s*\(").expect("valid regex"))
+    RE.get_or_init(|| {
+        Regex::new(r"(?:print\()?call:\s*default_api[.:]|default_api\.[A-Za-z0-9_]+\s*\(")
+            .expect("valid regex")
+    })
 }
 
 /// `/^(data:\s*)(.*)$/` without the `m`/`s` flags: `.` stops at JS line
 /// terminators, so a trailing `\r` makes the line not match.
 fn data_line_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new("^(data:\\s*)([^\\r\\n\\u{2028}\\u{2029}]*)$").expect("valid regex"))
+    RE.get_or_init(|| {
+        Regex::new("^(data:\\s*)([^\\r\\n\\u{2028}\\u{2029}]*)$").expect("valid regex")
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,12 +42,20 @@ impl GeminiMalformedFunctionCall {
 }
 
 /// `detectGeminiMalformedFunctionCall`.
-pub fn detect_gemini_malformed_function_call(payload: &Value) -> Option<GeminiMalformedFunctionCall> {
-    if !matches!(payload, Value::Object(_) | Value::Array(_)) { return None; }
+pub fn detect_gemini_malformed_function_call(
+    payload: &Value,
+) -> Option<GeminiMalformedFunctionCall> {
+    if !matches!(payload, Value::Object(_) | Value::Array(_)) {
+        return None;
+    }
     let candidate = get(payload, &["candidates", "0"])?;
-    if get_str(candidate, &["finishReason"]) != Some(GEMINI_MALFORMED_FUNCTION_CALL_CODE) { return None; }
+    if get_str(candidate, &["finishReason"]) != Some(GEMINI_MALFORMED_FUNCTION_CALL_CODE) {
+        return None;
+    }
     let text_leak_detected = get_arr(candidate, &["content", "parts"]).is_some_and(|parts| {
-        parts.iter().any(|part| get_str(part, &["text"]).is_some_and(|t| leak_pattern().is_match(t)))
+        parts
+            .iter()
+            .any(|part| get_str(part, &["text"]).is_some_and(|t| leak_pattern().is_match(t)))
     });
     Some(GeminiMalformedFunctionCall {
         code: GEMINI_MALFORMED_FUNCTION_CALL_CODE,
@@ -63,16 +76,33 @@ pub struct MalformedFunctionCallRewriter {
 }
 
 impl MalformedFunctionCallRewriter {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     fn rewrite_line(&mut self, line: &str) -> String {
-        let Some(caps) = data_line_pattern().captures(line) else { return line.to_owned() };
+        let Some(caps) = data_line_pattern().captures(line) else {
+            return line.to_owned();
+        };
         let (prefix, body) = (&caps[1], &caps[2]);
-        if body == "[DONE]" { return line.to_owned(); }
-        let Some(mut payload) = parse(body) else { return line.to_owned() };
-        let Some(defect) = detect_gemini_malformed_function_call(&payload) else { return line.to_owned() };
-        if let Some(c) = payload.get_mut("candidates").and_then(|c| c.get_mut(0)).and_then(Value::as_object_mut) {
-            c.insert("finishMessage".into(), Value::String(defect.message.to_owned()));
+        if body == "[DONE]" {
+            return line.to_owned();
+        }
+        let Some(mut payload) = parse(body) else {
+            return line.to_owned();
+        };
+        let Some(defect) = detect_gemini_malformed_function_call(&payload) else {
+            return line.to_owned();
+        };
+        if let Some(c) = payload
+            .get_mut("candidates")
+            .and_then(|c| c.get_mut(0))
+            .and_then(Value::as_object_mut)
+        {
+            c.insert(
+                "finishMessage".into(),
+                Value::String(defect.message.to_owned()),
+            );
         }
         self.detected.push(defect);
         format!("{prefix}{}", stringify(&payload))
@@ -94,7 +124,11 @@ impl MalformedFunctionCallRewriter {
 
     pub fn flush(&mut self) -> String {
         let buffer = std::mem::take(&mut self.buffer);
-        if buffer.is_empty() { String::new() } else { self.rewrite_line(&buffer) }
+        if buffer.is_empty() {
+            String::new()
+        } else {
+            self.rewrite_line(&buffer)
+        }
     }
 }
 
@@ -105,7 +139,11 @@ mod tests {
 
     fn rewrite(input: &str) -> (String, usize) {
         let mut r = MalformedFunctionCallRewriter::new();
-        let mid = input.char_indices().nth(input.chars().count() / 2).map(|(i, _)| i).unwrap_or(0);
+        let mid = input
+            .char_indices()
+            .nth(input.chars().count() / 2)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
         let mut out = r.feed(&input[..mid]);
         out.push_str(&r.feed(&input[mid..]));
         out.push_str(&r.flush());
@@ -115,9 +153,20 @@ mod tests {
     #[test]
     fn detection() {
         let d = detect_gemini_malformed_function_call(&json!({"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL", "content": {"parts": [{"text": "Format repository files with biome formatcall:default_api:bash{command:bun run format}"}]}}]})).unwrap();
-        assert_eq!(d, GeminiMalformedFunctionCall { code: "MALFORMED_FUNCTION_CALL", message: GEMINI_MALFORMED_FUNCTION_CALL_MESSAGE, status_code: 503, text_leak_detected: true });
+        assert_eq!(
+            d,
+            GeminiMalformedFunctionCall {
+                code: "MALFORMED_FUNCTION_CALL",
+                message: GEMINI_MALFORMED_FUNCTION_CALL_MESSAGE,
+                status_code: 503,
+                text_leak_detected: true
+            }
+        );
         assert!(detect_gemini_malformed_function_call(&json!({"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "call:default_api:bash{}"}]}}]})).is_none());
-        let no_leak = detect_gemini_malformed_function_call(&json!({"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL"}]})).unwrap();
+        let no_leak = detect_gemini_malformed_function_call(
+            &json!({"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL"}]}),
+        )
+        .unwrap();
         assert!(!no_leak.text_leak_detected);
         assert!(detect_gemini_malformed_function_call(&json!({"candidates": [{"finishReason": "MALFORMED_FUNCTION_CALL", "content": {"parts": [{"text": "x default_api.run ("}]}}]})).unwrap().text_leak_detected);
     }
@@ -126,13 +175,20 @@ mod tests {
     fn rewriter_preserves_bytes_and_rewrites_malformed() {
         let input = "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\ndata: [DONE]\n\n";
         assert_eq!(rewrite(input), (input.to_owned(), 0));
-        let crlf = "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\r\n\r\ndata: [DONE]\r\n\r\n";
+        let crlf =
+            "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\r\n\r\ndata: [DONE]\r\n\r\n";
         assert_eq!(rewrite(crlf), (crlf.to_owned(), 0));
         let payload = json!({"candidates": [{"content": {"parts": [{"text": "call:default_api:bash{command:bun run format}"}]}, "finishReason": "MALFORMED_FUNCTION_CALL", "finishMessage": "Malformed function call: Failed to parse function call"}]});
         let (out, n) = rewrite(&format!("data: {}\n\n", stringify(&payload)));
         assert_eq!(n, 1);
         let rewritten = parse(out["data: ".len()..].trim()).unwrap();
-        assert_eq!(rewritten["candidates"][0]["finishReason"], "MALFORMED_FUNCTION_CALL");
-        assert_eq!(rewritten["candidates"][0]["finishMessage"], GEMINI_MALFORMED_FUNCTION_CALL_MESSAGE);
+        assert_eq!(
+            rewritten["candidates"][0]["finishReason"],
+            "MALFORMED_FUNCTION_CALL"
+        );
+        assert_eq!(
+            rewritten["candidates"][0]["finishMessage"],
+            GEMINI_MALFORMED_FUNCTION_CALL_MESSAGE
+        );
     }
 }

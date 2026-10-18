@@ -134,7 +134,9 @@ async fn clear_quota(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers) { return response; }
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
     let key = body
         .get("key")
         .and_then(Value::as_str)

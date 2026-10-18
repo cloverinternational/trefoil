@@ -29,24 +29,33 @@ pub struct AnthropicStreamTransformer {
 }
 
 impl AnthropicStreamTransformer {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// `Map.get` with SameValueZero keys (`undefined` is a valid key).
     fn tool_index_for(&self, key: Option<&Value>) -> Option<i64> {
-        self.block_index_to_tool_call_index.iter().find(|(k, _)| match (k, key) {
-            (None, None) => true,
-            (Some(a), Some(b)) => strict_eq(a, b),
-            _ => false,
-        }).map(|(_, v)| *v)
+        self.block_index_to_tool_call_index
+            .iter()
+            .find(|(k, _)| match (k, key) {
+                (None, None) => true,
+                (Some(a), Some(b)) => strict_eq(a, b),
+                _ => false,
+            })
+            .map(|(_, v)| *v)
     }
 
     fn set_tool_index(&mut self, key: Option<&Value>, value: i64) {
         let key = key.cloned();
-        if let Some(entry) = self.block_index_to_tool_call_index.iter_mut().find(|(k, _)| match (k, &key) {
-            (None, None) => true,
-            (Some(a), Some(b)) => strict_eq(a, b),
-            _ => false,
-        }) {
+        if let Some(entry) = self
+            .block_index_to_tool_call_index
+            .iter_mut()
+            .find(|(k, _)| match (k, &key) {
+                (None, None) => true,
+                (Some(a), Some(b)) => strict_eq(a, b),
+                _ => false,
+            })
+        {
             entry.1 = value;
         } else {
             self.block_index_to_tool_call_index.push((key, value));
@@ -55,7 +64,9 @@ impl AnthropicStreamTransformer {
 
     fn chunk_for(&mut self, data: &Value) -> Option<Value> {
         // `data.type` on null throws (caught → dropped).
-        if data.is_null() { return None; }
+        if data.is_null() {
+            return None;
+        }
         match get_str(data, &["type"])? {
             "message_start" => {
                 let message = data.get("message").filter(|m| !m.is_null())?;
@@ -85,7 +96,8 @@ impl AnthropicStreamTransformer {
                 let delta = data.get("delta").filter(|d| !d.is_null())?;
                 match get_str(delta, &["type"]) {
                     Some("text_delta") => {
-                        self.accumulated_text.push_str(&to_string(delta.get("text")));
+                        self.accumulated_text
+                            .push_str(&to_string(delta.get("text")));
                         Some(json!({"delta": obj(vec![("content", delta.get("text").cloned())])}))
                     }
                     Some("thinking_delta") => {
@@ -95,9 +107,14 @@ impl AnthropicStreamTransformer {
                             ("thinking", Some(obj(vec![("content", delta.get("thinking").cloned())]))),
                         ])}))
                     }
-                    Some("signature_delta") => Some(json!({"delta": {"thinking": obj(vec![("signature", delta.get("signature").cloned())])}})),
+                    Some("signature_delta") => Some(
+                        json!({"delta": {"thinking": obj(vec![("signature", delta.get("signature").cloned())])}}),
+                    ),
                     Some("input_json_delta") => {
-                        let index = self.tool_index_for(data.get("index")).map(|i| json!(i)).or_else(|| data.get("index").cloned());
+                        let index = self
+                            .tool_index_for(data.get("index"))
+                            .map(|i| json!(i))
+                            .or_else(|| data.get("index").cloned());
                         Some(json!({"delta": {"tool_calls": [obj(vec![
                             ("index", index),
                             ("function", Some(obj(vec![("arguments", delta.get("partial_json").cloned())]))),
@@ -122,7 +139,9 @@ impl AnthropicStreamTransformer {
                     }
                     Some("thinking") => {
                         self.seen_thinking = true;
-                        Some(json!({"delta": {"thinking": {"content": or(block.get("thinking"), Some(&json!(""))).unwrap_or(Value::Null)}}}))
+                        Some(
+                            json!({"delta": {"thinking": {"content": or(block.get("thinking"), Some(&json!(""))).unwrap_or(Value::Null)}}}),
+                        )
                     }
                     _ => None,
                 }
@@ -145,14 +164,16 @@ impl AnthropicStreamTransformer {
                     Some(Value::String(s)) if s == "tool_use" => Some(json!("tool_calls")),
                     other => other.cloned(),
                 };
-                let usage = usage_v.filter(|u| truthy(Some(u))).map(|u| json!({
-                    "input_tokens": input,
-                    "output_tokens": real_output,
-                    "total_tokens": js_plus(&input, &total_output),
-                    "reasoning_tokens": imputed,
-                    "cached_tokens": or_zero(u.get("cache_read_input_tokens")),
-                    "cache_creation_tokens": or_zero(u.get("cache_creation_input_tokens")),
-                }));
+                let usage = usage_v.filter(|u| truthy(Some(u))).map(|u| {
+                    json!({
+                        "input_tokens": input,
+                        "output_tokens": real_output,
+                        "total_tokens": js_plus(&input, &total_output),
+                        "reasoning_tokens": imputed,
+                        "cached_tokens": or_zero(u.get("cache_read_input_tokens")),
+                        "cache_creation_tokens": or_zero(u.get("cache_creation_input_tokens")),
+                    })
+                });
                 Some(obj(vec![("finish_reason", finish), ("usage", usage)]))
             }
             "error" => {
@@ -164,11 +185,14 @@ impl AnthropicStreamTransformer {
                     ("created", Some(json!(now_secs()))),
                     ("event", Some(json!("error"))),
                     ("delta", Some(json!({}))),
-                    ("error", Some(json!({
-                        "statusCode": 500,
-                        "code": or(get(data, &["error", "type"]), Some(&json!("error"))),
-                        "message": or(get(data, &["error", "message"]), Some(&json!("Upstream error"))),
-                    }))),
+                    (
+                        "error",
+                        Some(json!({
+                            "statusCode": 500,
+                            "code": or(get(data, &["error", "type"]), Some(&json!("error"))),
+                            "message": or(get(data, &["error", "message"]), Some(&json!("Upstream error"))),
+                        })),
+                    ),
                 ]))
             }
             _ => None,
@@ -178,8 +202,12 @@ impl AnthropicStreamTransformer {
 
 impl StreamTransformer for AnthropicStreamTransformer {
     fn on_event(&mut self, event: &SseEvent) -> Vec<Value> {
-        if event.data == "[DONE]" { return vec![]; }
-        let Some(data) = parse(&event.data) else { return vec![] };
+        if event.data == "[DONE]" {
+            return vec![];
+        }
+        let Some(data) = parse(&event.data) else {
+            return vec![];
+        };
         self.chunk_for(&data).into_iter().collect()
     }
 }
@@ -189,7 +217,13 @@ mod tests {
     use super::*;
     use crate::engine::js::stringify;
 
-    fn ev(data: Value) -> SseEvent { SseEvent { event: None, data: stringify(&data), id: None } }
+    fn ev(data: Value) -> SseEvent {
+        SseEvent {
+            event: None,
+            data: stringify(&data),
+            id: None,
+        }
+    }
 
     #[test]
     fn converts_event_sequence() {
@@ -197,7 +231,10 @@ mod tests {
         let start = t.on_event(&ev(json!({"type": "message_start", "message": {"id": "msg_1", "model": "claude", "usage": {"input_tokens": 10, "output_tokens": 1, "cache_read_input_tokens": 2}}})));
         assert_eq!(start[0]["id"], json!("msg_1"));
         assert_eq!(start[0]["delta"], json!({"role": "assistant"}));
-        assert_eq!(stringify(&start[0]["usage"]), r#"{"input_tokens":10,"output_tokens":1,"total_tokens":11,"reasoning_tokens":0,"cached_tokens":2,"cache_creation_tokens":0}"#);
+        assert_eq!(
+            stringify(&start[0]["usage"]),
+            r#"{"input_tokens":10,"output_tokens":1,"total_tokens":11,"reasoning_tokens":0,"cached_tokens":2,"cache_creation_tokens":0}"#
+        );
 
         assert_eq!(t.on_event(&ev(json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}})))[0], json!({"delta": {"thinking": {"content": ""}}}));
         assert_eq!(t.on_event(&ev(json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "hm"}})))[0],
@@ -212,23 +249,44 @@ mod tests {
             json!({"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\"a\""}}]}}));
         // Unknown block index falls back to the raw Anthropic index.
         assert_eq!(t.on_event(&ev(json!({"type": "content_block_delta", "index": 7, "delta": {"type": "input_json_delta", "partial_json": "x"}})))[0]["delta"]["tool_calls"][0]["index"], json!(7));
-        assert!(t.on_event(&ev(json!({"type": "content_block_stop", "index": 2}))).is_empty());
+        assert!(t
+            .on_event(&ev(json!({"type": "content_block_stop", "index": 2})))
+            .is_empty());
         let end = t.on_event(&ev(json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 30}})));
-        assert_eq!(stringify(&end[0]), r#"{"finish_reason":"tool_calls","usage":{"input_tokens":0,"output_tokens":6,"total_tokens":30,"reasoning_tokens":24,"cached_tokens":0,"cache_creation_tokens":0}}"#);
+        assert_eq!(
+            stringify(&end[0]),
+            r#"{"finish_reason":"tool_calls","usage":{"input_tokens":0,"output_tokens":6,"total_tokens":30,"reasoning_tokens":24,"cached_tokens":0,"cache_creation_tokens":0}}"#
+        );
         assert!(t.on_event(&ev(json!({"type": "message_stop"}))).is_empty());
-        assert!(t.on_event(&SseEvent { event: None, data: "[DONE]".into(), id: None }).is_empty());
-        assert!(t.on_event(&ev(json!({"type": "content_block_delta"}))).is_empty());
+        assert!(t
+            .on_event(&SseEvent {
+                event: None,
+                data: "[DONE]".into(),
+                id: None
+            })
+            .is_empty());
+        assert!(t
+            .on_event(&ev(json!({"type": "content_block_delta"})))
+            .is_empty());
     }
 
     #[test]
     fn error_event() {
         let mut t = AnthropicStreamTransformer::new();
-        t.on_event(&ev(json!({"type": "message_start", "message": {"id": "msg_1", "model": "claude"}})));
+        t.on_event(&ev(
+            json!({"type": "message_start", "message": {"id": "msg_1", "model": "claude"}}),
+        ));
         let e = t.on_event(&ev(json!({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})));
         assert_eq!(e[0]["event"], json!("error"));
         assert_eq!(e[0]["id"], json!("msg_1"));
-        assert_eq!(stringify(&e[0]["error"]), r#"{"statusCode":500,"code":"overloaded_error","message":"Overloaded"}"#);
+        assert_eq!(
+            stringify(&e[0]["error"]),
+            r#"{"statusCode":500,"code":"overloaded_error","message":"Overloaded"}"#
+        );
         let e = t.on_event(&ev(json!({"type": "error"})));
-        assert_eq!(e[0]["error"], json!({"statusCode": 500, "code": "error", "message": "Upstream error"}));
+        assert_eq!(
+            e[0]["error"],
+            json!({"statusCode": 500, "code": "error", "message": "Upstream error"})
+        );
     }
 }

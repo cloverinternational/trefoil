@@ -29,7 +29,10 @@ pub const DEFAULT_SESSION_TTL_MS: i64 = 20 * 60 * 1000;
 const MAX_PROGRESS: usize = 100;
 
 pub fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 /// `crypto.randomUUID()` (RFC 4122 version 4).
@@ -39,7 +42,14 @@ pub fn random_uuid() -> String {
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     let x: String = b.iter().map(|v| format!("{v:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &x[0..8], &x[8..12], &x[12..16], &x[16..20], &x[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &x[0..8],
+        &x[8..12],
+        &x[12..16],
+        &x[16..20],
+        &x[20..32]
+    )
 }
 
 pub fn random_bytes(len: usize) -> Vec<u8> {
@@ -67,12 +77,16 @@ pub fn search_params(pairs: &[(&str, &str)]) -> String {
 /// `new URLSearchParams(text).get(key)` — a single leading `?` is ignored.
 pub fn search_param(text: &str, key: &str) -> Option<String> {
     let text = text.strip_prefix('?').unwrap_or(text);
-    url::form_urlencoded::parse(text.as_bytes()).find(|(k, _)| k == key).map(|(_, v)| v.into_owned())
+    url::form_urlencoded::parse(text.as_bytes())
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
 }
 
 /// `new URL(value).searchParams.get(key)`.
 pub fn url_param(url: &url::Url, key: &str) -> Option<String> {
-    url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned())
+    url.query_pairs()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
 }
 
 /// `JSON.stringify(value)` for a parsed body (`null` when absent).
@@ -85,7 +99,10 @@ pub fn js_stringify(value: Option<&serde_json::Value>) -> String {
 
 /// pi-ai `getProviderEnvValue("PI_OAUTH_CALLBACK_HOST") || "127.0.0.1"`.
 pub fn callback_host() -> String {
-    std::env::var("PI_OAUTH_CALLBACK_HOST").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "127.0.0.1".into())
+    std::env::var("PI_OAUTH_CALLBACK_HOST")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "127.0.0.1".into())
 }
 
 /// Status text a `fetch` Response would expose (canonical reason phrase).
@@ -117,7 +134,12 @@ pub struct OAuthCredentials {
 
 impl OAuthCredentials {
     pub fn new(access: impl Into<String>, refresh: impl Into<String>, expires: i64) -> Self {
-        Self { access: access.into(), refresh: refresh.into(), expires, ..Default::default() }
+        Self {
+            access: access.into(),
+            refresh: refresh.into(),
+            expires,
+            ..Default::default()
+        }
     }
 
     /// The value written to `oauth_credentials.refresh_token`. Trefoil has no
@@ -139,44 +161,51 @@ impl OAuthCredentials {
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// `OAuthAuthManager.setCredentials`: must durably persist before success.
-pub type CredentialStore = Arc<dyn Fn(String, String, OAuthCredentials) -> BoxFuture<Result<(), String>> + Send + Sync>;
+pub type CredentialStore =
+    Arc<dyn Fn(String, String, OAuthCredentials) -> BoxFuture<Result<(), String>> + Send + Sync>;
 
 /// Persist into Trefoil's encrypted `oauth_credentials` table.
 pub fn database_store(state: crate::AppState) -> CredentialStore {
-    Arc::new(move |provider: String, account: String, credentials: OAuthCredentials| {
-        let state = state.clone();
-        Box::pin(async move {
-            if account.trim().is_empty() {
-                return Err("OAuth: accountId is required to store credentials".to_string());
-            }
-            let Some(pool) = state.inner.database.as_ref() else {
-                return Err("PostgreSQL is required to persist OAuth credentials".to_string());
-            };
-            crate::database::upsert_oauth_credential(
-                pool,
-                &provider,
-                &account,
-                &credentials.access,
-                &credentials.stored_refresh(),
-                credentials.expires,
-            )
-            .await
-            .map_err(|error| match error {
-                sqlx::Error::Protocol(message) => message,
-                other => other.to_string(),
-            })?;
-            let mut accounts = state.inner.oauth_accounts.write().unwrap();
-            if !accounts.iter().any(|(p, a)| p == &provider && a == &account) {
-                accounts.push((provider, account));
-            }
-            Ok(())
-        }) as BoxFuture<Result<(), String>>
-    })
+    Arc::new(
+        move |provider: String, account: String, credentials: OAuthCredentials| {
+            let state = state.clone();
+            Box::pin(async move {
+                if account.trim().is_empty() {
+                    return Err("OAuth: accountId is required to store credentials".to_string());
+                }
+                let Some(pool) = state.inner.database.as_ref() else {
+                    return Err("PostgreSQL is required to persist OAuth credentials".to_string());
+                };
+                crate::database::upsert_oauth_credential(
+                    pool,
+                    &provider,
+                    &account,
+                    &credentials.access,
+                    &credentials.stored_refresh(),
+                    credentials.expires,
+                )
+                .await
+                .map_err(|error| match error {
+                    sqlx::Error::Protocol(message) => message,
+                    other => other.to_string(),
+                })?;
+                let mut accounts = state.inner.oauth_accounts.write().unwrap();
+                if !accounts
+                    .iter()
+                    .any(|(p, a)| p == &provider && a == &account)
+                {
+                    accounts.push((provider, account));
+                }
+                Ok(())
+            }) as BoxFuture<Result<(), String>>
+        },
+    )
 }
 
 // ─── Provider descriptors ───────────────────────────────────────────────────
 
-pub type LoginFn = Arc<dyn Fn(Interaction) -> BoxFuture<Result<OAuthCredentials, String>> + Send + Sync>;
+pub type LoginFn =
+    Arc<dyn Fn(Interaction) -> BoxFuture<Result<OAuthCredentials, String>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct OAuthProviderDescriptor {
@@ -213,17 +242,36 @@ where
 pub fn builtin_provider(id: &str) -> Option<OAuthProviderDescriptor> {
     let (id, name, uses_callback_server) = PROVIDERS.iter().find(|(pid, _, _)| *pid == id)?;
     let login: LoginFn = match *id {
-        "anthropic" => login_fn(|i| crate::anthropic_oauth::login(i, crate::anthropic_oauth::Endpoints::default())),
-        "github-copilot" => login_fn(|i| crate::copilot_oauth::login(i, crate::copilot_oauth::Endpoints::default())),
-        "kimi-coding" => login_fn(|i| crate::kimi_oauth::login(i, crate::kimi_oauth::Endpoints::default())),
-        "meta" => login_fn(|i| crate::meta_oauth::login(i, crate::meta_oauth::Endpoints::default())),
-        "openai" => login_fn(|i| crate::openai_chatgpt_oauth::login(i, crate::openai_chatgpt_oauth::Endpoints::default())),
-        "openai-codex" => login_fn(|i| crate::codex_oauth::login(i, crate::codex_oauth::Endpoints::default())),
-        "openrouter" => login_fn(|i| crate::openrouter_oauth::login(i, crate::openrouter_oauth::Endpoints::default())),
+        "anthropic" => login_fn(|i| {
+            crate::anthropic_oauth::login(i, crate::anthropic_oauth::Endpoints::default())
+        }),
+        "github-copilot" => {
+            login_fn(|i| crate::copilot_oauth::login(i, crate::copilot_oauth::Endpoints::default()))
+        }
+        "kimi-coding" => {
+            login_fn(|i| crate::kimi_oauth::login(i, crate::kimi_oauth::Endpoints::default()))
+        }
+        "meta" => {
+            login_fn(|i| crate::meta_oauth::login(i, crate::meta_oauth::Endpoints::default()))
+        }
+        "openai" => login_fn(|i| {
+            crate::openai_chatgpt_oauth::login(i, crate::openai_chatgpt_oauth::Endpoints::default())
+        }),
+        "openai-codex" => {
+            login_fn(|i| crate::codex_oauth::login(i, crate::codex_oauth::Endpoints::default()))
+        }
+        "openrouter" => login_fn(|i| {
+            crate::openrouter_oauth::login(i, crate::openrouter_oauth::Endpoints::default())
+        }),
         "xai" => login_fn(|i| crate::xai_oauth::login(i, crate::xai_oauth::Endpoints::default())),
         _ => return None,
     };
-    Some(OAuthProviderDescriptor { id: id.to_string(), name: name.to_string(), uses_callback_server: *uses_callback_server, login })
+    Some(OAuthProviderDescriptor {
+        id: id.to_string(),
+        name: name.to_string(),
+        uses_callback_server: *uses_callback_server,
+        login,
+    })
 }
 
 // ─── Session shape ──────────────────────────────────────────────────────────
@@ -243,7 +291,14 @@ pub enum OAuthSessionStatus {
 
 impl OAuthSessionStatus {
     pub fn is_active(self) -> bool {
-        matches!(self, Self::InProgress | Self::AwaitingAuth | Self::AwaitingPrompt | Self::AwaitingManualCode | Self::AwaitingSelect)
+        matches!(
+            self,
+            Self::InProgress
+                | Self::AwaitingAuth
+                | Self::AwaitingPrompt
+                | Self::AwaitingManualCode
+                | Self::AwaitingSelect
+        )
     }
 }
 
@@ -313,8 +368,14 @@ pub struct OAuthSession {
 /// pi-ai `ProviderAuthInteraction.notify` events.
 #[derive(Debug, Clone)]
 pub enum AuthEvent {
-    AuthUrl { url: String, instructions: Option<String> },
-    DeviceCode { user_code: String, verification_uri: String },
+    AuthUrl {
+        url: String,
+        instructions: Option<String>,
+    },
+    DeviceCode {
+        user_code: String,
+        verification_uri: String,
+    },
     Progress(String),
     Info(String),
 }
@@ -322,9 +383,18 @@ pub enum AuthEvent {
 /// pi-ai `ProviderAuthInteraction.prompt` requests.
 #[derive(Debug, Clone)]
 pub enum AuthPrompt {
-    Text { message: String, placeholder: Option<String> },
-    ManualCode { message: String, placeholder: Option<String> },
-    Select { message: String, options: Vec<OAuthSelectOption> },
+    Text {
+        message: String,
+        placeholder: Option<String>,
+    },
+    ManualCode {
+        message: String,
+        placeholder: Option<String>,
+    },
+    Select {
+        message: String,
+        options: Vec<OAuthSelectOption>,
+    },
 }
 
 type Reply = oneshot::Sender<Result<String, String>>;
@@ -350,7 +420,14 @@ impl SessionInternal {
     /// future is dropped).
     fn release(&mut self, reason: &str) {
         let _ = self.abort.send(true);
-        for reply in [self.resolve_prompt.take(), self.resolve_manual_code.take(), self.resolve_select.take()].into_iter().flatten() {
+        for reply in [
+            self.resolve_prompt.take(),
+            self.resolve_manual_code.take(),
+            self.resolve_select.take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             let _ = reply.send(Err(reason.to_string()));
         }
     }
@@ -370,7 +447,12 @@ pub struct OAuthLoginSessionManager {
 
 impl std::fmt::Debug for OAuthLoginSessionManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OAuthLoginSessionManager").field("sessions", &self.inner.sessions.lock().map(|s| s.len()).unwrap_or(0)).finish()
+        f.debug_struct("OAuthLoginSessionManager")
+            .field(
+                "sessions",
+                &self.inner.sessions.lock().map(|s| s.len()).unwrap_or(0),
+            )
+            .finish()
     }
 }
 
@@ -412,8 +494,14 @@ impl Interaction {
                     session.public.auth_info = Some(OAuthAuthInfo { url, instructions });
                     session.public.status = OAuthSessionStatus::AwaitingAuth;
                 }
-                AuthEvent::DeviceCode { user_code, verification_uri } => {
-                    session.public.auth_info = Some(OAuthAuthInfo { url: verification_uri, instructions: Some(format!("Enter code: {user_code}")) });
+                AuthEvent::DeviceCode {
+                    user_code,
+                    verification_uri,
+                } => {
+                    session.public.auth_info = Some(OAuthAuthInfo {
+                        url: verification_uri,
+                        instructions: Some(format!("Enter code: {user_code}")),
+                    });
                     session.public.status = OAuthSessionStatus::AwaitingAuth;
                 }
                 AuthEvent::Progress(message) | AuthEvent::Info(message) => {
@@ -429,7 +517,10 @@ impl Interaction {
 
     /// Register a prompt on the session now; the future yields the answer or
     /// the rejection reason (cancel/expiry).
-    pub fn prompt(&self, prompt: AuthPrompt) -> impl Future<Output = Result<String, String>> + Send + 'static {
+    pub fn prompt(
+        &self,
+        prompt: AuthPrompt,
+    ) -> impl Future<Output = Result<String, String>> + Send + 'static {
         let (tx, rx) = oneshot::channel();
         let registered: Result<(), String> = match prompt {
             AuthPrompt::Select { message, options } => {
@@ -445,22 +536,54 @@ impl Interaction {
                     .ok_or_else(|| "OAuth login session expired".to_string())
                 }
             }
-            AuthPrompt::Text { message, placeholder } => self.await_user_input(false, message, placeholder, tx),
-            AuthPrompt::ManualCode { message, placeholder } => self.await_user_input(true, message, placeholder, tx),
+            AuthPrompt::Text {
+                message,
+                placeholder,
+            } => self.await_user_input(false, message, placeholder, tx),
+            AuthPrompt::ManualCode {
+                message,
+                placeholder,
+            } => self.await_user_input(true, message, placeholder, tx),
         };
         async move {
             registered?;
-            rx.await.unwrap_or_else(|_| Err("OAuth login session expired".to_string()))
+            rx.await
+                .unwrap_or_else(|_| Err("OAuth login session expired".to_string()))
         }
     }
 
     /// Plexus `awaitUserInput`: manual-code entry renders as the dedicated
     /// manual-code input (no generic prompt); other prompts allow empty input.
-    fn await_user_input(&self, manual: bool, message: String, placeholder: Option<String>, tx: Reply) -> Result<(), String> {
+    fn await_user_input(
+        &self,
+        manual: bool,
+        message: String,
+        placeholder: Option<String>,
+        tx: Reply,
+    ) -> Result<(), String> {
         self.with_session(|session| {
-            session.public.prompt = if manual { None } else { Some(OAuthPrompt { message: message.clone(), placeholder: placeholder.clone(), allow_empty: true }) };
-            session.public.manual_code = if manual { Some(OAuthManualCode { message, placeholder }) } else { None };
-            session.public.status = if manual { OAuthSessionStatus::AwaitingManualCode } else { OAuthSessionStatus::AwaitingPrompt };
+            session.public.prompt = if manual {
+                None
+            } else {
+                Some(OAuthPrompt {
+                    message: message.clone(),
+                    placeholder: placeholder.clone(),
+                    allow_empty: true,
+                })
+            };
+            session.public.manual_code = if manual {
+                Some(OAuthManualCode {
+                    message,
+                    placeholder,
+                })
+            } else {
+                None
+            };
+            session.public.status = if manual {
+                OAuthSessionStatus::AwaitingManualCode
+            } else {
+                OAuthSessionStatus::AwaitingPrompt
+            };
             session.touch();
             if manual {
                 session.resolve_manual_code = Some(tx);
@@ -490,17 +613,30 @@ impl OAuthLoginSessionManager {
 
     /// `listProviders()` — descriptor metadata only.
     pub fn list_providers(&self) -> Vec<(String, String, bool)> {
-        PROVIDERS.iter().map(|(id, name, cb)| (id.to_string(), name.to_string(), *cb)).collect()
+        PROVIDERS
+            .iter()
+            .map(|(id, name, cb)| (id.to_string(), name.to_string(), *cb))
+            .collect()
     }
 
     pub fn get_session(&self, session_id: &str) -> Option<OAuthSession> {
         self.cleanup_expired();
-        self.inner.sessions.lock().unwrap().get(session_id).map(|s| s.public.clone())
+        self.inner
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|s| s.public.clone())
     }
 
     /// `createSession`. Callback-server providers supersede an in-flight
     /// login for the same provider and wait for it to settle (port release).
-    pub async fn create_session(&self, provider_id: &str, account_id: &str, store: CredentialStore) -> Result<OAuthSession, String> {
+    pub async fn create_session(
+        &self,
+        provider_id: &str,
+        account_id: &str,
+        store: CredentialStore,
+    ) -> Result<OAuthSession, String> {
         self.cleanup_expired();
         self.start_cleanup();
         if account_id.trim().is_empty() {
@@ -514,7 +650,10 @@ impl OAuthLoginSessionManager {
         if provider.uses_callback_server {
             let completion = {
                 let mut sessions = self.inner.sessions.lock().unwrap();
-                let active = sessions.values_mut().filter(|s| s.public.provider_id == provider_id && s.public.status.is_active()).min_by_key(|s| s.public.created_at);
+                let active = sessions
+                    .values_mut()
+                    .filter(|s| s.public.provider_id == provider_id && s.public.status.is_active())
+                    .min_by_key(|s| s.public.created_at);
                 active.map(|active| {
                     if !active.saving_credentials {
                         active.public.status = OAuthSessionStatus::Cancelled;
@@ -561,7 +700,11 @@ impl OAuthLoginSessionManager {
                 saving_credentials: false,
             },
         );
-        let interaction = Interaction { inner: self.inner.clone(), session_id: id.clone(), abort: abort_rx };
+        let interaction = Interaction {
+            inner: self.inner.clone(),
+            session_id: id.clone(),
+            abort: abort_rx,
+        };
         let inner = self.inner.clone();
         tokio::spawn(async move {
             run_login(inner, provider, interaction, store).await;
@@ -570,9 +713,16 @@ impl OAuthLoginSessionManager {
         Ok(public)
     }
 
-    pub async fn submit_prompt(&self, session_id: &str, value: String) -> Result<OAuthSession, String> {
+    pub async fn submit_prompt(
+        &self,
+        session_id: &str,
+        value: String,
+    ) -> Result<OAuthSession, String> {
         self.with_internal(session_id, |session| {
-            let reply = session.resolve_prompt.take().ok_or("No prompt is awaiting input")?;
+            let reply = session
+                .resolve_prompt
+                .take()
+                .ok_or("No prompt is awaiting input")?;
             let _ = reply.send(Ok(value));
             session.public.prompt = None;
             if session.public.status == OAuthSessionStatus::AwaitingPrompt {
@@ -583,9 +733,16 @@ impl OAuthLoginSessionManager {
         })
     }
 
-    pub async fn submit_manual_code(&self, session_id: &str, value: String) -> Result<OAuthSession, String> {
+    pub async fn submit_manual_code(
+        &self,
+        session_id: &str,
+        value: String,
+    ) -> Result<OAuthSession, String> {
         self.with_internal(session_id, |session| {
-            let reply = session.resolve_manual_code.take().ok_or("No manual code input is awaiting input")?;
+            let reply = session
+                .resolve_manual_code
+                .take()
+                .ok_or("No manual code input is awaiting input")?;
             let _ = reply.send(Ok(value));
             session.public.manual_code = None;
             if session.public.status == OAuthSessionStatus::AwaitingManualCode {
@@ -596,12 +753,21 @@ impl OAuthLoginSessionManager {
         })
     }
 
-    pub async fn submit_select(&self, session_id: &str, value: String) -> Result<OAuthSession, String> {
+    pub async fn submit_select(
+        &self,
+        session_id: &str,
+        value: String,
+    ) -> Result<OAuthSession, String> {
         self.with_internal(session_id, |session| {
             if session.resolve_select.is_none() {
                 return Err("No selection is awaiting input".into());
             }
-            if !session.public.select.as_ref().is_some_and(|s| s.options.iter().any(|o| o.id == value)) {
+            if !session
+                .public
+                .select
+                .as_ref()
+                .is_some_and(|s| s.options.iter().any(|o| o.id == value))
+            {
                 return Err(format!("Unknown option: {value}"));
             }
             let _ = session.resolve_select.take().unwrap().send(Ok(value));
@@ -620,7 +786,10 @@ impl OAuthLoginSessionManager {
             Wait(watch::Receiver<bool>),
         }
         let next = self.with_internal(session_id, |session| {
-            if matches!(session.public.status, OAuthSessionStatus::Success | OAuthSessionStatus::Error) {
+            if matches!(
+                session.public.status,
+                OAuthSessionStatus::Success | OAuthSessionStatus::Error
+            ) {
                 return Ok(Next::Done(session.public.clone()));
             }
             if session.saving_credentials {
@@ -637,7 +806,13 @@ impl OAuthLoginSessionManager {
             Next::Done(session) => Ok(session),
             Next::Wait(mut completion) => {
                 let _ = completion.wait_for(|done| *done).await;
-                self.inner.sessions.lock().unwrap().get(session_id).map(|s| s.public.clone()).ok_or_else(|| "OAuth session not found".into())
+                self.inner
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .get(session_id)
+                    .map(|s| s.public.clone())
+                    .ok_or_else(|| "OAuth session not found".into())
             }
         }
     }
@@ -651,15 +826,25 @@ impl OAuthLoginSessionManager {
         sessions.clear();
     }
 
-    fn with_internal<R>(&self, session_id: &str, f: impl FnOnce(&mut SessionInternal) -> Result<R, String>) -> Result<R, String> {
+    fn with_internal<R>(
+        &self,
+        session_id: &str,
+        f: impl FnOnce(&mut SessionInternal) -> Result<R, String>,
+    ) -> Result<R, String> {
         self.cleanup_expired();
         let mut sessions = self.inner.sessions.lock().unwrap();
-        let session = sessions.get_mut(session_id).ok_or("OAuth session not found")?;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or("OAuth session not found")?;
         f(session)
     }
 
     fn start_cleanup(&self) {
-        if self.inner.cleanup_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .inner
+            .cleanup_started
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
             return;
         }
         let weak = Arc::downgrade(&self.inner);
@@ -697,7 +882,12 @@ fn cleanup(inner: &ManagerInner) {
     });
 }
 
-async fn run_login(inner: Arc<ManagerInner>, provider: OAuthProviderDescriptor, interaction: Interaction, store: CredentialStore) {
+async fn run_login(
+    inner: Arc<ManagerInner>,
+    provider: OAuthProviderDescriptor,
+    interaction: Interaction,
+    store: CredentialStore,
+) {
     let id = interaction.session_id.clone();
     let abort = interaction.clone();
     let login = (provider.login)(interaction);
@@ -723,12 +913,17 @@ async fn run_login(inner: Arc<ManagerInner>, provider: OAuthProviderDescriptor, 
     };
     let (provider_id, account_id) = {
         let mut sessions = inner.sessions.lock().unwrap();
-        let Some(session) = sessions.get_mut(&id) else { return };
+        let Some(session) = sessions.get_mut(&id) else {
+            return;
+        };
         if session.public.status == OAuthSessionStatus::Cancelled {
             return;
         }
         session.saving_credentials = true;
-        (session.public.provider_id.clone(), session.public.account_id.clone())
+        (
+            session.public.provider_id.clone(),
+            session.public.account_id.clone(),
+        )
     };
     let saved = store(provider_id, account_id, credentials).await;
     if let Some(session) = inner.sessions.lock().unwrap().get_mut(&id) {
@@ -768,13 +963,21 @@ const DEVICE_SLOW_DOWN_TIMEOUT_MESSAGE: &str = "Device flow timed out after one 
 
 /// `pollOAuthDeviceCodeFlow`. Cancellation is handled by the session task
 /// dropping this future.
-pub async fn poll_device_code_flow<T, F, Fut>(interval_seconds: Option<f64>, expires_in_seconds: Option<f64>, wait_before_first_poll: bool, mut poll: F) -> Result<T, String>
+pub async fn poll_device_code_flow<T, F, Fut>(
+    interval_seconds: Option<f64>,
+    expires_in_seconds: Option<f64>,
+    wait_before_first_poll: bool,
+    mut poll: F,
+) -> Result<T, String>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<DevicePoll<T>, String>>,
 {
-    let deadline = expires_in_seconds.map(|s| now_ms() as f64 + s * 1000.0).unwrap_or(f64::INFINITY);
-    let mut interval_ms = DEVICE_MIN_INTERVAL_MS.max((interval_seconds.unwrap_or(5.0) * 1000.0).floor() as i64);
+    let deadline = expires_in_seconds
+        .map(|s| now_ms() as f64 + s * 1000.0)
+        .unwrap_or(f64::INFINITY);
+    let mut interval_ms =
+        DEVICE_MIN_INTERVAL_MS.max((interval_seconds.unwrap_or(5.0) * 1000.0).floor() as i64);
     let mut slow_downs = 0;
     let remaining = |deadline: f64| deadline - now_ms() as f64;
     if wait_before_first_poll {
@@ -802,7 +1005,12 @@ where
         }
         tokio::time::sleep(Duration::from_millis((interval_ms as f64).min(left) as u64)).await;
     }
-    Err(if slow_downs > 0 { DEVICE_SLOW_DOWN_TIMEOUT_MESSAGE } else { DEVICE_TIMEOUT_MESSAGE }.to_string())
+    Err(if slow_downs > 0 {
+        DEVICE_SLOW_DOWN_TIMEOUT_MESSAGE
+    } else {
+        DEVICE_TIMEOUT_MESSAGE
+    }
+    .to_string())
 }
 
 // ─── pi-ai utils/oauth-page.js ──────────────────────────────────────────────
@@ -810,11 +1018,18 @@ where
 const LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" aria-hidden="true"><path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z"/><path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/><path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z"/></svg>"##;
 
 fn escape_html(value: &str) -> String {
-    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn render_page(title: &str, heading: &str, message: &str, details: Option<&str>) -> String {
-    let details = details.map(|d| format!("<div class=\"details\">{}</div>", escape_html(d))).unwrap_or_default();
+    let details = details
+        .map(|d| format!("<div class=\"details\">{}</div>", escape_html(d)))
+        .unwrap_or_default();
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -897,11 +1112,21 @@ fn render_page(title: &str, heading: &str, message: &str, details: Option<&str>)
 }
 
 pub fn oauth_success_html(message: &str) -> String {
-    render_page("Authentication successful", "Authentication successful", message, None)
+    render_page(
+        "Authentication successful",
+        "Authentication successful",
+        message,
+        None,
+    )
 }
 
 pub fn oauth_error_html(message: &str, details: Option<&str>) -> String {
-    render_page("Authentication failed", "Authentication failed", message, details)
+    render_page(
+        "Authentication failed",
+        "Authentication failed",
+        message,
+        details,
+    )
 }
 
 // ─── Loopback callback server (pi-ai callback-server.js) ────────────────────
@@ -935,7 +1160,10 @@ impl RawCallbackServer {
 }
 
 fn reason(status: u16) -> &'static str {
-    reqwest::StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or("")
+    reqwest::StatusCode::from_u16(status)
+        .ok()
+        .and_then(|s| s.canonical_reason())
+        .unwrap_or("")
 }
 
 async fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
@@ -957,7 +1185,11 @@ async fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
 }
 
 pub async fn write_response(stream: &mut TcpStream, status: u16, html: &str, no_store: bool) {
-    let cache = if no_store { "cache-control: no-store\r\n" } else { "" };
+    let cache = if no_store {
+        "cache-control: no-store\r\n"
+    } else {
+        ""
+    };
     let head = format!(
         "HTTP/1.1 {status} {}\r\ncontent-type: text/html; charset=utf-8\r\n{cache}content-length: {}\r\nconnection: close\r\n\r\n",
         reason(status),
@@ -972,7 +1204,12 @@ pub async fn write_response(stream: &mut TcpStream, status: u16, html: &str, no_
 /// concurrently so an idle pre-opened browser connection cannot stall it.
 /// `handle` receives the method and the request URL resolved against
 /// `base` (`new URL(request.url, base)`).
-pub async fn serve_until<T, H, Fut>(server: &RawCallbackServer, base: &str, no_store: bool, handle: H) -> Result<T, String>
+pub async fn serve_until<T, H, Fut>(
+    server: &RawCallbackServer,
+    base: &str,
+    no_store: bool,
+    handle: H,
+) -> Result<T, String>
 where
     H: Fn(String, url::Url) -> Fut,
     Fut: Future<Output = CallbackDecision<T>>,
@@ -1019,12 +1256,34 @@ pub struct OAuthCallbackServer {
 }
 
 impl OAuthCallbackServer {
-    pub async fn start(provider_name: &str, host: &str, port: u16, path: &str, redirect_host: Option<&str>, state: Option<String>, timeout: Option<Duration>) -> Result<Self, String> {
-        let raw = RawCallbackServer::bind(host, port).await.map_err(|e| e.to_string())?;
+    pub async fn start(
+        provider_name: &str,
+        host: &str,
+        port: u16,
+        path: &str,
+        redirect_host: Option<&str>,
+        state: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<Self, String> {
+        let raw = RawCallbackServer::bind(host, port)
+            .await
+            .map_err(|e| e.to_string())?;
         let redirect_host = redirect_host.unwrap_or(host);
-        let redirect_host = if redirect_host.contains(':') { format!("[{redirect_host}]") } else { redirect_host.to_string() };
+        let redirect_host = if redirect_host.contains(':') {
+            format!("[{redirect_host}]")
+        } else {
+            redirect_host.to_string()
+        };
         let redirect_uri = format!("http://{redirect_host}:{}{path}", raw.port);
-        Ok(Self { raw, redirect_uri, provider_name: provider_name.into(), path: path.into(), state, timeout, claimed: Arc::new(std::sync::atomic::AtomicBool::new(false)) })
+        Ok(Self {
+            raw,
+            redirect_uri,
+            provider_name: provider_name.into(),
+            path: path.into(),
+            state,
+            timeout,
+            claimed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
     }
 
     pub fn is_claimed(&self) -> bool {
@@ -1044,33 +1303,64 @@ impl OAuthCallbackServer {
             let name = name.clone();
             let fut = async move {
                 if method != "GET" || url.path() != self.path {
-                    return CallbackDecision::Respond(404, oauth_error_html("Callback route not found.", None));
+                    return CallbackDecision::Respond(
+                        404,
+                        oauth_error_html("Callback route not found.", None),
+                    );
                 }
                 if let Some(expected) = &self.state {
                     if url_param(&url, "state").as_deref() != Some(expected.as_str()) {
-                        return CallbackDecision::Respond(400, oauth_error_html("State mismatch.", None));
+                        return CallbackDecision::Respond(
+                            400,
+                            oauth_error_html("State mismatch.", None),
+                        );
                     }
                 }
                 if claimed.load(std::sync::atomic::Ordering::SeqCst) {
-                    return CallbackDecision::Respond(409, oauth_error_html("This sign-in has already been handled.", None));
+                    return CallbackDecision::Respond(
+                        409,
+                        oauth_error_html("This sign-in has already been handled.", None),
+                    );
                 }
                 if let Some(error) = url_param(&url, "error").filter(|e| !e.is_empty()) {
                     let description = url_param(&url, "error_description").unwrap_or(error);
-                    return CallbackDecision::Finish(400, oauth_error_html(&format!("{name} authorization failed."), Some(&description)), Err(format!("{name} authorization failed: {description}")));
+                    return CallbackDecision::Finish(
+                        400,
+                        oauth_error_html(
+                            &format!("{name} authorization failed."),
+                            Some(&description),
+                        ),
+                        Err(format!("{name} authorization failed: {description}")),
+                    );
                 }
                 let Some(code) = url_param(&url, "code").filter(|c| !c.is_empty()) else {
-                    return CallbackDecision::Respond(400, oauth_error_html("Missing authorization code.", None));
+                    return CallbackDecision::Respond(
+                        400,
+                        oauth_error_html("Missing authorization code.", None),
+                    );
                 };
                 claimed.store(true, std::sync::atomic::Ordering::SeqCst);
                 match complete(code).await {
-                    Ok(value) => CallbackDecision::Finish(200, oauth_success_html(&format!("Signed in to {name}. You may now close this page.")), Ok(value)),
-                    Err(message) => CallbackDecision::Finish(502, oauth_error_html(&format!("{name} sign-in failed."), Some(&message)), Err(message)),
+                    Ok(value) => CallbackDecision::Finish(
+                        200,
+                        oauth_success_html(&format!(
+                            "Signed in to {name}. You may now close this page."
+                        )),
+                        Ok(value),
+                    ),
+                    Err(message) => CallbackDecision::Finish(
+                        502,
+                        oauth_error_html(&format!("{name} sign-in failed."), Some(&message)),
+                        Err(message),
+                    ),
                 }
             };
             fut
         });
         match self.timeout {
-            Some(timeout) => tokio::time::timeout(timeout, serve).await.unwrap_or_else(|_| Err(format!("{} sign-in timed out", self.provider_name))),
+            Some(timeout) => tokio::time::timeout(timeout, serve)
+                .await
+                .unwrap_or_else(|_| Err(format!("{} sign-in timed out", self.provider_name))),
             None => serve.await,
         }
     }
@@ -1084,12 +1374,21 @@ pub enum CallbackOrManual<T> {
 /// pi-ai `waitForCallbackOrManualInput`: race the browser callback against a
 /// pasted code / redirect URL. A manual answer that arrives while a callback
 /// is already being completed defers to the callback's outcome.
-pub async fn wait_for_callback_or_manual_input<T, C, Fut>(interaction: &Interaction, callback: Option<&OAuthCallbackServer>, complete: C, message: &str, placeholder: &str) -> Result<CallbackOrManual<T>, String>
+pub async fn wait_for_callback_or_manual_input<T, C, Fut>(
+    interaction: &Interaction,
+    callback: Option<&OAuthCallbackServer>,
+    complete: C,
+    message: &str,
+    placeholder: &str,
+) -> Result<CallbackOrManual<T>, String>
 where
     C: Fn(String) -> Fut,
     Fut: Future<Output = Result<T, String>>,
 {
-    let manual = interaction.prompt(AuthPrompt::ManualCode { message: message.into(), placeholder: Some(placeholder.into()) });
+    let manual = interaction.prompt(AuthPrompt::ManualCode {
+        message: message.into(),
+        placeholder: Some(placeholder.into()),
+    });
     let Some(callback) = callback else {
         return manual.await.map(CallbackOrManual::Manual);
     };
