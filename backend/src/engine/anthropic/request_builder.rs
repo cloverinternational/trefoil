@@ -8,7 +8,7 @@
 use super::helpers::{js_trim_start, json_parse, not_iterable, stringify_opt, type_error};
 use super::thinking_clamp::clamp_anthropic_effort_and_thinking;
 use super::tool_mapper::convert_unified_tools_to_anthropic;
-use crate::engine::js::{get, get_str, obj, or, truthy, Obj};
+use crate::engine::js::{coalesce, get, get_str, obj, or, spread, truthy, Obj};
 use crate::engine::transformer::{EngineError, EngineResult};
 use serde_json::{json, Value};
 
@@ -195,6 +195,29 @@ pub fn build_anthropic_request(request: &Value) -> EngineResult<Value> {
             if let Some(v) = original.get(field) {
                 if !map.contains_key(field) { map.insert(field.into(), v.clone()); }
             }
+        }
+    }
+
+    // Cross-format structured outputs (chat `response_format`, responses
+    // `text.format` — both normalized onto `request.response_format`) are
+    // expressed to Anthropic as `output_config.format`. A client-supplied
+    // `format` (same-format pass-through above) always wins; a pre-existing
+    // `output_config` (e.g. `effort`) is spread-preserved. Only `json_schema`
+    // with a present schema is expressible; an explicit `strict: false` opts
+    // out entirely, while an unset `strict` still forwards the schema.
+    if let Some(rf) = request.get("response_format") {
+        if get_str(rf, &["type"]) == Some("json_schema")
+            && rf.get("json_schema").is_some()
+            && rf.get("strict") != Some(&Value::Bool(false))
+            && get(&payload, &["output_config", "format"]).is_none()
+        {
+            let existing = coalesce(payload.get("output_config"), Some(&json!({}))).unwrap_or(Value::Null);
+            let mut output_config = spread(&existing, &json!({}));
+            output_config.as_object_mut().expect("spread yields an object").insert(
+                "format".into(),
+                json!({"type": "json_schema", "schema": rf["json_schema"]}),
+            );
+            payload.as_object_mut().expect("payload is an object").insert("output_config".into(), output_config);
         }
     }
 

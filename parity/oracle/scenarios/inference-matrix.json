@@ -3943,6 +3943,466 @@
     "input": "draw a cat",
     "stream": true
    }
+  },
+  {
+   "name": "rf chat->x-chat json_schema passthrough",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "description": "an answer",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-msg json_schema strict",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-resp json_schema strict",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "description": "an answer",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-gem json_schema strict",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-msg json_schema strict false",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": false
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-gem json_schema strict false",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": false
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-resp json_schema strict unset",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-msg json_object",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_object"
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-resp json_object",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_object"
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-gem json_object",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_object"
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-msg bare schema",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "type": "object",
+      "properties": {
+       "answer": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "answer"
+      ],
+      "additionalProperties": false
+     }
+    }
+   }
+  },
+  {
+   "name": "rf messages->x-chat output_config.format",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-chat",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "output_config": {
+     "format": {
+      "type": "json_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf messages->x-msg output_config.format passthrough",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-msg",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "output_config": {
+     "format": {
+      "type": "json_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf messages->x-gem output_config.format",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-gem",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "output_config": {
+     "format": {
+      "type": "json_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf responses->x-chat text.format no strict",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-chat",
+    "input": "hi",
+    "max_output_tokens": 40,
+    "text": {
+     "format": {
+      "type": "json_schema",
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf responses->x-msg text.format strict",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-msg",
+    "input": "hi",
+    "max_output_tokens": 40,
+    "text": {
+     "format": {
+      "type": "json_schema",
+      "name": "answer_schema",
+      "strict": true,
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
   }
  ]
 }

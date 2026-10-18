@@ -152,7 +152,20 @@ pub fn build_responses_request(request: &Value) -> EngineResult<Value> {
     if truthy(request.get("text")) {
         payload.insert("text".into(), request["text"].clone());
     } else if let Some(rf) = request.get("response_format").filter(|r| truthy(Some(r))) {
-        payload.insert("text".into(), json!({"format": obj(vec![("type", rf.get("type").cloned()), ("schema", rf.get("json_schema").cloned())])}));
+        if get_str(rf, &["type"]) == Some("json_schema") && rf.get("json_schema").is_some() {
+            // Rebuild the full structured-output descriptor: `name` gets a
+            // fabricated fallback (upstream 400s without it); `strict` is
+            // emitted ONLY when the client set it explicitly.
+            payload.insert("text".into(), json!({"format": obj(vec![
+                ("type", Some(json!("json_schema"))),
+                ("name", Some(coalesce(rf.get("name"), Some(&json!("response_schema"))).unwrap_or(Value::Null))),
+                ("description", rf.get("description").cloned()),
+                ("strict", rf.get("strict").cloned()),
+                ("schema", rf.get("json_schema").cloned()),
+            ])}));
+        } else {
+            payload.insert("text".into(), json!({"format": obj(vec![("type", rf.get("type").cloned())])}));
+        }
     }
 
     // Same-format (responses → responses) non-pass-through: carry native

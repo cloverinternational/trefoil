@@ -158,10 +158,15 @@ pub fn build_gemini_request(request: &Value) -> EngineResult<Value> {
         ("maxOutputTokens", request.get("max_tokens").cloned()),
         ("temperature", request.get("temperature").cloned()),
     ];
-    if let Some(rf) = request.get("response_format").filter(|v| truthy(Some(v))) {
+    // An explicit `strict: false` on a `json_schema` descriptor opts out
+    // entirely (Gemini's `responseJsonSchema` is always enforcing); an omitted
+    // `strict` still forwards.
+    if let Some(rf) = request.get("response_format").filter(|v| {
+        truthy(Some(v)) && !(get_str(v, &["type"]) == Some("json_schema") && v.get("strict") == Some(&Value::Bool(false)))
+    }) {
         if matches!(get_str(rf, &["type"]), Some("json_object" | "json_schema")) {
             generation_config.push(("responseMimeType", Some(json!("application/json"))));
-            if truthy(rf.get("json_schema")) { generation_config.push(("responseJsonSchema", rf.get("json_schema").cloned())); }
+            if rf.get("json_schema").is_some() { generation_config.push(("responseJsonSchema", rf.get("json_schema").cloned())); }
         }
     }
     if let Some(reasoning) = request.get("reasoning").filter(|v| truthy(Some(v))) {

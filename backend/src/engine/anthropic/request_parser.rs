@@ -135,6 +135,19 @@ pub fn parse_anthropic_request(input: &Value) -> EngineResult<Value> {
         ("tool_choice", input.get("tool_choice").cloned()),
     ]);
 
+    // Cross-format structured outputs: carry `output_config.format` onto the
+    // unified `response_format` so messages -> chat/responses/gemini routes can
+    // translate it instead of silently dropping it. Only `json_schema` is
+    // carried. `effort` is deliberately NOT carried here.
+    if get_str(input, &["output_config", "format", "type"]) == Some("json_schema") {
+        if let Some(schema) = get(input, &["output_config", "format", "schema"]) {
+            result.as_object_mut().expect("result is an object").insert(
+                "response_format".into(),
+                json!({"type": "json_schema", "json_schema": schema}),
+            );
+        }
+    }
+
     // Map Thinking/Reasoning Configuration
     if truthy(input.get("thinking")) {
         let thinking_type = get(input, &["thinking", "type"]);

@@ -10,6 +10,31 @@ pub const GEMINI_MALFORMED_FUNCTION_CALL_CODE: &str = "MALFORMED_FUNCTION_CALL";
 
 pub struct OpenAITransformer;
 
+/// `normalizeChatResponseFormat`: Chat Completions `response_format` → unified
+/// shape (`json_schema` holds the raw schema; `name`/`description`/`strict`
+/// are siblings). The standard spelling nests the schema under
+/// `json_schema.schema`; a bare schema object is accepted as-is. Returns
+/// `None` (undefined) when the client sent nothing usable.
+fn normalize_chat_response_format(input: Option<&Value>) -> Option<Value> {
+    let input = input.filter(|v| truthy(Some(v)) && matches!(v, Value::Object(_) | Value::Array(_)))?;
+    let ty = input.get("type").and_then(Value::as_str)?;
+    if ty != "json_schema" {
+        return Some(json!({"type": ty}));
+    }
+    let js = input.get("json_schema");
+    if !truthy(js) || !matches!(js, Some(Value::Object(_) | Value::Array(_))) {
+        return Some(obj(vec![("type", Some(json!("json_schema"))), ("json_schema", js.cloned())]));
+    }
+    let js = js.expect("checked above");
+    Some(obj(vec![
+        ("type", Some(json!("json_schema"))),
+        ("json_schema", coalesce(js.get("schema"), Some(js))),
+        ("name", js.get("name").cloned()),
+        ("description", js.get("description").cloned()),
+        ("strict", js.get("strict").cloned()),
+    ]))
+}
+
 /// Unified usage → Chat Completions usage payload (`buildChatUsagePayload`).
 pub fn chat_usage_payload(usage: &Value) -> Value {
     let input = get_f64(usage, &["input_tokens"]).unwrap_or(0.0);
@@ -49,6 +74,11 @@ impl Transformer for OpenAITransformer {
         };
         let positive = |v: Option<&Value>| v.and_then(Value::as_f64).filter(|n| *n > 0.0);
         let max_tokens = positive(input.get("max_completion_tokens")).or_else(|| positive(input.get("max_tokens")));
+        // Normalize `response_format` onto the unified request using the same
+        // shape the Responses parser produces (`json_schema` holds the raw
+        // schema; `name`/`description`/`strict` are siblings). Absent when the
+        // client sent nothing usable.
+        let response_format = normalize_chat_response_format(input.get("response_format"));
         let mut out = obj(vec![
             ("messages", if input.get("messages").is_some() { Some(messages) } else { None }),
             ("model", input.get("model").cloned()),
@@ -58,6 +88,7 @@ impl Transformer for OpenAITransformer {
             ("tools", input.get("tools").cloned()),
             ("tool_choice", input.get("tool_choice").cloned()),
             ("reasoning", input.get("reasoning").cloned()),
+            ("response_format", response_format),
         ]);
         let _ = &mut out;
         Ok(out)
@@ -103,13 +134,20 @@ impl Transformer for OpenAITransformer {
         assign(&mut out, "tools", normalized_tools.filter(|t| !t.is_empty()).map(Value::Array).as_ref());
         assign(&mut out, "tool_choice", request.get("tool_choice"));
         let _ = caller_mt;
-        if let Some(rf) = request.get("response_format").filter(|v| truthy(Some(v))) {
-            if get_str(rf, &["type"]) == Some("json_schema") && truthy(rf.get("json_schema")) {
+        // Same-format fast path (chat -> chat): the client's `response_format`
+        // is already in `out` via the `originalBody` spread above — leave it
+        // byte-identical. The rebuild below runs ONLY when the original body
+        // carries no descriptor (cross-format routes, or middleware-injected).
+        let same_format_has_descriptor = same_api && original.and_then(|o| o.get("response_format")).is_some();
+        if let Some(rf) = request.get("response_format").filter(|v| truthy(Some(v)) && !same_format_has_descriptor) {
+            if get_str(rf, &["type"]) == Some("json_schema") && rf.get("json_schema").is_some() {
+                // `name` gets a fabricated fallback (upstream 400s without it);
+                // `strict` is emitted ONLY when the client set it explicitly.
                 out.insert("response_format".into(), json!({"type": "json_schema", "json_schema": obj(vec![
                     ("name", Some(coalesce(rf.get("name"), Some(&json!("response_schema"))).unwrap_or(Value::Null))),
                     ("description", rf.get("description").cloned()),
                     ("schema", rf.get("json_schema").cloned()),
-                    ("strict", Some(coalesce(rf.get("strict"), Some(&json!(true))).unwrap_or(Value::Null))),
+                    ("strict", rf.get("strict").cloned()),
                 ])}));
             } else {
                 out.insert("response_format".into(), rf.clone());
