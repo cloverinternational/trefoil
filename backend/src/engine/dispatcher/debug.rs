@@ -300,9 +300,16 @@ fn reconstruct_with(body: &str, skip_done: bool, update: fn(Option<Value>, Value
 
 fn spread_obj(v: &Value) -> Obj { v.as_object().cloned().unwrap_or_default() }
 
-fn set_index(arr: &mut Vec<Value>, idx: usize, v: Value) {
+/// Upper bound on a stream-supplied array index during reconstruction. JS
+/// assigns sparse indices, but padding a Vec up to an arbitrary upstream index
+/// would allocate without bound, so such a chunk is skipped like a TS throw.
+const MAX_RECONSTRUCT_INDEX: usize = 4096;
+
+fn set_index(arr: &mut Vec<Value>, idx: usize, v: Value) -> Option<()> {
+    if idx > MAX_RECONSTRUCT_INDEX { return None; }
     while arr.len() <= idx { arr.push(Value::Null); }
     arr[idx] = v;
+    Some(())
 }
 
 fn update_chat(acc: Option<Value>, chunk: Value) -> Option<Option<Value>> {
@@ -313,7 +320,7 @@ fn update_chat(acc: Option<Value>, chunk: Value) -> Option<Option<Value>> {
         let mut out: Vec<Value> = acc.get("choices").and_then(Value::as_array).cloned().unwrap_or_default();
         for cc in choices.as_array().cloned().unwrap_or_default() {
             let idx = cc.get("index").filter(|v| !v.is_null()).and_then(Value::as_u64).unwrap_or(0) as usize;
-            if !truthy(out.get(idx)) { set_index(&mut out, idx, json!({"index": idx, "delta": {}})); }
+            if !truthy(out.get(idx)) { set_index(&mut out, idx, json!({"index": idx, "delta": {}}))?; }
             let Some(delta) = cc.get("delta").filter(|d| truthy(Some(d))) else { continue };
             let acc_choice = out[idx].as_object_mut()?;
             let acc_delta = acc_choice.get_mut("delta").and_then(Value::as_object_mut)?;
@@ -332,7 +339,7 @@ fn update_chat(acc: Option<Value>, chunk: Value) -> Option<Option<Value>> {
                 let list = acc_delta.get_mut("tool_calls").and_then(Value::as_array_mut)?;
                 for nt in tools {
                     let t_idx = nt.get("index").and_then(Value::as_u64)? as usize;
-                    if !truthy(list.get(t_idx)) { set_index(list, t_idx, json!({"function": {"name": "", "arguments": ""}})); }
+                    if !truthy(list.get(t_idx)) { set_index(list, t_idx, json!({"function": {"name": "", "arguments": ""}}))?; }
                     let at = list[t_idx].as_object_mut()?;
                     if !truthy(at.get("function")) { at.insert("function".into(), json!({"name": "", "arguments": ""})); }
                     if !at["function"]["arguments"].is_string() { at.get_mut("function").and_then(Value::as_object_mut)?.insert("arguments".into(), json!("")); }
@@ -378,7 +385,7 @@ fn update_messages(acc: Option<Value>, chunk: Value) -> Option<Option<Value>> {
                 _ => {}
             }
             let content = acc.get_mut("content").and_then(Value::as_array_mut)?;
-            set_index(content, idx, Value::Object(b));
+            set_index(content, idx, Value::Object(b))?;
         }
         Some("content_block_delta") => {
             let idx = chunk.get("index").and_then(Value::as_u64)? as usize;
@@ -392,7 +399,7 @@ fn update_messages(acc: Option<Value>, chunk: Value) -> Option<Option<Value>> {
                     "thought_delta" => json!({"type": "thought", "thought": ""}),
                     _ => json!({"type": "text", "text": ""}),
                 };
-                set_index(content, idx, init);
+                set_index(content, idx, init)?;
             }
             let target = content[idx].as_object_mut()?;
             let append = |target: &mut Obj, key: &str, add: Option<&Value>| {
@@ -439,7 +446,7 @@ fn update_gemini(acc: Option<Value>, chunk: Value) -> Option<Option<Value>> {
         if !truthy(a.get("candidates")) { a.insert("candidates".into(), json!([])); }
         let acc_cands = a.get_mut("candidates").and_then(Value::as_array_mut)?;
         for (index, cc) in cands.iter().enumerate() {
-            if !truthy(acc_cands.get(index)) { set_index(acc_cands, index, json!({"content": {"parts": [], "role": "model"}, "index": index})); }
+            if !truthy(acc_cands.get(index)) { set_index(acc_cands, index, json!({"content": {"parts": [], "role": "model"}, "index": index}))?; }
             let ac = acc_cands[index].as_object_mut()?;
             if truthy(cc.get("finishReason")) { ac.insert("finishReason".into(), cc["finishReason"].clone()); }
             let Some(parts) = get_arr(cc, &["content", "parts"]).filter(|_| truthy(cc.get("content"))) else { continue };
@@ -484,7 +491,7 @@ fn update_responses(acc: Option<Value>, event: Value) -> Option<Option<Value>> {
         Some("response.output_item.added") => {
             let len = acc.get("output").and_then(Value::as_array).map(|o| o.len())?;
             let idx = event.get("output_index").filter(|v| !v.is_null()).and_then(Value::as_u64).map(|i| i as usize).unwrap_or(len);
-            if truthy(event.get("item")) { set_index(acc.get_mut("output").and_then(Value::as_array_mut)?, idx, Value::Object(spread_obj(&event["item"]))); }
+            if truthy(event.get("item")) { set_index(acc.get_mut("output").and_then(Value::as_array_mut)?, idx, Value::Object(spread_obj(&event["item"])))?; }
         }
         Some("response.output_text.delta") => {
             let oi = event.get("output_index").and_then(Value::as_u64).map(|i| i as usize);
@@ -508,7 +515,7 @@ fn update_responses(acc: Option<Value>, event: Value) -> Option<Option<Value>> {
         }
         Some("response.output_item.done") => {
             if let (true, Some(oi)) = (truthy(event.get("item")), event.get("output_index").filter(|v| !v.is_null()).and_then(Value::as_u64)) {
-                set_index(acc.get_mut("output").and_then(Value::as_array_mut)?, oi as usize, Value::Object(spread_obj(&event["item"])));
+                set_index(acc.get_mut("output").and_then(Value::as_array_mut)?, oi as usize, Value::Object(spread_obj(&event["item"])))?;
             }
         }
         Some("response.completed") => {
@@ -543,19 +550,20 @@ fn reconstruct_oauth(body: &str) -> Value {
         if t.is_empty() { continue; }
         let Some(ev) = parse(t) else { continue };
         let idx = ev.get("contentIndex").filter(|v| !v.is_null()).and_then(Value::as_u64).unwrap_or(0) as usize;
+        if idx > MAX_RECONSTRUCT_INDEX { continue; }
         match get_str(&ev, &["type"]) {
             Some("text_delta") => content.push_str(&ev.get("delta").filter(|d| truthy(Some(d))).map(|d| to_string(Some(d))).unwrap_or_default()),
             Some("thinking_delta") => reasoning.push_str(&ev.get("delta").filter(|d| truthy(Some(d))).map(|d| to_string(Some(d))).unwrap_or_default()),
-            Some("toolcall_start") => { if !truthy(tools.get(idx)) { set_index(&mut tools, idx, blank()); } }
+            Some("toolcall_start") => { if !truthy(tools.get(idx)) { let _ = set_index(&mut tools, idx, blank()); } }
             Some("toolcall_delta") => {
-                if !truthy(tools.get(idx)) { set_index(&mut tools, idx, blank()); }
+                if !truthy(tools.get(idx)) { let _ = set_index(&mut tools, idx, blank()); }
                 let tc = get(&ev, &["partial", "content", &idx.to_string()]).cloned();
                 if let Some(id) = tc.as_ref().and_then(|t| t.get("id")).filter(|v| truthy(Some(v))) { tools[idx]["id"] = id.clone(); }
                 if let Some(n) = tc.as_ref().and_then(|t| t.get("name")).filter(|v| truthy(Some(v))) { tools[idx]["function"]["name"] = n.clone(); }
                 if let Some(d) = ev.get("delta").and_then(Value::as_str) { let prev = to_string(tools[idx]["function"].get("arguments")); tools[idx]["function"]["arguments"] = json!(prev + d); }
             }
             Some("toolcall_end") => {
-                if !truthy(tools.get(idx)) { set_index(&mut tools, idx, blank()); }
+                if !truthy(tools.get(idx)) { let _ = set_index(&mut tools, idx, blank()); }
                 if let Some(id) = get(&ev, &["toolCall", "id"]).filter(|v| truthy(Some(v))) { tools[idx]["id"] = id.clone(); }
                 if let Some(n) = get(&ev, &["toolCall", "name"]).filter(|v| truthy(Some(v))) { tools[idx]["function"]["name"] = n.clone(); }
                 if let Some(a) = get(&ev, &["toolCall", "arguments"]).filter(|v| truthy(Some(v))) { tools[idx]["function"]["arguments"] = json!(stringify(a)); }

@@ -54,7 +54,7 @@ async fn list_presets(State(state): State<AppState>, headers: HeaderMap) -> Resp
             let presets = value
                 .get("presets")
                 .cloned()
-                .unwrap_or_else(|| value);
+                .unwrap_or(value);
             Json(serde_json::json!({ "data": presets, "source": "local" })).into_response()
         }
         Err(error) => (

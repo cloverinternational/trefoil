@@ -173,7 +173,7 @@ fn describe_attempt_tag(entry: Option<&RetryAttemptRecord>) -> Option<String> {
         AttemptStatus::Skipped => Some("skipped".into()),
         AttemptStatus::Success => None,
         AttemptStatus::Failed => Some(match entry.status_code {
-            Some(c) if c == 200.0 => "empty".into(),
+            Some(200.0) => "empty".into(),
             Some(c) => js_num_string(c),
             None => if entry.reason.to_lowercase().contains("stall") { "stall".into() } else { "network".into() },
         }),

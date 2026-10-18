@@ -53,6 +53,18 @@ fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     }
 }
 
+/// JavaScript `encodeURIComponent`, used (like Plexus) for ids interpolated
+/// into internal management paths so arbitrary client-supplied ids always form
+/// a valid request URI.
+fn encode_uri_component(value: &str) -> String {
+    crate::pi_catalog::encode_uri_component(value)
+}
+
+/// Plexus `encodePathPreservingSlashes`: `encodeURIComponent` per `/` segment.
+fn encode_path_preserving_slashes(value: &str) -> String {
+    value.split('/').map(encode_uri_component).collect::<Vec<_>>().join("/")
+}
+
 fn enabled(state: &AppState) -> bool {
     state
         .inner
@@ -455,7 +467,7 @@ async fn quota_checker_operation(
         ),
         "list" => ("GET", "/v0/management/quota-checkers".to_string(), None),
         "get" => match args.get("id").and_then(Value::as_str) {
-            Some(id) => ("GET", format!("/v0/management/quota-checkers/{id}"), None),
+            Some(id) => ("GET", format!("/v0/management/quota-checkers/{}", encode_uri_component(id)), None),
             None => return rpc_error(id, -32602, "id is required"),
         },
         "put" | "update" | "delete" => {
@@ -468,7 +480,7 @@ async fn quota_checker_operation(
                 }
                 (
                     "DELETE",
-                    format!("/v0/management/custom-checkers/{checker_id}"),
+                    format!("/v0/management/custom-checkers/{}", encode_uri_component(checker_id)),
                     None,
                 )
             } else {
@@ -481,7 +493,7 @@ async fn quota_checker_operation(
                     } else {
                         "PATCH"
                     },
-                    format!("/v0/management/custom-checkers/{checker_id}"),
+                    format!("/v0/management/custom-checkers/{}", encode_uri_component(checker_id)),
                     Some(body.clone()),
                 )
             }
@@ -851,7 +863,7 @@ async fn debug_logs_operation(
                 } else {
                     "DELETE"
                 },
-                format!("/v0/management/debug/logs/{log_id}"),
+                format!("/v0/management/debug/logs/{}", encode_path_preserving_slashes(log_id)),
             )
         }
         "delete_all_logs" => {
@@ -881,7 +893,7 @@ async fn quota_operation(
             let Some(key) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("GET", format!("/v0/management/quota/status/{key}"), None)
+            ("GET", format!("/v0/management/quota/status/{}", encode_uri_component(key)), None)
         }
         "clear" | "recompute" => {
             if operation == "clear"
@@ -968,7 +980,7 @@ async fn user_quota_operation(
                 "delete" => "DELETE",
                 _ => unreachable!(),
             };
-            (method, format!("/v0/management/user-quotas/{name}"), body)
+            (method, format!("/v0/management/user-quotas/{}", encode_uri_component(name)), body)
         }
         _ => unreachable!(),
     };
@@ -992,7 +1004,7 @@ async fn model_alias_operation(
             let Some(slug) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("GET", format!("/v0/management/aliases/{slug}"), None)
+            ("GET", format!("/v0/management/aliases/{}", encode_path_preserving_slashes(slug)), None)
         }
         "put" | "create" | "update" => {
             let Some(slug) = args.get("id").and_then(Value::as_str) else {
@@ -1007,7 +1019,7 @@ async fn model_alias_operation(
                 } else {
                     "PATCH"
                 },
-                format!("/v0/management/aliases/{slug}"),
+                format!("/v0/management/aliases/{}", encode_path_preserving_slashes(slug)),
                 Some(body.clone()),
             )
         }
@@ -1018,7 +1030,7 @@ async fn model_alias_operation(
             let Some(slug) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("DELETE", format!("/v0/management/models/{slug}"), None)
+            ("DELETE", format!("/v0/management/models/{}", encode_path_preserving_slashes(slug)), None)
         }
         "delete_all" => {
             if args.get("destructive").and_then(Value::as_str) != Some("acknowledged") {
@@ -1093,7 +1105,7 @@ async fn key_operation(
             let Some(name) = name else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("GET", format!("/v0/management/keys/{name}"), None)
+            ("GET", format!("/v0/management/keys/{}", encode_uri_component(name)), None)
         }
         "put" | "create" | "update" => {
             let Some(name) = name else {
@@ -1106,7 +1118,7 @@ async fn key_operation(
             };
             (
                 method,
-                format!("/v0/management/keys/{name}"),
+                format!("/v0/management/keys/{}", encode_uri_component(name)),
                 Some(args.get("body").cloned().unwrap_or_else(|| json!({}))),
             )
         }
@@ -1118,9 +1130,9 @@ async fn key_operation(
                 return rpc_error(id, -32602, "id is required");
             };
             let path = if operation == "delete" {
-                format!("/v0/management/keys/{name}")
+                format!("/v0/management/keys/{}", encode_uri_component(name))
             } else {
-                format!("/v0/management/keys/{name}/disable")
+                format!("/v0/management/keys/{}/disable", encode_uri_component(name))
             };
             (
                 if operation == "delete" {
@@ -1214,7 +1226,7 @@ async fn mcp_gateway_operation(
             let Some(name) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("GET", format!("/v0/management/mcp-servers/{name}"), None)
+            ("GET", format!("/v0/management/mcp-servers/{}", encode_uri_component(name)), None)
         }
         "put" | "create" | "update" => {
             let Some(name) = args.get("id").and_then(Value::as_str) else {
@@ -1229,7 +1241,7 @@ async fn mcp_gateway_operation(
                 } else {
                     "PATCH"
                 },
-                format!("/v0/management/mcp-servers/{name}"),
+                format!("/v0/management/mcp-servers/{}", encode_uri_component(name)),
                 Some(body.clone()),
             )
         }
@@ -1240,7 +1252,8 @@ async fn mcp_gateway_operation(
             (
                 "GET",
                 format!(
-                    "/v0/management/mcp-servers/{name}/{}",
+                    "/v0/management/mcp-servers/{}/{}",
+                    encode_uri_component(name),
                     if operation == "status" {
                         "status"
                     } else {
@@ -1256,7 +1269,7 @@ async fn mcp_gateway_operation(
             };
             (
                 "POST",
-                format!("/v0/management/mcp-servers/{name}/{}", operation),
+                format!("/v0/management/mcp-servers/{}/{operation}", encode_uri_component(name)),
                 None,
             )
         }
@@ -1267,7 +1280,7 @@ async fn mcp_gateway_operation(
             let Some(name) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("DELETE", format!("/v0/management/mcp-servers/{name}"), None)
+            ("DELETE", format!("/v0/management/mcp-servers/{}", encode_uri_component(name)), None)
         }
         _ => unreachable!(),
     };
@@ -1332,7 +1345,7 @@ async fn usage_operation(
             let Some(request_id) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            format!("/v0/management/usage/{}", request_id.replace('/', "%2F"))
+            format!("/v0/management/usage/{}", encode_uri_component(request_id))
         }
         _ => unreachable!(),
     };
@@ -1428,7 +1441,7 @@ async fn provider_operation(
                 } else {
                     "PATCH"
                 },
-                format!("/v0/management/providers/{provider_id}"),
+                format!("/v0/management/providers/{}", encode_path_preserving_slashes(provider_id)),
                 Some(body.clone()),
             )
         }
@@ -1438,7 +1451,7 @@ async fn provider_operation(
             }
             (
                 "DELETE",
-                format!("/v0/management/providers/{provider_id}"),
+                format!("/v0/management/providers/{}", encode_path_preserving_slashes(provider_id)),
                 None,
             )
         }

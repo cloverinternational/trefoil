@@ -226,7 +226,7 @@ pub fn parse_catalog(provider_id: &str, value: Value) -> Result<Vec<Value>, Stri
 }
 
 /// JavaScript `encodeURIComponent`.
-fn encode_uri_component(value: &str) -> String {
+pub(crate) fn encode_uri_component(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {

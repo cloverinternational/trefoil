@@ -69,7 +69,7 @@ fn is_valid_quota_name(name: &str) -> bool {
         return false;
     }
     let rest: Vec<char> = chars.collect();
-    if rest.len() < 1 || rest.len() > 62 {
+    if rest.is_empty() || rest.len() > 62 {
         return false;
     }
     rest.iter()

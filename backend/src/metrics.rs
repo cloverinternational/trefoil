@@ -245,7 +245,7 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
             count,
         ));
     }
-    body.push_str("\n");
+    body.push('\n');
     let rendered = render_exposition(&body);
     *metrics_cache().lock().unwrap() = Some((owner, chrono::Utc::now().timestamp_millis() + metrics_cache_ttl_ms(), rendered.clone()));
     exposition_response(rendered, "MISS")

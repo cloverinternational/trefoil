@@ -34,3 +34,13 @@ scrypt = { version = "0.11", default-features = false }
 tiktoken-rs = "0.12.1"
 
 [dev-dependencies]
+
+# The engine is a line-by-line port of Plexus (TypeScript); keeping its function
+# signatures, error types, and enum layouts faithful to the reference makes
+# side-by-side review possible. These structural lints would force reshaping
+# those signatures, so they are allowed crate-wide. Everything else is fixed.
+[lints.clippy]
+result_large_err = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+large_enum_variant = "allow"

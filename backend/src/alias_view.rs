@@ -264,7 +264,9 @@ pub fn legacy_view(config: &ModelConfig) -> Value {
     legacy.insert("priority".into(), json!(config.priority));
     legacy.insert("target_groups".into(), Value::Array(config.target_groups.iter().map(|g| json!({
         "name": g.name, "selector": g.selector,
-        "targets": g.targets.iter().map(|t| { let mut m = Map::new(); if let Some(v) = &t.provider { m.insert("provider".into(), json!(v)); } if let Some(v) = &t.model { m.insert("model".into(), json!(v)); } if let Some(v) = &t.alias { m.insert("alias".into(), json!(v)); } m.insert("enabled".into(), json!(t.enabled)); Value::Object(m) }).collect::<Vec<_>>(),
+        "targets": g.targets.iter().map(|t| { let mut m = Map::new(); if let Some(v) = &t.provider { m.insert("provider".into(), json!(v)); }
+            if let Some(v) = &t.model { m.insert("model".into(), json!(v)); }
+            if let Some(v) = &t.alias { m.insert("alias".into(), json!(v)); } m.insert("enabled".into(), json!(t.enabled)); Value::Object(m) }).collect::<Vec<_>>(),
     })).collect()));
     if !config.additional_aliases.is_empty() { legacy.insert("additional_aliases".into(), json!(config.additional_aliases)); }
     for (key, value) in [("use_image_fallthrough", config.use_image_fallthrough), ("enforce_limits", config.enforce_limits), ("sticky_session", config.sticky_session), ("synthetic_safeguard_approval", config.synthetic_safeguard_approval)] { legacy.insert(key.into(), json!(value)); }

@@ -887,9 +887,9 @@ async fn patch_trusted_proxies(
 
 fn background_exploration_body(state: &AppState) -> serde_json::Value {
     serde_json::json!({
-        "enabled": config_value(&state, "backgroundExploration.enabled", serde_json::json!(false)),
-        "stalenessThresholdSeconds": config_value(&state, "backgroundExploration.stalenessThresholdSeconds", serde_json::json!(600)),
-        "workerConcurrency": config_value(&state, "backgroundExploration.workerConcurrency", serde_json::json!(2)),
+        "enabled": config_value(state, "backgroundExploration.enabled", serde_json::json!(false)),
+        "stalenessThresholdSeconds": config_value(state, "backgroundExploration.stalenessThresholdSeconds", serde_json::json!(600)),
+        "workerConcurrency": config_value(state, "backgroundExploration.workerConcurrency", serde_json::json!(2)),
     })
 }
 

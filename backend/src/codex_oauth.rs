@@ -52,7 +52,7 @@ fn parse_authorization_input(input: &str) -> (Option<String>, Option<String>) {
 /// `atob` (forgiving base64; base64url characters are rejected).
 fn atob(input: &str) -> Option<Vec<u8>> {
     let mut s: String = input.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-    if s.len() % 4 == 0 {
+    if s.len().is_multiple_of(4) {
         if s.ends_with("==") {
             s.truncate(s.len() - 2);
         } else if s.ends_with('=') {

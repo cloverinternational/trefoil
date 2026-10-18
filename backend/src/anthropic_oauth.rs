@@ -110,7 +110,7 @@ async fn exchange_authorization_code(token_url: &str, code: &str, state: &str, v
         None => missing.push(String::new()),
         Some(map) => {
             for field in ["access_token", "refresh_token"] {
-                if !map.get(field).and_then(Value::as_str).is_some_and(|v| !v.is_empty()) {
+                if map.get(field).and_then(Value::as_str).is_none_or(|v| v.is_empty()) {
                     missing.push(field.to_string());
                 }
             }

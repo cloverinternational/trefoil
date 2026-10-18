@@ -6,7 +6,8 @@
 //! - `services/pi-ai/catalog.ts`: `getCatalogModel('anthropic', id)` reduced
 //!   to the `thinkingLevelMap.off` lookup `thinking-clamp.ts` performs
 //! - `utils/api-format.ts`: `getApiBaseType`
-//! plus a few JS-semantics helpers (`+`, `trimStart`, Bun TypeErrors).
+//!
+//! Plus a few JS-semantics helpers (`+`, `trimStart`, Bun TypeErrors).
 use crate::engine::js::{to_number, to_string};
 use crate::engine::transformer::EngineError;
 use serde_json::Value;

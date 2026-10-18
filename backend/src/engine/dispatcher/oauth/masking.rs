@@ -393,7 +393,15 @@ fn sign_billing_header(body: &mut Value) {
     if !text.starts_with(BILLING_HEADER_PREFIX) || !text.contains("cch=00000;") { return; }
     let cch = sha256_hex(stringify(body).as_bytes())[..5].to_owned();
     let signed = text.replacen("cch=00000;", &format!("cch={cch};"), 1);
-    body["system"][0]["text"] = json!(signed);
+    // `body.system[0].text = signed`: `get_str` above also matches a `"0"`
+    // key on an object `system`, so mirror JS property access rather than
+    // indexing (which would panic on a non-array).
+    let first = match body.get_mut("system") {
+        Some(Value::Array(items)) => items.get_mut(0),
+        Some(Value::Object(map)) => map.get_mut("0"),
+        _ => None,
+    };
+    if let Some(Value::Object(first)) = first { first.insert("text".into(), json!(signed)); }
 }
 
 /// `applyClaudeCodeMasking(JSON.stringify(payload))` → `(payload, toolRenamePairs)`.

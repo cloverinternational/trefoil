@@ -228,7 +228,9 @@ fn completed_response_from_sse(text: &str) -> Option<Value> {
             sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             let mut resp = payload["response"].clone();
             let has_output = resp.get("output").and_then(Value::as_array).is_some_and(|o| !o.is_empty());
-            if !has_output { resp["output"] = Value::Array(sorted.into_iter().map(|(_, v)| v).collect()); }
+            // `response` is upstream-controlled and only known to be truthy:
+            // assign like JS property access, never index a non-object.
+            if !has_output { if let Some(r) = resp.as_object_mut() { r.insert("output".into(), Value::Array(sorted.into_iter().map(|(_, v)| v).collect())); } }
             completed = Some(resp);
         }
     }
