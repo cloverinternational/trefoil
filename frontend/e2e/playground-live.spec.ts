@@ -4,9 +4,12 @@ import { resolve } from 'node:path';
 
 // Real browser against the local running stack; never intercepts inference.
 test.skip(!process.env.TREFOIL_E2E_BASE_URL, 'Requires local Trefoil Compose service');
+// Routable alias configured in that stack (sends one tiny real request).
+const playgroundModel = process.env.TREFOIL_E2E_PLAYGROUND_MODEL ?? '';
 const adminKey = readFileSync(resolve(import.meta.dirname, '../../.env'), 'utf8').match(/^ADMIN_KEY=(.*)$/m)?.[1]?.trim();
 
-test('signed-in admin discovers configured Luna and sends optional settings', async ({ page }) => {
+test('signed-in admin discovers a configured alias and sends optional settings', async ({ page }) => {
+  test.skip(!playgroundModel, 'Set TREFOIL_E2E_PLAYGROUND_MODEL to a routable alias');
   if (!adminKey) throw new Error('Local admin credential unavailable');
   await page.addInitScript(key => localStorage.setItem('trefoil_admin_key', key), adminKey);
   await page.goto('/playground');
@@ -15,7 +18,7 @@ test('signed-in admin discovers configured Luna and sends optional settings', as
   await expect(page.getByText('Routing Decision', { exact: true })).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Model' })).toBeEnabled();
   await page.getByRole('combobox', { name: 'Model' }).click();
-  await page.getByRole('option', { name: 'luna-via-plexus' }).click();
+  await page.getByRole('option', { name: playgroundModel }).click();
   await page.getByText('Advanced request settings').click();
   await expect(page.getByRole('spinbutton', { name: 'Temperature (optional)' })).toHaveValue('');
   await page.getByRole('spinbutton', { name: 'Max tokens' }).fill('16');
@@ -25,7 +28,7 @@ test('signed-in admin discovers configured Luna and sends optional settings', as
   const response = await reply;
   expect(response.status()).toBe(200);
   const sent = response.request().postDataJSON();
-  expect(sent.model).toBe('luna-via-plexus');
+  expect(sent.model).toBe(playgroundModel);
   expect(sent.max_tokens).toBe(16);
   expect(sent).not.toHaveProperty('temperature');
   await expect(page.getByText('Assistant', { exact: true })).toBeVisible();

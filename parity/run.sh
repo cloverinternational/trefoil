@@ -75,7 +75,7 @@ fi
 
 if [[ "$SKIP_REFERENCE_BUILD" != 1 ]]; then
   echo "Building Plexus reference..."
-  (cd "$REFERENCE_DIR" && bun install --frozen-lockfile && bun run build:frontend && bun run generate:openapi:asset)
+  (cd "$REFERENCE_DIR" && bun install --frozen-lockfile --ignore-scripts && bun run build:frontend && bun run generate:openapi:asset)
 fi
 if [[ "$SKIP_TREFOIL_BUILD" != 1 ]]; then
   echo "Building Trefoil..."

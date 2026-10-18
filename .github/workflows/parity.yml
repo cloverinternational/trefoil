@@ -1,8 +1,8 @@
 name: differential parity
+# Differential parity against the pinned Plexus reference. Run manually: it
+# builds both gateways, installs Playwright and Bun, and takes a while.
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -13,13 +13,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: mcowger/plexus
-          ref: 31b09cebac35338ce4ff2a07035a3ae2062d3920
+          ref: 17b7e60804e3401acbe2bc2beb6b9b9042b31cce
           path: .reference/plexus
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: oven-sh/setup-bun@v2
       - name: Install reference dependencies
         working-directory: .reference/plexus
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
       - run: npm ci --prefix frontend

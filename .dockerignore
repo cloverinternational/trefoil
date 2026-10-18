@@ -1,0 +1,19 @@
+# Keep the build context small and free of local state and secrets.
+.git
+.github
+.reference
+target
+**/node_modules
+frontend/dist
+frontend/playwright-report
+frontend/test-results
+frontend/*.tsbuildinfo
+.env
+.env.*
+!.env.example
+migration
+parity
+docs
+.pi
+.swarm
+.swarmpi

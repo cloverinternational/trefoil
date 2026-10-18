@@ -8,21 +8,27 @@ services:
     volumes:
       - trefoil-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trefoil -d trefoil"]
+      # $$ defers expansion to the container shell, so the check always uses
+      # the user/database the container was started with.
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 2s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
 
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-trefoil}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-trefoil}
+      DATABASE_URL: postgres://${POSTGRES_USER:-trefoil}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-trefoil}
       DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-16}
       ADMIN_KEY: ${ADMIN_KEY:?Set ADMIN_KEY in .env}
       TREFOIL_CREDENTIAL_KEY: ${TREFOIL_CREDENTIAL_KEY:?Set TREFOIL_CREDENTIAL_KEY in .env}
-      TREFOIL_PUBLIC_URL: ${TREFOIL_PUBLIC_URL:-http://127.0.0.1:${TREFOIL_PORT:-8080}}
+      # Optional but strongly recommended: encrypts provider API keys, API key
+      # secrets and other sensitive settings at rest. Empty disables encryption.
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       PORT: 8080
     depends_on:
       postgres:
@@ -44,8 +50,13 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${TREFOIL_PORT:-8080}:8080"
+      - "${TREFOIL_BIND_ADDRESS:-0.0.0.0}:${TREFOIL_PORT:-8080}:8080"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
 volumes:
   trefoil-postgres:
