@@ -11,3 +11,10 @@
 /frontend/*.tsbuildinfo
 
 .env
+
+# Production data dumps / agent state — never commit
+migration-out.sql
+migration/*.db
+migration/*.db-*
+migration/models-store.json
+.swarmpi/
