@@ -10,6 +10,11 @@ async fn main() {
         eprintln!("failed to run PostgreSQL migrations: {error}");
         std::process::exit(1);
     });
+    let encryption_warning = !trefoil_backend::secret_crypto::enabled();
+    database::encrypt_plaintext_secrets(&pool).await.unwrap_or_else(|error| {
+        eprintln!("failed to encrypt plaintext secrets: {error}");
+        std::process::exit(1);
+    });
     let keys = database::load_keys(&pool).await.unwrap_or_else(|error| {
         eprintln!("failed to load API keys from PostgreSQL: {error}");
         std::process::exit(1);
@@ -43,24 +48,32 @@ async fn main() {
             std::process::exit(1);
         });
     let state = AppState::new(std::env::var("ADMIN_KEY").ok(), keys).with_database(pool);
+    if encryption_warning {
+        trefoil_backend::system_logs::event(&state, "warn", "ENCRYPTION_KEY not set — sensitive data will be stored in plaintext. Set ENCRYPTION_KEY for encryption at rest.", [("module".into(), serde_json::json!("src"))]);
+    }
     trefoil_backend::oauth_refresh::start_scheduler(state.clone());
-    let sessions = database::load_oauth_sessions(state.inner.database.as_ref().unwrap())
-        .await
-        .unwrap_or_else(|error| {
-            eprintln!("failed to load OAuth login sessions from PostgreSQL: {error}");
-            std::process::exit(1);
-        });
-    *state.inner.oauth_sessions.write().unwrap() = sessions
-        .into_iter()
-        .map(|session| (session.id.clone(), session))
-        .collect();
     *state.inner.providers.write().unwrap() = providers;
     *state.inner.aliases.write().unwrap() = aliases;
     *state.inner.user_quotas.write().unwrap() = user_quotas;
     *state.inner.settings.write().unwrap() = settings;
     *state.inner.cooldowns.write().unwrap() = cooldowns;
+    // Plexus index.ts initModelCatalog(): restore the persisted pi.dev overlay,
+    // then refresh in the background unless PLEXUS_MODEL_CATALOG_REFRESH=false.
+    trefoil_backend::pi_catalog::init(&state).await;
+    {
+        use trefoil_backend::engine::observability::estimate;
+        match estimate::O200k::load() {
+            Some(enc) => estimate::set_tokenizer(Some(std::sync::Arc::new(enc))),
+            None => trefoil_backend::system_logs::event(&state, "warn", "o200k_base encoder failed to load; falling back to heuristic", [("module".to_owned(), serde_json::json!("estimate-tokens"))]),
+        }
+    }
     trefoil_backend::custom_checkers::start_poller(state.clone());
-    let _metadata_refresh = trefoil_backend::metadata::start_scheduler();
+    // Startup order mirrors pinned Plexus index.ts: restore capture-on-error,
+    // schedule metadata, then the CLI version services.
+    let capture = state.inner.settings.read().unwrap().get("debug.captureOnError").and_then(|v| v.as_bool()).unwrap_or(false);
+    trefoil_backend::system_logs::event(&state, "warn", format!("Debug capture-on-error {}", if capture { "enabled" } else { "disabled" }), [("module".into(), serde_json::json!("debug-manager")), ("functionName".into(), serde_json::json!("setCaptureOnError"))]);
+    let _metadata_refresh = trefoil_backend::metadata::start_scheduler(state.clone());
+    trefoil_backend::cli_versions::start(state.clone());
 
     let port = std::env::var("PORT")
         .ok()
@@ -69,6 +82,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .expect("failed to bind configured port");
+    trefoil_backend::system_logs::event(&state, "info", format!("Server listening on http://localhost:{port}"), [("module".into(), serde_json::json!("src"))]);
     axum::serve(listener, app(state).into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
         .expect("server error");

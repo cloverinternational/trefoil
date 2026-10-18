@@ -16,12 +16,11 @@ use axum::{
     response::{IntoResponse, Response},
     Json, Router,
 };
-use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 use crate::auth::{resolve_principal, Principal};
-use crate::state::{AppState, ModelConfig, ModelTarget, ModelTargetGroup};
+use crate::state::{AppState, ModelConfig};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -45,38 +44,6 @@ pub fn router() -> Router<AppState> {
 enum ApiError {
     Auth(StatusCode, &'static str, &'static str),
     Simple(StatusCode, String),
-    Validation(Vec<ValidationIssue>),
-}
-
-struct ValidationIssue {
-    message: String,
-    path: Vec<Value>,
-    code: &'static str,
-    values: Option<Vec<&'static str>>,
-}
-
-impl ValidationIssue {
-    fn at(path: Vec<Value>, message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            path,
-            code: "custom",
-            values: None,
-        }
-    }
-
-    fn invalid_value(
-        path: Vec<Value>,
-        message: impl Into<String>,
-        values: Vec<&'static str>,
-    ) -> Self {
-        Self {
-            message: message.into(),
-            path,
-            code: "invalid_value",
-            values: Some(values),
-        }
-    }
 }
 
 impl ApiError {
@@ -89,9 +56,6 @@ impl ApiError {
             "Admin privileges required",
             "forbidden",
         )
-    }
-    fn validation(issues: Vec<ValidationIssue>) -> Self {
-        Self::Validation(issues)
     }
 }
 
@@ -108,24 +72,6 @@ impl IntoResponse for ApiError {
                 let body = serde_json::json!({ "error": message });
                 (status, Json(body)).into_response()
             }
-            ApiError::Validation(issues) => {
-                let details: Vec<Value> = issues
-                    .iter()
-                    .map(|i| {
-                        let mut obj = serde_json::json!({
-                            "code": i.code,
-                            "path": i.path,
-                            "message": i.message,
-                        });
-                        if let Some(values) = &i.values {
-                            obj["values"] = serde_json::json!(values);
-                        }
-                        obj
-                    })
-                    .collect();
-                let body = serde_json::json!({ "error": "Validation failed", "details": details });
-                (StatusCode::BAD_REQUEST, Json(body)).into_response()
-            }
         }
     }
 }
@@ -137,228 +83,6 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> 
         Some(Principal::Limited { .. }) => Err(ApiError::forbidden()),
         None => Err(ApiError::unauthorized()),
     }
-}
-
-/// Wire shape accepted by PUT/PATCH bodies. Mirrors `ModelConfigSchema`,
-/// including the legacy flat `selector`/`targets` fields that get folded
-/// into `target_groups` (see `normalize_legacy_targets`).
-#[derive(Debug, Deserialize, Default)]
-struct ModelBody {
-    selector: Option<String>,
-    #[serde(default)]
-    priority: Option<String>,
-    targets: Option<Vec<ModelTarget>>,
-    target_groups: Option<Vec<ModelTargetGroupBody>>,
-    additional_aliases: Option<Vec<String>>,
-    use_image_fallthrough: Option<bool>,
-    enforce_limits: Option<bool>,
-    sticky_session: Option<bool>,
-    preferred_api: Option<Vec<String>>,
-    #[serde(rename = "type")]
-    model_type: Option<String>,
-    advanced: Option<Value>,
-    metadata: Option<Value>,
-    pi_model: Option<Value>,
-    #[serde(rename = "extraBody")]
-    extra_body: Option<Value>,
-    compaction: Option<Value>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct ModelTargetGroupBody {
-    name: String,
-    selector: Option<String>,
-    targets: Vec<ModelTarget>,
-}
-
-const VALID_SELECTORS: &[&str] = &[
-    "random",
-    "in_order",
-    "cost",
-    "latency",
-    "usage",
-    "quota",
-    "performance",
-    "e2e_performance",
-];
-
-/// Mirrors `ModelConfigSchema`'s `.transform`: normalizes the legacy flat
-/// `selector`/`targets` shape into a single `target_groups` entry when
-/// `target_groups` wasn't given directly.
-fn normalize_legacy_targets(body: &ModelBody) -> Option<Vec<ModelTargetGroupBody>> {
-    if body.target_groups.is_some() {
-        return body.target_groups.clone();
-    }
-    body.targets.as_ref().map(|targets| {
-        vec![ModelTargetGroupBody {
-            name: "default".to_string(),
-            selector: Some(
-                body.selector
-                    .clone()
-                    .unwrap_or_else(|| "random".to_string()),
-            ),
-            targets: targets.clone(),
-        }]
-    })
-}
-
-/// Mirrors `findDuplicateAliasTargets`.
-fn find_duplicate_targets(target_groups: &[ModelTargetGroup]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut duplicates = Vec::new();
-    for group in target_groups {
-        for target in &group.targets {
-            let key = target
-                .alias
-                .as_ref()
-                .map(|a| format!("alias:{a}"))
-                .unwrap_or_else(|| {
-                    format!(
-                        "{}/{}",
-                        target.provider.as_deref().unwrap_or(""),
-                        target.model.as_deref().unwrap_or("")
-                    )
-                });
-            if !seen.insert(key.clone()) && !duplicates.contains(&key) {
-                duplicates.push(key);
-            }
-        }
-    }
-    duplicates
-}
-
-/// Mirrors `findDuplicateAdditionalAliases`.
-fn find_duplicate_additional_aliases(aliases: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut duplicates = Vec::new();
-    for alias in aliases {
-        if !seen.insert(alias.clone()) && !duplicates.contains(alias) {
-            duplicates.push(alias.clone());
-        }
-    }
-    duplicates
-}
-
-/// Validates a `ModelBody` against the load-bearing subset of
-/// `ModelConfigSchema`'s refinements, and builds a `ModelConfig` from it
-/// merged over `existing` (None for a from-scratch PUT).
-fn validate_and_build(
-    body: ModelBody,
-    existing: Option<&ModelConfig>,
-) -> Result<ModelConfig, Vec<ValidationIssue>> {
-    let mut issues = Vec::new();
-
-    let target_group_bodies = normalize_legacy_targets(&body);
-    let target_groups: Vec<ModelTargetGroup> = if let Some(bodies) = target_group_bodies {
-        let mut groups = Vec::new();
-        for (index, group) in bodies.into_iter().enumerate() {
-            let selector = match group.selector {
-                Some(s) if VALID_SELECTORS.contains(&s.as_str()) => s,
-                Some(_) | None => {
-                    issues.push(ValidationIssue::invalid_value(
-                        vec!["target_groups".into(), index.into(), "selector".into()],
-                        format!(
-                            "Invalid option: expected one of {}",
-                            VALID_SELECTORS
-                                .iter()
-                                .map(|s| format!("\"{s}\""))
-                                .collect::<Vec<_>>()
-                                .join("|")
-                        ),
-                        VALID_SELECTORS.to_vec(),
-                    ));
-                    continue;
-                }
-            };
-            groups.push(ModelTargetGroup {
-                name: group.name,
-                selector,
-                targets: group.targets,
-            });
-        }
-        groups
-    } else {
-        existing
-            .map(|e| e.target_groups.clone())
-            .unwrap_or_default()
-    };
-
-    for group in &target_groups {
-        for target in &group.targets {
-            let has_alias = target.alias.is_some();
-            let has_provider_model = target.provider.is_some() && target.model.is_some();
-            if has_alias == has_provider_model {
-                issues.push(ValidationIssue::at(
-                    vec!["target_groups".into(), 0.into(), "targets".into(), 0.into()],
-                    "A target must specify either 'alias' or both 'provider' and 'model', but not both",
-                ));
-            }
-        }
-    }
-
-    for dup in find_duplicate_targets(&target_groups) {
-        let message = if let Some(alias) = dup.strip_prefix("alias:") {
-            format!("Duplicate target 'alias:{alias}' is not allowed")
-        } else {
-            format!("Duplicate target '{dup}' is not allowed")
-        };
-        issues.push(ValidationIssue::at(vec!["target_groups".into()], message));
-    }
-
-    let additional_aliases = body
-        .additional_aliases
-        .clone()
-        .or_else(|| existing.map(|e| e.additional_aliases.clone()))
-        .unwrap_or_default();
-    for dup in find_duplicate_additional_aliases(&additional_aliases) {
-        issues.push(ValidationIssue::at(
-            vec!["additional_aliases".into()],
-            format!("Duplicate additional alias '{dup}' is not allowed"),
-        ));
-    }
-
-    if !issues.is_empty() {
-        return Err(issues);
-    }
-
-    Ok(ModelConfig {
-        priority: body
-            .priority
-            .or_else(|| existing.map(|e| e.priority.clone()))
-            .unwrap_or_else(|| "selector".to_string()),
-        target_groups,
-        additional_aliases,
-        use_image_fallthrough: body
-            .use_image_fallthrough
-            .unwrap_or_else(|| existing.map(|e| e.use_image_fallthrough).unwrap_or(false)),
-        enforce_limits: body
-            .enforce_limits
-            .unwrap_or_else(|| existing.map(|e| e.enforce_limits).unwrap_or(false)),
-        sticky_session: body
-            .sticky_session
-            .unwrap_or_else(|| existing.map(|e| e.sticky_session).unwrap_or(true)),
-        preferred_api: body
-            .preferred_api
-            .or_else(|| existing.and_then(|e| e.preferred_api.clone())),
-        model_type: body
-            .model_type
-            .or_else(|| existing.and_then(|e| e.model_type.clone())),
-        advanced: body
-            .advanced
-            .or_else(|| existing.and_then(|e| e.advanced.clone())),
-        metadata: body
-            .metadata
-            .or_else(|| existing.and_then(|e| e.metadata.clone())),
-        pi_model: body
-            .pi_model
-            .or_else(|| existing.and_then(|e| e.pi_model.clone())),
-        extra_body: body
-            .extra_body
-            .or_else(|| existing.and_then(|e| e.extra_body.clone())),
-        compaction: body
-            .compaction
-            .or_else(|| existing.and_then(|e| e.compaction.clone())),
-    })
 }
 
 /// Mirrors `assertNoAliasRefCycles`: detects `alias` reference cycles
@@ -399,7 +123,11 @@ fn assert_no_alias_ref_cycles(models: &HashMap<String, ModelConfig>) -> Result<(
         refs
     };
 
-    for start_slug in models.keys() {
+    // Plexus walks its config record in key order; a HashMap has none, so
+    // walk sorted keys to report the same, reproducible cycle path.
+    let mut start_slugs: Vec<&String> = models.keys().collect();
+    start_slugs.sort();
+    for start_slug in start_slugs {
         let mut path: Vec<String> = Vec::new();
         let mut visiting: HashSet<String> = HashSet::new();
 
@@ -461,6 +189,33 @@ async fn get_alias(
     }
 }
 
+/// `ModelConfigSchema.safeParse` → repository round trip; `Err` is the 400.
+fn validate_alias(body: &Value) -> Result<ModelConfig, Response> {
+    let parsed = crate::alias_view::model_config().safe_parse(body).map_err(|details| {
+        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Validation failed", "details": details}))).into_response()
+    })?;
+    Ok(crate::alias_view::from_view(crate::alias_view::repository_view(&parsed)))
+}
+
+async fn save_alias(state: &AppState, slug: &str, config: ModelConfig) -> Response {
+    {
+        let aliases = state.inner.aliases.read().unwrap();
+        let mut candidate = aliases.clone();
+        candidate.insert(slug.to_owned(), config.clone());
+        if let Err(message) = assert_no_alias_ref_cycles(&candidate) {
+            crate::system_logs::event(state,"error",format!("Failed to save model alias '{slug}' {message}"),[("module".into(),serde_json::json!("config")),("stack".into(),serde_json::json!(format!("Error: {message}")))]);
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()).into_response();
+        }
+    }
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_alias(pool, slug, &config).await.is_err() {
+            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string()).into_response();
+        }
+    }
+    state.inner.aliases.write().unwrap().insert(slug.to_owned(), config);
+    Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
+}
+
 async fn put_alias(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -470,43 +225,10 @@ async fn put_alias(
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
     }
-    let body: ModelBody = match serde_json::from_value(raw) {
-        Ok(b) => b,
-        Err(_) => return ApiError::validation(vec![]).into_response(),
-    };
-    let config = match validate_and_build(body, None) {
-        Ok(c) => c,
-        Err(issues) => return ApiError::validation(issues).into_response(),
-    };
-
-    {
-        let aliases = state.inner.aliases.read().unwrap();
-        let mut candidate = aliases.clone();
-        candidate.insert(slug.clone(), config.clone());
-        if let Err(message) = assert_no_alias_ref_cycles(&candidate) {
-            crate::system_logs::event(&state,"error",format!("Failed to save model alias '{slug}' {message}"),[("module".into(),serde_json::json!("config"))]);
-            return ApiError::Simple(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
-            .into_response();
-        }
+    match validate_alias(&raw) {
+        Ok(config) => save_alias(&state, &slug, config).await,
+        Err(response) => response,
     }
-
-    if let Some(pool) = &state.inner.database {
-        if let Err(error) = crate::database::upsert_alias(pool, &slug, &config).await {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                .into_response();
-        }
-    }
-
-    state
-        .inner
-        .aliases
-        .write()
-        .unwrap()
-        .insert(slug.clone(), config);
-    Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
 async fn patch_alias(
@@ -518,56 +240,19 @@ async fn patch_alias(
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
     }
-    if !raw.is_object() {
-        return ApiError::Simple(
-            StatusCode::BAD_REQUEST,
-            "Object body is required".to_string(),
-        )
-        .into_response();
-    }
-
+    let Some(body) = raw.as_object() else {
+        return ApiError::Simple(StatusCode::BAD_REQUEST, "Object body is required".to_string()).into_response();
+    };
     let Some(existing) = state.inner.aliases.read().unwrap().get(&slug).cloned() else {
-        return ApiError::Simple(StatusCode::NOT_FOUND, format!("Alias '{slug}' not found"))
-            .into_response();
+        return ApiError::Simple(StatusCode::NOT_FOUND, format!("Alias '{slug}' not found")).into_response();
     };
-
-    let body: ModelBody = match serde_json::from_value(raw) {
-        Ok(b) => b,
-        Err(_) => return ApiError::validation(vec![]).into_response(),
-    };
-    let merged = match validate_and_build(body, Some(&existing)) {
-        Ok(c) => c,
-        Err(issues) => return ApiError::validation(issues).into_response(),
-    };
-
-    {
-        let aliases = state.inner.aliases.read().unwrap();
-        let mut candidate = aliases.clone();
-        candidate.insert(slug.clone(), merged.clone());
-        if let Err(message) = assert_no_alias_ref_cycles(&candidate) {
-            crate::system_logs::event(&state,"error",format!("Failed to save model alias '{slug}' {message}"),[("module".into(),serde_json::json!("config"))]);
-            return ApiError::Simple(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
-            .into_response();
-        }
+    let mut merged = existing.public_view();
+    let map = merged.as_object_mut().expect("alias view is an object");
+    for (key, value) in body { map.insert(key.clone(), value.clone()); }
+    match validate_alias(&merged) {
+        Ok(config) => save_alias(&state, &slug, config).await,
+        Err(response) => response,
     }
-
-    if let Some(pool) = &state.inner.database {
-        if let Err(error) = crate::database::upsert_alias(pool, &slug, &merged).await {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                .into_response();
-        }
-    }
-
-    state
-        .inner
-        .aliases
-        .write()
-        .unwrap()
-        .insert(slug.clone(), merged);
-    Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
 async fn delete_alias(

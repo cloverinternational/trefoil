@@ -111,7 +111,6 @@ async fn get_level(State(state): State<AppState>, headers: HeaderMap) -> Respons
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
-    crate::system_logs::event(&state,"debug","GET /v0/management/logging/level",[("module".into(),serde_json::json!("log"))]);
     Json(level_body()).into_response()
 }
 async fn put_level(
@@ -122,7 +121,6 @@ async fn put_level(
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
-    crate::system_logs::event(&state,"debug","PUT /v0/management/logging/level",[("module".into(),serde_json::json!("log"))]);
     let Some(value) = body.get("level").and_then(|v| v.as_str()) else {
         return (axum::http::StatusCode::BAD_REQUEST,Json(serde_json::json!({"error":"Invalid request body. Expected: { level: string }","supportedLevels":SUPPORTED}))).into_response();
     };
@@ -152,7 +150,6 @@ async fn delete_level(State(state): State<AppState>, headers: HeaderMap) -> Resp
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
-    crate::system_logs::event(&state,"debug","DELETE /v0/management/logging/level",[("module".into(),serde_json::json!("log"))]);
     let previous=level().read().unwrap().clone();let startup=startup_level().to_owned();
     *level().write().unwrap() = startup.clone();
     crate::system_logs::event(&state,"info",format!("Log level reset from '{previous}' to startup default '{startup}' via management API"),[("module".into(),serde_json::json!("logging"))]);

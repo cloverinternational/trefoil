@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
-pub const CLAUDE_CODE_VERSION: &str = "2.1.258";
+pub const CLAUDE_CODE_VERSION: &str = "2.1.280";
 const IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 const BILLING_PREFIX: &str = "x-anthropic-billing-header:";
 const SALT: &str = "59cf53e54c78";
@@ -80,7 +80,7 @@ pub fn headers() -> Vec<(&'static str, String)> {
 }
 
 pub fn user_agent() -> String {
-    format!("claude-cli/{CLAUDE_CODE_VERSION} (external, cli)")
+    format!("claude-cli/{} (external, cli)", crate::cli_versions::claude_code_version())
 }
 
 fn first_user_text(body: &Value) -> String {
@@ -108,10 +108,11 @@ fn billing_header(body: &Value) -> String {
         .map(|&i| text.chars().nth(i).unwrap_or('0'))
         .collect();
     let mut hash = Sha256::new();
-    hash.update(format!("{SALT}{chars}{CLAUDE_CODE_VERSION}"));
+    hash.update(format!("{SALT}{chars}{}", crate::cli_versions::claude_code_version()));
     let digest = hex::encode(hash.finalize());
     let unsigned = format!(
-        "{BILLING_PREFIX} cc_version={CLAUDE_CODE_VERSION}.{}; cc_entrypoint=cli; cch=00000;",
+        "{BILLING_PREFIX} cc_version={}.{}; cc_entrypoint=cli; cch=00000;",
+        crate::cli_versions::claude_code_version(),
         &digest[..3]
     );
     let signature = hex::encode(Sha256::digest(serde_json::to_vec(body).unwrap_or_default()));
@@ -162,11 +163,11 @@ mod tests {
     fn masks_identity_without_mutating_input() {
         let input = json!({"system":[{"type":"text","text":"third party"}],"messages":[{"role":"user","content":"hello"}]});
         let output = mask_body(&input);
-        assert_eq!(user_agent(), "claude-cli/2.1.258 (external, cli)");
+        assert_eq!(user_agent(), "claude-cli/2.1.280 (external, cli)");
         assert!(output["system"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("cc_version=2.1.258."));
+            .contains("cc_version=2.1.280."));
         assert_eq!(output["system"][1]["text"], IDENTITY);
         assert!(output["messages"][0]["content"]
             .as_str()

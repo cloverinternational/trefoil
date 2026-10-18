@@ -61,6 +61,35 @@ pub fn acquire(state: &AppState, provider: impl Into<String>, model: impl Into<S
     }
 }
 
+/// Plexus `ConcurrencyTracker.acquire`: refuse when the provider-wide or
+/// per-model `maxConcurrency` is already reached.
+pub fn try_acquire(state: &AppState, provider: &str, model: &str, provider_limit: Option<u64>, model_limit: Option<u64>) -> Option<Permit> {
+    let tracker = state.inner.concurrency.clone();
+    let key = (provider.to_owned(), model.to_owned());
+    {
+        let mut counts = tracker.counts.lock().expect("concurrency lock poisoned");
+        if let Some(limit) = provider_limit {
+            let current: usize = counts.iter().filter(|((p, _), _)| p == provider).map(|(_, c)| *c).sum();
+            if current as u64 >= limit { return None; }
+        }
+        if let Some(limit) = model_limit {
+            if counts.get(&key).copied().unwrap_or(0) as u64 >= limit { return None; }
+        }
+        *counts.entry(key.clone()).or_default() += 1;
+    }
+    Some(Permit { tracker, key: Some(key) })
+}
+
+/// `getProviderCount`.
+pub fn provider_count(state: &AppState, provider: &str) -> usize {
+    state.inner.concurrency.counts.lock().expect("concurrency lock poisoned").iter().filter(|((p, _), _)| p == provider).map(|(_, c)| *c).sum()
+}
+
+/// `getTargetCount`.
+pub fn target_count(state: &AppState, provider: &str, model: &str) -> usize {
+    state.inner.concurrency.counts.lock().expect("concurrency lock poisoned").get(&(provider.to_owned(), model.to_owned())).copied().unwrap_or(0)
+}
+
 pub fn snapshot(state: &AppState) -> ConcurrencySnapshot {
     state
         .inner

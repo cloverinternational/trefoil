@@ -13,7 +13,7 @@ use futures_util::stream;
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::Row;
-use std::{convert::Infallible, time::Duration};
+use std::{collections::HashMap, convert::Infallible, time::Duration};
 use tokio::sync::broadcast;
 
 use crate::{
@@ -86,12 +86,24 @@ async fn events(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 tokio::time::Instant::now() + Duration::from_secs(10),
                 Duration::from_secs(10),
             ),
+            tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_secs(1), Duration::from_secs(1)),
+            std::collections::VecDeque::<Event>::new(),
         ),
-        |(mut receiver, principal, mut interval)| async move {
+        |(mut receiver, principal, mut interval, mut progress, mut pending)| async move {
             loop {
+                if let Some(ev) = pending.pop_front() { return Some((Ok::<Event, Infallible>(ev), (receiver, principal, interval, progress, pending))); }
                 tokio::select! {
-                    result = receiver.recv() => { let event = match result { Ok(event) => event, Err(broadcast::error::RecvError::Lagged(_)) => UsageEvent { kind: "ping".into(), id: chrono::Utc::now().timestamp_millis(), api_key: None, data: serde_json::json!("subscriber lagged") }, Err(broadcast::error::RecvError::Closed) => return None }; if !event_visible_to(&principal, &event) { continue; } let sse = Event::default().event(event.kind).id(event.id.to_string()).json_data(event.data).unwrap_or_else(|_| Event::default().event("ping").data("pong")); return Some((Ok::<Event, Infallible>(sse), (receiver, principal, interval))); }
-                    _ = interval.tick() => { let id = chrono::Utc::now().timestamp_millis(); return Some((Ok::<Event, Infallible>(Event::default().event("ping").id(id.to_string()).data("pong")), (receiver, principal, interval))); }
+                    result = receiver.recv() => { let event = match result { Ok(event) => event, Err(broadcast::error::RecvError::Lagged(_)) => UsageEvent { kind: "ping".into(), id: chrono::Utc::now().timestamp_millis(), api_key: None, data: serde_json::json!("subscriber lagged") }, Err(broadcast::error::RecvError::Closed) => return None }; if !event_visible_to(&principal, &event) { continue; } let kind = if event.kind == "created" { "completed".to_owned() } else { event.kind }; let sse = Event::default().event(kind).id(event.id.to_string()).json_data(event.data).unwrap_or_else(|_| Event::default().event("ping").data("pong")); return Some((Ok::<Event, Infallible>(sse), (receiver, principal, interval, progress, pending))); }
+                    _ = interval.tick() => { let id = chrono::Utc::now().timestamp_millis(); return Some((Ok::<Event, Infallible>(Event::default().event("ping").id(id.to_string()).data("pong")), (receiver, principal, interval, progress, pending))); }
+                    _ = progress.tick() => {
+                        // Periodic progress updates for in-flight requests (`getProgressUpdates`, every 1s).
+                        let scope = match &principal { Principal::Limited { key_name, .. } => Some(key_name.clone()), Principal::Admin => None };
+                        for update in crate::engine::dispatcher::stall_inspector::progress_updates() {
+                            if scope.as_ref().is_some_and(|k| update.get("apiKey").and_then(serde_json::Value::as_str) != Some(k.as_str())) { continue; }
+                            pending.push_back(Event::default().event("progress").id(chrono::Utc::now().timestamp_millis().to_string()).data(crate::engine::js::stringify(&update)));
+                        }
+                        if let Some(ev) = pending.pop_front() { return Some((Ok::<Event, Infallible>(ev), (receiver, principal, interval, progress, pending))); }
+                    }
                 }
             }
         },
@@ -109,11 +121,20 @@ async fn events(State(state): State<AppState>, headers: HeaderMap) -> Response {
     response
 }
 
-#[derive(Deserialize)]
-struct UsageQuery {
-    limit: Option<i64>,
-    offset: Option<i64>,
-    api_key: Option<String>,
+/// `parseInt(text)` prefix parse (`None` = NaN).
+pub(crate) fn parse_int(text: &str) -> Option<i64> {
+    let t = text.trim_start();
+    let (sign, rest) = match t.as_bytes().first() { Some(b'-') => (-1, &t[1..]), Some(b'+') => (1, &t[1..]), _ => (1, t) };
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<i64>().ok().map(|n| sign * n)
+}
+
+const USAGE_FIELDS: &[&str] = &["requestId", "clientRequestId", "date", "sourceIp", "apiKey", "attribution", "incomingApiType", "provider", "attemptCount", "retryHistory", "incomingModelAlias", "canonicalModelName", "selectedModelName", "finalAttemptProvider", "finalAttemptModel", "allAttemptedProviders", "upstreamModel", "outgoingApiType", "reasoningEffort", "requestedServiceTier", "requestedServiceTierRaw", "serviceTier", "serviceTierRaw", "tokensInput", "tokensOutput", "tokensReasoning", "tokensCached", "tokensCacheWrite", "tokensEstimated", "costInput", "costOutput", "costCached", "costCacheWrite", "costTotal", "costSource", "costMetadata", "startTime", "durationMs", "ttftMs", "tokensPerSec", "kwhUsed", "isStreamed", "isPassthrough", "responseStatus", "toolsDefined", "messageCount", "parallelToolCallsEnabled", "toolCallsCount", "finishReason", "hasDebug", "hasError"];
+
+/// Process-wide engine usage storage (`UsageStorageService`).
+pub(crate) fn usage_storage(state: &AppState) -> Option<std::sync::Arc<crate::engine::observability::UsageStorage>> {
+    if let Some(storage) = state.inner.engine_usage.0.get() { return Some(storage.clone()); }
+    crate::engine::dispatcher::engine::Engine::new(state).usage
 }
 
 fn admin(state: &AppState, headers: &HeaderMap) -> Result<Principal, Response> {
@@ -184,157 +205,310 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), Response> 
 async fn list_usage(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<UsageQuery>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     let principal = match admin(&state, &headers) {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let scope = match principal {
-        Principal::Admin => query.api_key,
-        Principal::Limited { key_name, .. } => Some(key_name),
+    let q = |k: &str| query.get(k).filter(|v| !v.is_empty()).cloned();
+    let limit = parse_int(query.get("limit").filter(|v| !v.is_empty()).map(String::as_str).unwrap_or("50"));
+    let offset = parse_int(query.get("offset").filter(|v| !v.is_empty()).map(String::as_str).unwrap_or("0"));
+    let sort_by = query.get("sortBy").filter(|v| matches!(v.as_str(), "date" | "apiKey" | "provider" | "incomingModelAlias" | "costTotal" | "durationMs")).cloned();
+    let sort_asc = query.get("sortDir").map(String::as_str) == Some("asc");
+    let requested: Vec<&str> = query.get("fields").map(String::as_str).unwrap_or("").split(',').map(str::trim).filter(|f| USAGE_FIELDS.contains(f)).collect();
+    let mut filters = crate::engine::observability::storage::UsageFilters {
+        start_date: q("startDate"), end_date: q("endDate"), request_id: q("requestId"), client_request_id: q("clientRequestId"),
+        api_key: q("apiKey"), incoming_api_type: q("incomingApiType"), provider: q("provider"), incoming_model_alias: q("incomingModelAlias"),
+        selected_model_name: q("selectedModelName"), outgoing_api_type: q("outgoingApiType"), response_status: q("responseStatus"),
+        min_duration_ms: q("minDurationMs").and_then(|v| parse_int(&v)), max_duration_ms: q("maxDurationMs").and_then(|v| parse_int(&v)),
+        ..Default::default()
     };
-    let Some(pool) = &state.inner.database else {
-        return Json(serde_json::json!({"data":[],"total":0,"limit":query.limit.unwrap_or(50),"offset":query.offset.unwrap_or(0)})).into_response();
+    if let Principal::Limited { key_name, .. } = &principal {
+        filters.api_key = Some(key_name.clone());
+        filters.api_key_exact = true;
+    }
+    let limit_json = limit.map(Value::from).unwrap_or(Value::Null);
+    let offset_json = offset.map(Value::from).unwrap_or(Value::Null);
+    let Some(storage) = usage_storage(&state) else {
+        return Json(serde_json::json!({"data":[],"total":0,"limit":limit_json,"offset":offset_json})).into_response();
     };
-    let limit = query.limit.unwrap_or(50).clamp(1, 500);
-    let offset = query.offset.unwrap_or(0).max(0);
-    let total: i64 = if let Some(key) = &scope {
-        sqlx::query_scalar("SELECT count(*) FROM request_usage WHERE api_key = $1")
-            .bind(key)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0)
-    } else {
-        sqlx::query_scalar("SELECT count(*) FROM request_usage")
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0)
-    };
-    let rows = if let Some(key) = &scope {
-        sqlx::query("SELECT request_id, date, api_key, provider, incoming_model_alias, response_status, start_time, duration_ms, tokens_input, tokens_output, cost_total, ttft_ms, tokens_per_sec, e2e_tokens_per_sec FROM request_usage WHERE api_key = $1 ORDER BY start_time DESC LIMIT $2 OFFSET $3").bind(key).bind(limit).bind(offset).fetch_all(pool).await
-    } else {
-        sqlx::query("SELECT request_id, date, api_key, provider, incoming_model_alias, response_status, start_time, duration_ms, tokens_input, tokens_output, cost_total, ttft_ms, tokens_per_sec, e2e_tokens_per_sec FROM request_usage ORDER BY start_time DESC LIMIT $1 OFFSET $2").bind(limit).bind(offset).fetch_all(pool).await
-    };
-    let Ok(rows) = rows else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error":"Failed to read usage"})),
-        )
-            .into_response();
-    };
-    let data: Vec<Value> = rows.into_iter().map(|row| serde_json::json!({
-        "requestId": row.try_get::<String, _>("request_id").unwrap_or_default(), "date": row.try_get::<String, _>("date").unwrap_or_default(),
-        "apiKey": row.try_get::<Option<String>, _>("api_key").unwrap_or(None), "provider": row.try_get::<Option<String>, _>("provider").unwrap_or(None),
-        "incomingModelAlias": row.try_get::<Option<String>, _>("incoming_model_alias").unwrap_or(None), "responseStatus": row.try_get::<Option<String>, _>("response_status").unwrap_or(None),
-        "startTime": row.try_get::<i64, _>("start_time").unwrap_or_default(), "durationMs": row.try_get::<Option<i64>, _>("duration_ms").unwrap_or(None),
-        "tokensInput": row.try_get::<Option<i32>, _>("tokens_input").unwrap_or(None), "tokensOutput": row.try_get::<Option<i32>, _>("tokens_output").unwrap_or(None), "costTotal": row.try_get::<Option<f32>, _>("cost_total").unwrap_or(None), "ttftMs": row.try_get::<Option<f32>, _>("ttft_ms").unwrap_or(None), "tokensPerSec": row.try_get::<Option<f32>, _>("tokens_per_sec").unwrap_or(None), "e2eTokensPerSec": row.try_get::<Option<f32>, _>("e2e_tokens_per_sec").unwrap_or(None)
-    })).collect();
-    Json(serde_json::json!({"data":data,"total":total,"limit":limit,"offset":offset}))
-        .into_response()
+    let pagination = crate::engine::observability::storage::Pagination { limit: limit.unwrap_or(0), offset: offset.unwrap_or(0), sort_by, sort_asc };
+    match storage.get_usage(&filters, &pagination).await {
+        Ok((data, total)) => {
+            let data: Vec<Value> = if requested.is_empty() { data } else {
+                data.into_iter().map(|record| {
+                    let mut out = serde_json::Map::new();
+                    for f in &requested { if let Some(v) = record.get(*f) { out.insert((*f).into(), v.clone()); } }
+                    Value::Object(out)
+                }).collect()
+            };
+            Json(serde_json::json!({"data":data,"total":total,"limit":limit_json,"offset":offset_json})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":e.to_string()}))).into_response(),
+    }
 }
 
-async fn clear_usage(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn clear_usage(State(state): State<AppState>, headers: HeaderMap, Query(query): Query<HashMap<String, String>>) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
+    // `olderThanDays` → `date <= (now - days).toISOString()`.
+    let before = query.get("olderThanDays").filter(|v| !v.is_empty()).and_then(|v| parse_int(v)).map(|days| {
+        let ms = local_shift(chrono::Utc::now().timestamp_millis(), 0, days);
+        chrono::DateTime::from_timestamp_millis(ms).map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)).unwrap_or_default()
+    });
     if let Some(pool) = &state.inner.database {
-        if sqlx::query("DELETE FROM request_usage")
-            .execute(pool)
-            .await
-            .is_err()
-        {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error":"Failed to clear usage"})),
-            )
-                .into_response();
+        let result = match &before {
+            Some(before) => sqlx::query("DELETE FROM request_usage WHERE date <= $1").bind(before).execute(pool).await,
+            None => sqlx::query("DELETE FROM request_usage").execute(pool).await,
+        };
+        if result.is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to delete usage logs"}))).into_response();
         }
     }
     Json(serde_json::json!({"success":true})).into_response()
 }
 
-#[derive(Deserialize, Debug)]
-struct SummaryQuery {
-    range: Option<String>,
-    #[serde(rename = "startDate")]
-    start_date: Option<String>,
-    #[serde(rename = "endDate")]
-    end_date: Option<String>,
-    breakdowns: Option<String>,
-    #[serde(rename = "breakdownLimit")]
-    breakdown_limit: Option<i64>,
+const SUMMARY_CACHE_TTL_MS: i64 = 10_000;
+const HISTORICAL_SUMMARY_CACHE_TTL_MS: i64 = 60_000;
+const MAX_CUSTOM_RANGE_MS: i64 = 366 * 24 * 60 * 60 * 1000;
+const MAX_SUMMARY_RESPONSE_BYTES: usize = 128 * 1024;
+const MAX_BASIC_SUMMARY_RESPONSE_BYTES: usize = 16 * 1024;
+const MAX_SUMMARY_CACHE_ENTRIES: usize = 100;
+const BREAKDOWN_DIMENSIONS: [&str; 4] = ["provider", "modelAlias", "apiKey", "status"];
+const SUMMARY_EXCLUSIONS: [&str; 2] = ["directModels", "probe"];
+
+type SummaryCache = std::sync::Mutex<indexmap::IndexMap<String, (i64, Value)>>;
+fn summary_cache() -> &'static SummaryCache {
+    static CACHE: std::sync::OnceLock<SummaryCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+fn bad(message: impl Into<String>) -> Response {
+    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": message.into()}))).into_response()
+}
+
+/// `new Date(text).getTime()` (date-only = UTC, date-time without offset = local).
+fn js_date_ms(text: &str) -> Option<i64> {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone};
+    let t = text.trim();
+    if let Ok(d) = DateTime::parse_from_rfc3339(t) { return Some(d.timestamp_millis()); }
+    if let Ok(d) = NaiveDate::parse_from_str(t, "%Y-%m-%d") { return d.and_hms_opt(0, 0, 0).map(|v| v.and_utc().timestamp_millis()); }
+    for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%d %H:%M"] {
+        if let Ok(d) = NaiveDateTime::parse_from_str(t, fmt) { return chrono::Local.from_local_datetime(&d).earliest().map(|v| v.timestamp_millis()); }
+    }
+    DateTime::parse_from_rfc2822(t).ok().map(|d| d.timestamp_millis())
+}
+
+/// Wall-clock local arithmetic like `Date#setHours(h - n)` / `setDate(d - n)`.
+fn local_shift(ms: i64, hours: i64, days: i64) -> i64 {
+    use chrono::TimeZone;
+    let Some(local) = chrono::Local.timestamp_millis_opt(ms).single() else { return ms };
+    let naive = local.naive_local() - chrono::Duration::hours(hours) - chrono::Duration::days(days);
+    chrono::Local.from_local_datetime(&naive).earliest().map(|v| v.timestamp_millis()).unwrap_or(ms - (hours * 3_600_000 + days * 86_400_000))
+}
+
+fn local_midnight(ms: i64) -> i64 {
+    use chrono::TimeZone;
+    let Some(local) = chrono::Local.timestamp_millis_opt(ms).single() else { return ms };
+    let naive = local.date_naive().and_hms_opt(0, 0, 0).unwrap();
+    chrono::Local.from_local_datetime(&naive).earliest().map(|v| v.timestamp_millis()).unwrap_or(ms)
+}
+
+const AGGREGATE_SQL: &str = "(COUNT(*))::text AS requests, \
+ (COALESCE(SUM(CASE WHEN response_status IS NULL OR response_status != 'success' THEN 1 ELSE 0 END), 0))::text AS errors, \
+ (COALESCE(SUM(tokens_input), 0))::text AS input_tokens, (COALESCE(SUM(tokens_output), 0))::text AS output_tokens, \
+ (COALESCE(SUM(tokens_reasoning), 0))::text AS reasoning_tokens, (COALESCE(SUM(tokens_cached), 0))::text AS cached_tokens, \
+ (COALESCE(SUM(tokens_cache_write), 0))::text AS cache_write_tokens, (COALESCE(SUM(cost_total), 0))::text AS total_cost, \
+ (COALESCE(SUM(COALESCE(duration_ms, 0)) * 1.0 / NULLIF(COUNT(*), 0), 0))::text AS avg_duration_ms, \
+ (COALESCE(SUM(duration_ms), 0))::text AS total_duration_ms, (COALESCE(SUM(COALESCE(ttft_ms, 0)), 0))::text AS total_ttft_ms, \
+ (COALESCE(SUM(COALESCE(tokens_per_sec, 0)), 0))::text AS total_tokens_per_sec, \
+ (COALESCE(SUM(COALESCE(ttft_ms, 0)) * 1.0 / NULLIF(COUNT(*), 0), 0))::text AS avg_ttft_ms, \
+ (COALESCE(SUM(COALESCE(tokens_per_sec, 0)) * 1.0 / NULLIF(COUNT(*), 0), 0))::text AS avg_tokens_per_sec";
+
+/// `SummaryAggregate` (`toSummaryAggregate`).
+#[derive(Default, Clone, Copy)]
+struct Agg { requests: f64, errors: f64, input: f64, output: f64, reasoning: f64, cached: f64, cache_write: f64, total_tokens: f64, total_cost: f64, avg_duration: f64, total_duration: f64, total_ttft: f64, total_tps: f64, avg_ttft: f64, avg_tps: f64 }
+
+/// `Number(text)` for a postgres text value (`null` → 0).
+fn pg_num(row: &sqlx::postgres::PgRow, column: &str) -> f64 {
+    row.try_get::<Option<String>, _>(column).ok().flatten().and_then(|t| t.trim().parse::<f64>().ok()).unwrap_or(0.0)
+}
+
+fn agg_from_row(row: &sqlx::postgres::PgRow) -> Agg {
+    let g = |c| pg_num(row, c);
+    let (input, output, reasoning, cached, cache_write) = (g("input_tokens"), g("output_tokens"), g("reasoning_tokens"), g("cached_tokens"), g("cache_write_tokens"));
+    Agg { requests: g("requests"), errors: g("errors"), input, output, reasoning, cached, cache_write, total_tokens: input + output + reasoning + cached + cache_write, total_cost: g("total_cost"), avg_duration: g("avg_duration_ms"), total_duration: g("total_duration_ms"), total_ttft: g("total_ttft_ms"), total_tps: g("total_tokens_per_sec"), avg_ttft: g("avg_ttft_ms"), avg_tps: g("avg_tokens_per_sec") }
+}
+
+fn success_rate(a: &Agg) -> f64 { if a.requests > 0.0 { ((a.requests - a.errors) / a.requests) * 100.0 } else { 0.0 } }
+
+fn summary_group(name: String, a: &Agg) -> Value {
+    use crate::engine::js::num;
+    serde_json::json!({"name": name, "requests": num(a.requests), "errors": num(a.errors), "inputTokens": num(a.input), "outputTokens": num(a.output), "reasoningTokens": num(a.reasoning), "cachedTokens": num(a.cached), "cacheWriteTokens": num(a.cache_write), "totalTokens": num(a.total_tokens), "totalCost": num(a.total_cost), "avgDurationMs": num(a.avg_duration), "totalDurationMs": num(a.total_duration), "avgTtftMs": num(a.avg_ttft), "avgTokensPerSec": num(a.avg_tps), "successRate": num(success_rate(a))})
+}
+
+fn subtract(t: &Agg, i: &Agg) -> Agg {
+    let rem = t.requests - i.requests;
+    let avg = |a: f64, b: f64| if t.requests > i.requests { (a - b).max(0.0) / rem } else { 0.0 };
+    Agg { requests: rem.max(0.0), errors: (t.errors - i.errors).max(0.0), input: (t.input - i.input).max(0.0), output: (t.output - i.output).max(0.0), reasoning: (t.reasoning - i.reasoning).max(0.0), cached: (t.cached - i.cached).max(0.0), cache_write: (t.cache_write - i.cache_write).max(0.0), total_tokens: (t.total_tokens - i.total_tokens).max(0.0), total_cost: (t.total_cost - i.total_cost).max(0.0), avg_duration: avg(t.total_duration, i.total_duration), total_duration: (t.total_duration - i.total_duration).max(0.0), total_ttft: (t.total_ttft - i.total_ttft).max(0.0), total_tps: (t.total_tps - i.total_tps).max(0.0), avg_ttft: avg(t.total_ttft, i.total_ttft), avg_tps: avg(t.total_tps, i.total_tps) }
+}
+
+struct SummaryParams { range: String, start: i64, end: i64, now: i64, step_ms: i64, key: Option<String>, breakdowns: Vec<&'static str>, exclusions: Vec<&'static str>, limit: i64 }
+
+async fn build_summary(pool: &sqlx::PgPool, p: &SummaryParams) -> Result<Value, String> {
+    use crate::engine::js::num;
+    let err = |e: sqlx::Error| e.to_string();
+    let key_filter = if p.key.is_some() { " AND api_key = $3" } else { "" };
+    let range_where = format!("start_time >= $1 AND start_time <= $2{key_filter}");
+    fn bind<'q>(sql: &'q str, p: &SummaryParams) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+        let q = sqlx::query(sql).bind(p.start).bind(p.end);
+        match &p.key { Some(k) => q.bind(k.clone()), None => q }
+    }
+    let bucket = format!("FLOOR(start_time::double precision / {0}) * {0}", p.step_ms);
+    let series_sql = format!("SELECT ({bucket})::text AS bucket_start_ms, {AGGREGATE_SQL} FROM request_usage WHERE {range_where} GROUP BY {bucket} ORDER BY {bucket}");
+    let series_rows = bind(&series_sql, p).fetch_all(pool).await.map_err(err)?;
+    let stats_sql = format!("SELECT {AGGREGATE_SQL} FROM request_usage WHERE {range_where}");
+    let stats_row = bind(&stats_sql, p).fetch_one(pool).await.map_err(err)?;
+    let today_start = local_midnight(p.now);
+    let today_sql = format!("SELECT (COUNT(*))::text AS requests, (COALESCE(SUM(tokens_input), 0))::text AS input_tokens, (COALESCE(SUM(tokens_output), 0))::text AS output_tokens, (COALESCE(SUM(tokens_reasoning), 0))::text AS reasoning_tokens, (COALESCE(SUM(tokens_cached), 0))::text AS cached_tokens, (COALESCE(SUM(tokens_cache_write), 0))::text AS cache_write_tokens, (COALESCE(SUM(cost_total), 0))::text AS total_cost FROM request_usage WHERE start_time >= $1 AND start_time <= $2{key_filter}");
+    let today_q = sqlx::query(&today_sql).bind(today_start).bind(p.now);
+    let today_row = match &p.key { Some(k) => today_q.bind(k.clone()), None => today_q }.fetch_one(pool).await.map_err(err)?;
+    let stats = agg_from_row(&stats_row);
+
+    let mut grouped = serde_json::Map::new();
+    for dim in &p.breakdowns {
+        let mut where_sql = range_where.clone();
+        if *dim == "modelAlias" && p.exclusions.contains(&"directModels") { where_sql.push_str(" AND (incoming_model_alias IS NULL OR incoming_model_alias NOT LIKE 'direct/%')"); }
+        if *dim == "apiKey" && p.exclusions.contains(&"probe") { where_sql.push_str(" AND (api_key IS NULL OR api_key != 'probe')"); }
+        let field = match *dim { "provider" => "COALESCE(provider, 'unknown')", "modelAlias" => "COALESCE(incoming_model_alias, selected_model_name, 'unknown')", "status" => "COALESCE(response_status, 'unknown')", _ => "api_key" };
+        let rows_sql = format!("SELECT {field} AS group_key, (COUNT(*) OVER ())::text AS total_dimensions, {AGGREGATE_SQL} FROM request_usage WHERE {where_sql} GROUP BY {field} ORDER BY COUNT(*) DESC, {field} LIMIT {}", p.limit);
+        let rows = bind(&rows_sql, p).fetch_all(pool).await.map_err(err)?;
+        let mut items: Vec<Value> = Vec::new();
+        let mut included = Agg::default();
+        for row in &rows {
+            let key: Option<String> = row.try_get("group_key").ok().flatten();
+            let name = if *dim == "apiKey" {
+                match key.as_deref() { Some("probe") => "probe".to_string(), Some(k) if !k.is_empty() => if k.chars().count() > 8 { format!("{}...", k.chars().take(8).collect::<String>()) } else { k.to_string() }, _ => "unknown".to_string() }
+            } else { key.unwrap_or_else(|| "unknown".into()) };
+            let a = agg_from_row(row);
+            items.push(summary_group(name, &a));
+            included = Agg { requests: included.requests + a.requests, errors: included.errors + a.errors, input: included.input + a.input, output: included.output + a.output, reasoning: included.reasoning + a.reasoning, cached: included.cached + a.cached, cache_write: included.cache_write + a.cache_write, total_tokens: included.total_tokens + a.total_tokens, total_cost: included.total_cost + a.total_cost, total_duration: included.total_duration + a.total_duration, total_ttft: included.total_ttft + a.total_ttft, total_tps: included.total_tps + a.total_tps, avg_duration: 0.0, avg_ttft: 0.0, avg_tps: 0.0 };
+        }
+        let total_sql = format!("SELECT {AGGREGATE_SQL} FROM request_usage WHERE {where_sql}");
+        let total_row = bind(&total_sql, p).fetch_one(pool).await.map_err(err)?;
+        let grouped_total = agg_from_row(&total_row);
+        let total_dimensions = rows.first().map(|r| pg_num(r, "total_dimensions")).unwrap_or(0.0);
+        if total_dimensions > items.len() as f64 { items.push(summary_group("Other".into(), &subtract(&grouped_total, &included))); }
+        grouped.insert((*dim).into(), serde_json::json!({"items": items, "totalDimensions": num(total_dimensions), "truncated": total_dimensions > p.limit as f64}));
+    }
+
+    let series: Vec<Value> = series_rows.iter().map(|row| {
+        let a = agg_from_row(row);
+        serde_json::json!({"bucketStartMs": num(pg_num(row, "bucket_start_ms")), "requests": num(a.requests), "errors": num(a.errors), "inputTokens": num(a.input), "outputTokens": num(a.output), "reasoningTokens": num(a.reasoning), "cachedTokens": num(a.cached), "cacheWriteTokens": num(a.cache_write), "tokens": num(a.total_tokens), "totalCost": num(a.total_cost), "avgDurationMs": num(a.avg_duration), "avgTtftMs": num(a.avg_ttft), "avgTokensPerSec": num(a.avg_tps)})
+    }).collect();
+    let t = |c| num(pg_num(&today_row, c));
+    let mut response = serde_json::json!({
+        "range": p.range,
+        "series": series,
+        "stats": {"totalRequests": num(stats.requests), "totalErrors": num(stats.errors), "totalTokens": num(stats.total_tokens), "inputTokens": num(stats.input), "outputTokens": num(stats.output), "reasoningTokens": num(stats.reasoning), "cachedTokens": num(stats.cached), "cacheWriteTokens": num(stats.cache_write), "totalCost": num(stats.total_cost), "avgDurationMs": num(stats.avg_duration), "totalDurationMs": num(stats.total_duration), "avgTtftMs": num(stats.avg_ttft), "avgTokensPerSec": num(stats.avg_tps), "successRate": num(success_rate(&stats))},
+        "today": {"requests": t("requests"), "inputTokens": t("input_tokens"), "outputTokens": t("output_tokens"), "reasoningTokens": t("reasoning_tokens"), "cachedTokens": t("cached_tokens"), "cacheWriteTokens": t("cache_write_tokens"), "totalCost": t("total_cost")},
+    });
+    if !p.breakdowns.is_empty() { response["grouped"] = Value::Object(grouped); }
+    let bytes = crate::engine::js::stringify(&response).len();
+    let limit = if p.breakdowns.is_empty() { MAX_BASIC_SUMMARY_RESPONSE_BYTES } else { MAX_SUMMARY_RESPONSE_BYTES };
+    if bytes > limit { return Err(format!("413:Usage summary response exceeds the {limit} byte size limit")); }
+    Ok(response)
 }
 
 async fn summary_usage(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<SummaryQuery>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     let principal = match admin(&state, &headers) {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let scope = match principal {
-        Principal::Admin => None,
-        Principal::Limited { key_name, .. } => Some(key_name),
-    };
-    let range = query.range.as_deref().unwrap_or("day");
-    if !matches!(range, "hour" | "day" | "week" | "month" | "custom") {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Invalid range"}))).into_response();
+    let q = |k: &str| query.get(k).filter(|v| !v.is_empty()).cloned();
+    let range = q("range").unwrap_or_else(|| "day".into());
+    let (start_str, end_str) = (q("startDate"), q("endDate"));
+    if range == "custom" {
+        let (Some(s), Some(e)) = (&start_str, &end_str) else { return bad("startDate and endDate are required for custom range") };
+        let (Some(s), Some(e)) = (js_date_ms(s), js_date_ms(e)) else { return bad("Invalid date format") };
+        if e < s { return bad("endDate must be after startDate"); }
+    } else if !matches!(range.as_str(), "hour" | "day" | "week" | "month") {
+        return bad("Invalid range");
     }
+    let mut breakdowns: Vec<String> = Vec::new();
+    for b in query.get("breakdowns").map(String::as_str).unwrap_or("").split(',').map(str::trim).filter(|v| !v.is_empty()) {
+        if !breakdowns.iter().any(|x| x == b) { breakdowns.push(b.to_string()); }
+    }
+    if let Some(invalid) = breakdowns.iter().find(|b| !BREAKDOWN_DIMENSIONS.contains(&b.as_str())) { return bad(format!("Unsupported breakdown: {invalid}")); }
+    if breakdowns.len() > 3 { return bad("At most 3 breakdowns are supported"); }
+    let mut exclusions: Vec<String> = Vec::new();
+    for x in query.get("exclude").map(String::as_str).unwrap_or("").split(',').map(str::trim).filter(|v| !v.is_empty()) {
+        if !exclusions.iter().any(|e| e == x) { exclusions.push(x.to_string()); }
+    }
+    if let Some(invalid) = exclusions.iter().find(|x| !SUMMARY_EXCLUSIONS.contains(&x.as_str())) { return bad(format!("Unsupported exclusion: {invalid}")); }
+    // `Number(query.breakdownLimit)`; undefined → 10.
+    let parsed_limit = match query.get("breakdownLimit") {
+        None => Some(10.0),
+        Some(v) => { let t = v.trim(); if t.is_empty() { Some(0.0) } else { t.parse::<f64>().ok() } }
+    };
+    let limit = match parsed_limit { Some(n) if n.fract() == 0.0 && (1.0..=50.0).contains(&n) => n as i64, _ => return bad("breakdownLimit must be an integer between 1 and 50") };
+
+    let current = chrono::Utc::now().timestamp_millis();
+    let now = current - current.rem_euclid(60_000);
     let (start, end) = if range == "custom" {
-        let (Some(start), Some(end)) = (query.start_date.as_deref(), query.end_date.as_deref()) else {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"startDate and endDate are required for custom range"}))).into_response();
-        };
-        let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok().map(|v| v.timestamp_millis());
-        let (Some(start), Some(end)) = (parse(start), parse(end)) else {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Invalid date format"}))).into_response();
-        };
-        if end < start { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"endDate must be after startDate"}))).into_response(); }
-        if end > chrono::Utc::now().timestamp_millis() { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"endDate cannot be in the future"}))).into_response(); }
-        if end - start > 366 * 24 * 60 * 60 * 1000 { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"custom range cannot exceed 12 months"}))).into_response(); }
-        (start, end)
+        let (s, e) = (js_date_ms(start_str.as_deref().unwrap()).unwrap(), js_date_ms(end_str.as_deref().unwrap()).unwrap());
+        if e > current { return bad("endDate cannot be in the future"); }
+        if e - s > MAX_CUSTOM_RANGE_MS { return bad("custom range cannot exceed 12 months"); }
+        (s, e)
     } else {
-        let end = chrono::Utc::now().timestamp_millis();
-        let duration = match range { "hour" => 60*60*1000, "day" => 24*60*60*1000, "week" => 7*24*60*60*1000, _ => 30*24*60*60*1000 };
-        (end - duration, end)
+        let start = match range.as_str() { "hour" => local_shift(now, 1, 0), "day" => local_shift(now, 24, 0), "week" => local_shift(now, 0, 7), _ => local_shift(now, 0, 30) };
+        (start, now)
     };
-    let step = match range { "hour" => 60_000, "day" => 3_600_000, "week" | "month" => 86_400_000, _ => ((end-start)/100).max(60_000) };
-    let breakdowns: Vec<&str> = query.breakdowns.as_deref().unwrap_or("").split(',').map(str::trim).filter(|v| !v.is_empty()).collect();
-    if breakdowns.iter().any(|v| !matches!(*v, "provider" | "modelAlias" | "apiKey" | "status")) || breakdowns.len() > 3 {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Unsupported or excessive breakdown"}))).into_response();
+    let step_seconds: i64 = if range == "custom" {
+        let duration_ms = (end - start) as f64;
+        let minutes = duration_ms / 60_000.0;
+        let seconds = duration_ms / 1000.0;
+        let mut step = if minutes <= 30.0 { 60 } else if minutes <= 24.0 * 60.0 { 300 } else if minutes <= 7.0 * 24.0 * 60.0 { 3600 } else { 21600 };
+        if (seconds / step as f64).ceil() > 100.0 { step = (seconds / 100.0).ceil() as i64; }
+        step
+    } else { match range.as_str() { "hour" => 60, "day" => 3600, _ => 86_400 } };
+    let normalized: Vec<&'static str> = BREAKDOWN_DIMENSIONS.iter().copied().filter(|d| breakdowns.iter().any(|b| b == d)).collect();
+    let norm_excl: Vec<&'static str> = SUMMARY_EXCLUSIONS.iter().copied().filter(|d| exclusions.iter().any(|b| b == d)).collect();
+    let key = match &principal { Principal::Admin => None, Principal::Limited { key_name, .. } => Some(key_name.clone()) };
+    let iso = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)).unwrap_or_default();
+    let cache_key = format!("{:x}:", std::sync::Arc::as_ptr(&state.inner) as usize) + &crate::engine::js::stringify(&serde_json::json!({"scopeKey": key.as_ref().map(|k| format!("limited:{k}")).unwrap_or_else(|| "admin".into()), "range": range, "startDate": iso(start), "endDate": iso(end), "breakdowns": normalized, "exclusions": norm_excl, "breakdownLimit": limit}));
+    let mk = |status: StatusCode, cache: &str, body: Value| { let mut r = (status, Json(body)).into_response(); if !cache.is_empty() { r.headers_mut().insert("x-usage-summary-cache", cache.parse().unwrap()); } r };
+    {
+        let cache = summary_cache().lock().unwrap();
+        if let Some((expires, body)) = cache.get(&cache_key) {
+            if *expires > chrono::Utc::now().timestamp_millis() { return mk(StatusCode::OK, "HIT", body.clone()); }
+        }
     }
-    let limit = query.breakdown_limit.unwrap_or(10);
-    if !(1..=50).contains(&limit) { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"breakdownLimit must be an integer between 1 and 50"}))).into_response(); }
     let Some(pool) = &state.inner.database else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"Database unavailable"}))).into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Database not initialized"}))).into_response();
     };
-    let aggregate_sql = "SELECT count(*)::bigint requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint errors, coalesce(sum(tokens_input),0)::bigint input_tokens, coalesce(sum(tokens_output),0)::bigint output_tokens, coalesce(sum(tokens_reasoning),0)::bigint reasoning_tokens, coalesce(sum(tokens_cached),0)::bigint cached_tokens, coalesce(sum(tokens_cache_write),0)::bigint cache_write_tokens, coalesce(sum(cost_total),0)::double precision total_cost, coalesce(sum(duration_ms),0)::bigint total_duration_ms, coalesce(avg(duration_ms),0)::double precision avg_duration_ms, coalesce(sum(ttft_ms),0)::double precision total_ttft_ms, coalesce(avg(ttft_ms),0)::double precision avg_ttft_ms, coalesce(avg(tokens_per_sec),0)::double precision avg_tokens_per_sec, count(ttft_ms)::bigint ttft_samples, count(tokens_per_sec)::bigint tps_samples FROM request_usage WHERE start_time >= $1 AND start_time <= $2 AND ($3::text IS NULL OR api_key = $3)";
-    let Ok(row) = sqlx::query(aggregate_sql).bind(start).bind(end).bind(scope.as_deref()).fetch_one(pool).await else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error":"Failed to read usage summary"})),
-        )
-            .into_response();
-    };
-    let n = |name| row.try_get::<i64,_>(name).unwrap_or(0);
-    let f = |name| row.try_get::<f64,_>(name).unwrap_or(0.0);
-    let requests=n("requests"); let errors=n("errors");
-    let total_tokens=n("input_tokens")+n("output_tokens")+n("reasoning_tokens")+n("cached_tokens")+n("cache_write_tokens");
-    let stats=serde_json::json!({"totalRequests":requests,"totalErrors":errors,"totalTokens":total_tokens,"inputTokens":n("input_tokens"),"outputTokens":n("output_tokens"),"reasoningTokens":n("reasoning_tokens"),"cachedTokens":n("cached_tokens"),"cacheWriteTokens":n("cache_write_tokens"),"totalCost":f("total_cost"),"avgDurationMs":f("avg_duration_ms"),"totalDurationMs":n("total_duration_ms"),"avgTtftMs":f("avg_ttft_ms"),"avgTokensPerSec":f("avg_tokens_per_sec"),"ttftSamples":n("ttft_samples"),"tpsSamples":n("tps_samples"),"successRate":if requests > 0 {(requests-errors) as f64 * 100.0 / requests as f64} else {0.0}});
-    let series_rows = sqlx::query("SELECT (floor(start_time::double precision / $4) * $4)::bigint bucket, count(*)::bigint requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint errors, coalesce(sum(tokens_input),0)::bigint input_tokens, coalesce(sum(tokens_output),0)::bigint output_tokens, coalesce(sum(tokens_reasoning),0)::bigint reasoning_tokens, coalesce(sum(tokens_cached),0)::bigint cached_tokens, coalesce(sum(tokens_cache_write),0)::bigint cache_write_tokens, coalesce(sum(cost_total),0)::double precision total_cost, coalesce(avg(duration_ms),0)::double precision avg_duration_ms, coalesce(avg(ttft_ms),0)::double precision avg_ttft_ms, coalesce(avg(tokens_per_sec),0)::double precision avg_tokens_per_sec, count(ttft_ms)::bigint ttft_samples, count(tokens_per_sec)::bigint tps_samples FROM request_usage WHERE start_time >= $1 AND start_time <= $2 AND ($3::text IS NULL OR api_key = $3) GROUP BY bucket ORDER BY bucket").bind(start).bind(end).bind(scope.as_deref()).bind(step).fetch_all(pool).await;
-    let Ok(series_rows) = series_rows else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to read usage series"}))).into_response();
-    };
-    let series: Vec<Value> = series_rows.iter().map(|r| { let i=|x|r.try_get::<i64,_>(x).unwrap_or(0); let x=|x|r.try_get::<f64,_>(x).unwrap_or(0.0); serde_json::json!({"bucketStartMs":i("bucket"),"requests":i("requests"),"errors":i("errors"),"inputTokens":i("input_tokens"),"outputTokens":i("output_tokens"),"reasoningTokens":i("reasoning_tokens"),"cachedTokens":i("cached_tokens"),"cacheWriteTokens":i("cache_write_tokens"),"tokens":i("input_tokens")+i("output_tokens")+i("reasoning_tokens")+i("cached_tokens")+i("cache_write_tokens"),"totalCost":x("total_cost"),"avgDurationMs":x("avg_duration_ms"),"avgTtftMs":x("avg_ttft_ms"),"avgTokensPerSec":x("avg_tokens_per_sec"),"ttftSamples":i("ttft_samples"),"tpsSamples":i("tps_samples")}) }).collect();
-    let today_start = chrono::Local::now().date_naive().and_hms_opt(0,0,0).unwrap().and_local_timezone(chrono::Local).earliest().map(|dt|dt.timestamp_millis()).unwrap_or_else(||chrono::Utc::now().timestamp_millis());
-    let today_row = sqlx::query(aggregate_sql).bind(today_start).bind(end).bind(scope.as_deref()).fetch_one(pool).await;
-    let Ok(today_row) = today_row else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to read today's usage"}))).into_response();
-    };
-    let today = serde_json::json!({"requests":today_row.try_get::<i64,_>("requests").unwrap_or(0),"inputTokens":today_row.try_get::<i64,_>("input_tokens").unwrap_or(0),"outputTokens":today_row.try_get::<i64,_>("output_tokens").unwrap_or(0),"reasoningTokens":today_row.try_get::<i64,_>("reasoning_tokens").unwrap_or(0),"cachedTokens":today_row.try_get::<i64,_>("cached_tokens").unwrap_or(0),"cacheWriteTokens":today_row.try_get::<i64,_>("cache_write_tokens").unwrap_or(0),"totalCost":today_row.try_get::<f64,_>("total_cost").unwrap_or(0.0)});
-    Json(serde_json::json!({"range":range,"series":series,"stats":stats,"today":today})).into_response()
+    let params = SummaryParams { range: range.clone(), start, end, now, step_ms: step_seconds * 1000, key, breakdowns: normalized, exclusions: norm_excl, limit };
+    match build_summary(pool, &params).await {
+        Ok(body) => {
+            let mut cache = summary_cache().lock().unwrap();
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            cache.retain(|_, (expires, _)| *expires > now_ms);
+            while cache.len() >= MAX_SUMMARY_CACHE_ENTRIES { cache.shift_remove_index(0); }
+            let ttl = if range == "custom" && end < now - 5 * 60 * 1000 { HISTORICAL_SUMMARY_CACHE_TTL_MS } else { SUMMARY_CACHE_TTL_MS };
+            cache.insert(cache_key, (now_ms + ttl, body.clone()));
+            mk(StatusCode::OK, "MISS", body)
+        }
+        Err(e) => match e.strip_prefix("413:") {
+            Some(msg) => mk(StatusCode::PAYLOAD_TOO_LARGE, "", serde_json::json!({"error": msg})),
+            None => mk(StatusCode::INTERNAL_SERVER_ERROR, "", serde_json::json!({"error": e})),
+        },
+    }
 }
 
 async fn delete_usage(

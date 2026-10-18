@@ -1,7 +1,6 @@
 //! In-process model metadata catalogs.  A failed source refresh never replaces
 //! the last known-good catalog.
 
-use std::collections::BTreeMap;
 use std::sync::{OnceLock, RwLock};
 use std::time::Instant;
 
@@ -66,7 +65,7 @@ pub struct RefreshReport {
     pub duration_ms: u128,
     pub interval_minutes: u64,
     pub had_errors: bool,
-    pub sources: BTreeMap<String, SourceReport>,
+    pub sources: indexmap::IndexMap<String, SourceReport>,
 }
 
 #[derive(Clone, Debug)]
@@ -87,159 +86,177 @@ impl Default for SourceUrls {
 
 #[derive(Default)]
 struct Catalogs {
-    openrouter: BTreeMap<String, ModelMetadata>,
-    models_dev: BTreeMap<String, ModelMetadata>,
-    catwalk: BTreeMap<String, ModelMetadata>,
+    openrouter: Catalog,
+    models_dev: Catalog,
+    catwalk: Catalog,
 }
 static CATALOGS: OnceLock<RwLock<Catalogs>> = OnceLock::new();
 fn catalogs() -> &'static RwLock<Catalogs> {
     CATALOGS.get_or_init(|| RwLock::new(Catalogs::default()))
 }
 
-fn positive(v: Option<u64>) -> Option<u64> {
-    v.filter(|v| *v > 0)
+/// Insertion-ordered like the Plexus `Map`s (fetch order, first key position kept).
+pub type Catalog = indexmap::IndexMap<String, ModelMetadata>;
+
+fn positive(v: Option<f64>) -> Option<u64> {
+    v.filter(|v| *v > 0.0).map(|v| v as u64)
 }
-fn openrouter(
-    raw: serde_json::Value,
-    kind: &str,
-) -> Result<BTreeMap<String, ModelMetadata>, String> {
-    let rows = raw
-        .get("data")
-        .and_then(|v| v.as_array())
-        .ok_or("invalid OpenRouter response format")?;
-    let mut out = BTreeMap::new();
-    for row in rows {
-        let id = row
-            .get("id")
-            .and_then(|v| v.as_str())
-            .filter(|v| !v.is_empty())
-            .ok_or("OpenRouter model is missing id")?;
-        let architecture = row.get("architecture").cloned().or_else(|| (kind == "videos").then(|| serde_json::json!({"modality":"text->video","input_modalities":["text"],"output_modalities":["video"]})));
-        out.insert(
-            id.into(),
-            ModelMetadata {
-                id: id.into(),
-                name: row
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(id)
-                    .into(),
-                description: row
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(Into::into),
-                context_length: positive(row.get("context_length").and_then(|v| v.as_u64())),
-                architecture,
-                pricing: row.get("pricing").cloned(),
-                top_provider: row.get("top_provider").cloned(),
-                supported_parameters: row
-                    .get("supported_parameters")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(Into::into))
-                            .collect()
-                    }),
-            },
-        );
-    }
-    if out.is_empty() {
-        return Err("invalid OpenRouter response format".into());
-    }
-    Ok(out)
+fn num(v: &serde_json::Value) -> Option<f64> { v.as_f64() }
+/// `String(perMillion / 1_000_000)` with JS number text.
+fn per_token(v: &serde_json::Value) -> Option<serde_json::Value> {
+    if v.is_null() { return None; }
+    v.as_f64().map(|n| serde_json::Value::String(crate::engine::js::js_number_text(n / 1_000_000.0)))
 }
-fn models_dev(raw: serde_json::Value) -> Result<BTreeMap<String, ModelMetadata>, String> {
-    let object = raw
-        .as_object()
-        .ok_or("invalid models.dev response format")?;
-    let mut out = BTreeMap::new();
-    for (provider, value) in object {
-        let models = value
-            .get("models")
-            .ok_or_else(|| format!("models.dev provider {provider} is missing models"))?;
-        if let Some(map) = models.as_object() {
-            for (id, row) in map {
-                out.insert(format!("{provider}.{id}"), dev_model(provider, id, row));
-            }
-        } else if let Some(rows) = models.as_array() {
-            for row in rows {
-                let id = row
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .ok_or("models.dev model is missing id")?;
-                out.insert(format!("{provider}.{id}"), dev_model(provider, id, row));
-            }
-        } else {
-            return Err("invalid models.dev models format".into());
-        }
-    }
-    if out.is_empty() {
-        Err("invalid models.dev response format".into())
-    } else {
-        Ok(out)
-    }
+fn obj(pairs: Vec<(&str, Option<serde_json::Value>)>) -> serde_json::Value {
+    serde_json::Value::Object(pairs.into_iter().filter_map(|(k, v)| v.map(|v| (k.to_owned(), v))).collect())
 }
-fn per_token_pricing(row: &serde_json::Value, fields: &[(&str,&str)]) -> Option<serde_json::Value> {
-    let mut pricing=serde_json::Map::new();
-    for (input,output) in fields {
-        if let Some(value)=row.get(*input).and_then(serde_json::Value::as_f64) {
-            pricing.insert((*output).into(),serde_json::Value::String((value/1_000_000.0).to_string()));
-        }
-    }
-    if pricing.is_empty() {None} else {Some(serde_json::Value::Object(pricing))}
+fn top_provider(context: Option<f64>, output: Option<f64>) -> Option<serde_json::Value> {
+    let (context, output) = (positive(context), positive(output));
+    (context.is_some() || output.is_some()).then(|| obj(vec![("context_length", context.map(Into::into)), ("max_completion_tokens", output.map(Into::into))]))
 }
-fn top_provider(context: Option<u64>, output: Option<u64>) -> Option<serde_json::Value> {
-    let mut value=serde_json::Map::new();
-    if let Some(context)=positive(context) {value.insert("context_length".into(),context.into());}
-    if let Some(output)=positive(output) {value.insert("max_completion_tokens".into(),output.into());}
-    if value.is_empty() {None} else {Some(value.into())}
-}
-fn dev_model(provider: &str, id: &str, row: &serde_json::Value) -> ModelMetadata {
-    let input=row.pointer("/modalities/input").and_then(|v|v.as_array());
-    let output=row.pointer("/modalities/output").and_then(|v|v.as_array());
-    let mut architecture=serde_json::Map::new();
-    if let Some(input)=input {architecture.insert("input_modalities".into(),input.clone().into());}
-    if let Some(output)=output {architecture.insert("output_modalities".into(),output.clone().into());}
-    if input.is_some_and(|a|!a.is_empty()) || output.is_some_and(|a|!a.is_empty()) {
-        let join=|array:Option<&Vec<serde_json::Value>>|array.into_iter().flatten().filter_map(|v|v.as_str()).collect::<Vec<_>>().join("+");
-        architecture.insert("modality".into(),format!("{}->{}",join(input),join(output)).into());
-    }
-    let mut params=Vec::new();
-    if row["tool_call"]==true {params.extend(["tools".into(),"tool_choice".into()]);}
-    for (flag,param) in [("temperature","temperature"),("reasoning","reasoning"),("attachment","image")] {if row[flag]==true {params.push(param.into());}}
+fn opt(v: Option<&serde_json::Value>) -> Option<serde_json::Value> { v.filter(|v| !v.is_null()).cloned() }
+
+/// `normalizeOpenRouterModel(raw, kind)`.
+fn openrouter_model(row: &serde_json::Value, kind: &str) -> ModelMetadata {
+    let id = row["id"].as_str().unwrap_or_default();
+    let architecture = opt(row.get("architecture")).or_else(|| (kind == "videos").then(|| {
+        let mut input = vec!["text"];
+        if row["supported_frame_images"].as_array().is_some_and(|a| !a.is_empty()) { input.push("image"); }
+        let mut output = vec!["video"];
+        if crate::engine::js::truthy(row.get("generate_audio")) { output.push("audio"); }
+        serde_json::json!({"modality": format!("{}->{}", input.join("+"), output.join("+")), "input_modalities": input, "output_modalities": output})
+    }));
+    let pricing = opt(row.get("pricing")).map(|p| {
+        let tiers = opt(p.get("tiers")).or_else(|| p.get("overrides").and_then(|o| o.as_array()).map(|o| {
+            o.iter().filter(|t| t.get("min_prompt_tokens").is_some()).map(|t| obj(vec![
+                ("input_tokens_above", t.get("min_prompt_tokens").cloned()),
+                ("prompt", t.get("prompt").cloned()),
+                ("completion", t.get("completion").cloned()),
+                ("input_cache_read", t.get("input_cache_read").cloned()),
+                ("input_cache_write", t.get("input_cache_write").cloned()),
+            ])).collect::<Vec<_>>().into()
+        }));
+        obj(vec![
+            ("prompt", opt(p.get("prompt"))),
+            ("completion", opt(p.get("completion"))),
+            ("input_cache_read", opt(p.get("input_cache_read"))),
+            ("input_cache_write", opt(p.get("input_cache_write"))),
+            ("tiers", tiers),
+        ])
+    });
     ModelMetadata {
-        id:format!("{provider}.{id}"),name:row["name"].as_str().or_else(||row["id"].as_str()).unwrap_or(id).into(),description:None,
-        context_length:positive(row.pointer("/limit/context").and_then(|v|v.as_u64())),architecture:Some(architecture.into()),
-        pricing:per_token_pricing(&row["cost"],&[("input","prompt"),("output","completion"),("cache_read","input_cache_read"),("cache_write","input_cache_write")]),
-        supported_parameters:(!params.is_empty()).then_some(params),
-        top_provider:top_provider(row.pointer("/limit/context").and_then(|v|v.as_u64()),row.pointer("/limit/output").and_then(|v|v.as_u64())),
+        id: id.into(),
+        name: row["name"].as_str().unwrap_or(id).into(),
+        description: row["description"].as_str().map(Into::into),
+        context_length: positive(num(&row["context_length"])),
+        architecture,
+        pricing,
+        supported_parameters: row["supported_parameters"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(Into::into)).collect()),
+        top_provider: top_provider(num(&row["top_provider"]["context_length"]), num(&row["top_provider"]["max_completion_tokens"])),
     }
 }
-fn catwalk(raw: serde_json::Value) -> Result<BTreeMap<String, ModelMetadata>, String> {
-    let providers = raw.as_array().ok_or("invalid Catwalk response format")?;
-    let mut out = BTreeMap::new();
-    for provider in providers {
-        let pid = provider
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or("Catwalk provider is missing id")?;
-        let rows = provider
-            .get("models")
-            .and_then(|v| v.as_array())
-            .ok_or("Catwalk provider is missing models")?;
-        for row in rows {
-            let id = row
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or("Catwalk model is missing id")?;
-            out.insert(format!("{pid}.{id}"), ModelMetadata { id: format!("{pid}.{id}"), name: row.get("name").and_then(|v| v.as_str()).unwrap_or(id).into(), description: None, context_length: positive(row.get("context_window").and_then(|v| v.as_u64())), architecture: Some(if row["supports_attachments"]==true {serde_json::json!({"modality":"text+image->text","input_modalities":["text","image"],"output_modalities":["text"]})} else {serde_json::json!({"modality":"text->text","input_modalities":["text"],"output_modalities":["text"]})}), pricing: per_token_pricing(row,&[("cost_per_1m_in","prompt"),("cost_per_1m_out","completion"),("cost_per_1m_in_cached","input_cache_read")]), top_provider:top_provider(row["context_window"].as_u64(),row["default_max_tokens"].as_u64()), supported_parameters: Some({let mut p=vec!["temperature".into(),"max_tokens".into()];if row["can_reason"]==true {p.push("reasoning".into());} if row["supports_attachments"]==true {p.push("image".into());}p}) });
+fn openrouter(raw: serde_json::Value, kind: &str, out: &mut Catalog) -> Result<(), String> {
+    let rows = raw.get("data").and_then(|v| v.as_array()).ok_or_else(|| format!("Invalid OpenRouter {kind} response format"))?;
+    for row in rows {
+        if row["id"].as_str().is_some_and(|id| !id.is_empty()) {
+            out.insert(row["id"].as_str().unwrap().into(), openrouter_model(row, kind));
         }
     }
-    if out.is_empty() {
-        Err("invalid Catwalk response format".into())
-    } else {
-        Ok(out)
+    Ok(())
+}
+fn models_dev(raw: serde_json::Value) -> Result<Catalog, String> {
+    let object = raw.as_object().ok_or("Invalid models.dev response format")?;
+    let mut out = Catalog::new();
+    for (provider, value) in object {
+        match value.get("models") {
+            Some(serde_json::Value::Array(rows)) => for row in rows {
+                if let Some(id) = row["id"].as_str().filter(|s| !s.is_empty()) { out.insert(format!("{provider}.{id}"), dev_model(provider, id, row)); }
+            },
+            Some(serde_json::Value::Object(map)) => for (id, row) in map {
+                if !row.is_null() { out.insert(format!("{provider}.{id}"), dev_model(provider, id, row)); }
+            },
+            _ => {}
+        }
     }
+    if out.is_empty() { Err("Invalid models.dev response format".into()) } else { Ok(out) }
+}
+/// `normalizeModelsDevModel(providerId, modelId, raw)`.
+fn dev_model(provider: &str, id: &str, row: &serde_json::Value) -> ModelMetadata {
+    let input = row.pointer("/modalities/input").and_then(|v| v.as_array());
+    let output = row.pointer("/modalities/output").and_then(|v| v.as_array());
+    let join = |a: Option<&Vec<serde_json::Value>>| a.map(|a| a.iter().map(|v| crate::engine::js::to_string(Some(v))).collect::<Vec<_>>().join("+"));
+    let modality = (input.is_some_and(|a| !a.is_empty()) || output.is_some_and(|a| !a.is_empty()))
+        .then(|| format!("{}->{}", join(input).unwrap_or_default(), join(output).unwrap_or_default()).into());
+    let architecture = obj(vec![("modality", modality), ("input_modalities", input.cloned().map(Into::into)), ("output_modalities", output.cloned().map(Into::into))]);
+    let mut params: Vec<String> = Vec::new();
+    let t = |k: &str| crate::engine::js::truthy(row.get(k));
+    if t("tool_call") { params.extend(["tools".into(), "tool_choice".into()]); }
+    if t("temperature") { params.push("temperature".into()); }
+    if t("reasoning") { params.push("reasoning".into()); }
+    if t("attachment") { params.push("image".into()); }
+    let cost = &row["cost"];
+    let pricing = (!cost["input"].is_null() || !cost["output"].is_null()).then(|| {
+        let tiers = cost.get("tiers").filter(|v| crate::engine::js::truthy(Some(v))).map(|tiers| {
+            tiers.as_array().into_iter().flatten().filter_map(|tier| {
+                let above = opt(tier.pointer("/tier/size")).or_else(|| opt(tier.get("size")))?;
+                Some(obj(vec![
+                    ("input_tokens_above", Some(above)),
+                    ("prompt", per_token(&tier["input"])),
+                    ("completion", per_token(&tier["output"])),
+                    ("input_cache_read", per_token(&tier["cache_read"])),
+                    ("input_cache_write", per_token(&tier["cache_write"])),
+                ]))
+            }).collect::<Vec<_>>().into()
+        });
+        obj(vec![
+            ("prompt", per_token(&cost["input"])),
+            ("completion", per_token(&cost["output"])),
+            ("input_cache_read", per_token(&cost["cache_read"])),
+            ("input_cache_write", per_token(&cost["cache_write"])),
+            ("tiers", tiers),
+        ])
+    });
+    ModelMetadata {
+        id: format!("{provider}.{id}"),
+        name: row["name"].as_str().or_else(|| row["id"].as_str()).unwrap_or(id).into(),
+        description: None,
+        context_length: positive(num(&row["limit"]["context"])),
+        architecture: Some(architecture),
+        pricing,
+        supported_parameters: (!params.is_empty()).then_some(params),
+        top_provider: top_provider(num(&row["limit"]["context"]), num(&row["limit"]["output"])),
+    }
+}
+fn catwalk(raw: serde_json::Value) -> Result<Catalog, String> {
+    let providers = raw.as_array().ok_or("Invalid Catwalk response format")?;
+    let mut out = Catalog::new();
+    for provider in providers {
+        let (Some(pid), Some(rows)) = (provider["id"].as_str().filter(|s| !s.is_empty()), provider["models"].as_array()) else { continue };
+        for row in rows {
+            let Some(id) = row["id"].as_str().filter(|s| !s.is_empty()) else { continue };
+            let attach = crate::engine::js::truthy(row.get("supports_attachments"));
+            let input: Vec<&str> = if attach { vec!["text", "image"] } else { vec!["text"] };
+            let mut params: Vec<String> = vec!["temperature".into(), "max_tokens".into()];
+            if crate::engine::js::truthy(row.get("can_reason")) { params.push("reasoning".into()); }
+            if attach { params.push("image".into()); }
+            let pricing = (!row["cost_per_1m_in"].is_null() || !row["cost_per_1m_out"].is_null()).then(|| obj(vec![
+                ("prompt", per_token(&row["cost_per_1m_in"])),
+                ("completion", per_token(&row["cost_per_1m_out"])),
+                ("input_cache_read", per_token(&row["cost_per_1m_in_cached"])),
+            ]));
+            out.insert(format!("{pid}.{id}"), ModelMetadata {
+                id: format!("{pid}.{id}"),
+                name: row["name"].as_str().unwrap_or(id).into(),
+                description: None,
+                context_length: positive(num(&row["context_window"])),
+                architecture: Some(serde_json::json!({"modality": format!("{}->text", input.join("+")), "input_modalities": input, "output_modalities": ["text"]})),
+                pricing,
+                supported_parameters: Some(params),
+                top_provider: top_provider(num(&row["context_window"]), num(&row["default_max_tokens"])),
+            });
+        }
+    }
+    if out.is_empty() { Err("Invalid Catwalk response format".into()) } else { Ok(out) }
 }
 async fn fetch(url: &str) -> Result<serde_json::Value, String> {
     reqwest::Client::builder()
@@ -257,18 +274,18 @@ async fn fetch(url: &str) -> Result<serde_json::Value, String> {
         .map_err(|e| e.to_string())
 }
 
-async fn fetch_openrouter(source: &str) -> Result<BTreeMap<String, ModelMetadata>, String> {
-    let mut catalog = openrouter(fetch(source).await?, "models")?;
+async fn fetch_openrouter(source: &str) -> Result<Catalog, String> {
+    let mut catalog = Catalog::new();
+    openrouter(fetch(source).await?, "models", &mut catalog)?;
     if let Ok(mut url) = url::Url::parse(source) {
         if let Some(prefix) = url.path().strip_suffix("/models").map(str::to_owned) {
             for kind in ["embeddings", "videos"] {
                 url.set_path(&format!("{prefix}/{kind}/models"));
-                if let Ok(raw) = fetch(url.as_str()).await {
-                    if let Ok(auxiliary) = openrouter(raw, kind) { catalog.extend(auxiliary); }
-                }
+                if let Ok(raw) = fetch(url.as_str()).await { let _ = openrouter(raw, kind, &mut catalog); }
             }
         }
     }
+    if catalog.is_empty() { return Err("Invalid OpenRouter response format".into()); }
     Ok(catalog)
 }
 
@@ -305,7 +322,7 @@ async fn refresh_catalogs(urls: SourceUrls, trigger: &str) -> RefreshReport {
         fetch(&urls.models_dev),
         fetch(&urls.catwalk)
     );
-    let mut reports = BTreeMap::new();
+    let mut reports = indexmap::IndexMap::new();
     let mut errors = false;
     let mut guard = catalogs().write().unwrap();
     for (source, result) in [
@@ -364,18 +381,41 @@ async fn refresh_catalogs(urls: SourceUrls, trigger: &str) -> RefreshReport {
 
 /// One startup refresh and an hourly refresh thereafter. The task owns no
 /// credentials and keeps the last good catalog when a public source fails.
-pub fn start_scheduler() -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async {
-        refresh(SourceUrls::default(), "startup").await;
+pub fn start_scheduler(state: crate::AppState) -> tokio::task::JoinHandle<()> {
+    let log = |state: &crate::AppState, report: &RefreshReport| {
+        let module = [("module".into(), serde_json::json!("model-metadata-manager"))];
+        if report.had_errors {
+            crate::system_logs::event(state, "warn", format!("Model metadata refresh ({}) completed with errors", report.trigger), module);
+        } else {
+            crate::system_logs::event(state, "info", format!("Model metadata refresh ({}) completed in {}ms", report.trigger, report.duration_ms), module);
+        }
+    };
+    crate::system_logs::event(&state, "info", "Scheduled model metadata auto-refresh every 60 minutes", [("module".into(), serde_json::json!("model-metadata-manager")), ("functionName".into(), serde_json::json!("startAutoRefresh"))]);
+    tokio::spawn(async move {
+        log(&state, &refresh(SourceUrls::default(), "startup").await);
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            refresh(SourceUrls::default(), "scheduled").await;
+            log(&state, &refresh(SourceUrls::default(), "scheduled").await);
         }
     })
 }
 
+/// Auto-refresh cadence wired at startup (Plexus `startAutoRefresh(60)`).
+pub const AUTO_REFRESH_MINUTES: u64 = 60;
+
+/// Number of models loaded for one source (Plexus `getAllIds(source).length`).
+pub fn count(source: &str) -> usize {
+    let guard = catalogs().read().unwrap();
+    match source {
+        "openrouter" => guard.openrouter.len(),
+        "models.dev" => guard.models_dev.len(),
+        "catwalk" => guard.catwalk.len(),
+        _ => 0,
+    }
+}
+
 pub fn initialized(source: &str) -> bool {
-    !search(source, "", 1).is_empty()
+    count(source) > 0
 }
 
 pub fn lookup(source: &str, id: &str) -> Option<ModelMetadata> {
@@ -384,7 +424,15 @@ pub fn lookup(source: &str, id: &str) -> Option<ModelMetadata> {
     map.get(id).cloned()
 }
 
-pub fn search(source: &str, query: &str, limit: usize) -> Vec<ModelMetadata> {
+/// Ids of one source in catalog order (Plexus `getAllIds`).
+pub fn all_ids(source: &str) -> Vec<String> {
+    let guard = catalogs().read().unwrap();
+    let map = match source { "openrouter" => &guard.openrouter, "models.dev" => &guard.models_dev, "catwalk" => &guard.catwalk, _ => return vec![] };
+    map.keys().cloned().collect()
+}
+
+/// `ModelMetadataManager.search(source, query, limit)`: `(id, name)` pairs.
+pub fn search(source: &str, query: &str, limit: usize) -> Vec<(String, String)> {
     let guard = catalogs().read().unwrap();
     let map = match source {
         "openrouter" => &guard.openrouter,
@@ -393,13 +441,48 @@ pub fn search(source: &str, query: &str, limit: usize) -> Vec<ModelMetadata> {
         _ => return vec![],
     };
     let q = query.to_lowercase();
-    map.values()
-        .filter(|m| {
-            q.is_empty() || m.id.to_lowercase().contains(&q) || m.name.to_lowercase().contains(&q)
-        })
-        .take(limit.min(200))
-        .cloned()
-        .collect()
+    let mut results: Vec<(String, String)> = map.iter().filter(|(key, m)| {
+        if query.is_empty() { return true; }
+        let arch = m.architecture.as_ref();
+        let mut parts: Vec<&str> = vec![key.as_str(), m.name.as_str()];
+        if let Some(d) = &m.description { parts.push(d); }
+        if let Some(a) = arch {
+            if let Some(x) = a["modality"].as_str() { parts.push(x); }
+            for k in ["input_modalities", "output_modalities"] {
+                parts.extend(a[k].as_array().into_iter().flatten().filter_map(|v| v.as_str()));
+            }
+        }
+        parts.join(" ").to_lowercase().contains(&q)
+    }).map(|(k, m)| (k.clone(), m.name.clone())).collect();
+    if !query.is_empty() {
+        results.sort_by(|a, b| {
+            let starts = |x: &(String, String)| x.0.to_lowercase().starts_with(&q) || x.1.to_lowercase().starts_with(&q);
+            match (starts(a), starts(b)) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => locale_compare(&a.0, &b.0),
+            }
+        });
+    }
+    results.truncate(limit);
+    results
+}
+
+/// Approximation of ICU root-locale `localeCompare` (Bun/JSC) for ASCII ids:
+/// whitespace < punctuation/symbols (CLDR root order) < digits < letters,
+/// compared case-insensitively first, lowercase before uppercase on ties.
+pub fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
+    const PUNCT: &str = "_-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
+    fn key(c: char) -> (u8, u32) {
+        let l = c.to_ascii_lowercase();
+        if c.is_whitespace() { (0, c as u32) }
+        else if let Some(i) = PUNCT.find(c) { (1, i as u32) }
+        else if l.is_ascii_digit() { (2, l as u32) }
+        else if l.is_ascii_alphabetic() { (3, l as u32) }
+        else { (4, c as u32) }
+    }
+    let primary = a.chars().map(key).cmp(b.chars().map(key));
+    primary.then_with(|| a.chars().map(|c| c.is_ascii_uppercase()).cmp(b.chars().map(|c| c.is_ascii_uppercase())))
 }
 
 /// Admin-only preview of automatic model identity, metadata and API selection.
@@ -437,11 +520,11 @@ pub async fn resolve_metadata(
         else if regex::Regex::new(r"^gemini(?:-|$)").unwrap().is_match(&model) { vec!["gemini"] }
         else { vec!["chat_completions"] }.into_iter().map(str::to_string).collect())
     });
-    let pi_model = identity.get("provider").and_then(|p| p.as_str()).and_then(|provider| {
+    // Plexus: getCatalogModel(identity.provider, identity.model) — the pi-ai
+    // built-in catalog merged with the pi.dev overlay.
+    let pi_model = identity.get("provider").and_then(|p| p.as_str()).filter(|p| !p.is_empty()).and_then(|provider| {
         let model = identity.get("model")?.as_str()?;
-        [format!("{provider}.{model}"), format!("{provider}/{model}")].iter().find_map(|key| {
-            ["models.dev", "openrouter", "catwalk"].iter().find_map(|source| lookup(source,key)).map(|m| serde_json::json!({"provider":provider,"model_id":model,"name":m.name}))
-        })
+        crate::pi_catalog::catalog().get_model(provider, model).map(|m| serde_json::json!({"provider":provider,"model_id":model,"name":m.get("name")}))
     }).unwrap_or(serde_json::Value::Null);
     let metadata = resolved.map(|(source, path, name)| serde_json::json!({"source":source,"source_path":path,"name":name})).unwrap_or(serde_json::Value::Null);
     Json(serde_json::json!({"canonical_model":identity,"pi_model":pi_model,"metadata":metadata,"preferred_api":preferred_api})).into_response()
@@ -499,15 +582,12 @@ mod tests {
     use super::*;
     #[test]
     fn malformed_keeps_catalog() {
-        assert!(openrouter(serde_json::json!({"data":[]}), "models").is_err());
+        assert!(openrouter(serde_json::json!({"rows":[]}), "models", &mut Catalog::new()).is_err());
     }
     #[test]
     fn normalizes_openrouter() {
-        let m = openrouter(
-            serde_json::json!({"data":[{"id":"x","context_length":0}]}),
-            "models",
-        )
-        .unwrap();
+        let mut m = Catalog::new();
+        openrouter(serde_json::json!({"data":[{"id":"x","context_length":0}]}), "models", &mut m).unwrap();
         assert_eq!(m["x"].name, "x");
         assert_eq!(m["x"].context_length, None);
     }
@@ -550,7 +630,7 @@ mod consumer_tests {
             let payload:serde_json::Value=serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
             if lookup {assert_eq!(payload["data"]["context_length"],64000);} else {assert_eq!(payload["data"][0]["name"],"Fixture vision");}
         }
-        catalogs().write().unwrap().openrouter.remove("fixture/vision");
+        catalogs().write().unwrap().openrouter.shift_remove("fixture/vision");
     }
 }
 

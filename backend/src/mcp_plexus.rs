@@ -759,7 +759,7 @@ async fn system_logs_operation(
     };
     rpc_result(
         id,
-        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
+        json!({"structuredContent":result,"content":[{"type":"text","text":serde_json::to_string_pretty(&result).unwrap_or_default()}],"isError":!ok}),
     )
 }
 
@@ -1384,14 +1384,22 @@ async fn usage_operation(
     let payload: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
             .unwrap_or_else(|_| json!({"error":"Invalid usage response"}));
-    let result = if ok {
+    let mut result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
         json!({"ok":false,"operation":operation,"error":payload})
     };
+    // The management API retains sample counts for analytics clients, while
+    // Plexus's MCP usage summary omits them from its narrower tool contract.
+    if operation == "summary" && ok {
+        if let Some(stats) = result.pointer_mut("/data/stats").and_then(Value::as_object_mut) {
+            stats.remove("ttftSamples");
+            stats.remove("tpsSamples");
+        }
+    }
     rpc_result(
         id,
-        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
+        json!({"structuredContent":result,"content":[{"type":"text","text":serde_json::to_string_pretty(&result).unwrap_or_default()}],"isError":!ok}),
     )
 }
 

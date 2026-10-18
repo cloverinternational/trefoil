@@ -1,3 +1,4 @@
+pub mod alias_view;
 pub mod aliases;
 pub mod analytics;
 pub mod anthropic_masking;
@@ -9,18 +10,26 @@ pub mod concurrency;
 pub mod copilot_oauth;
 pub mod config_routes;
 pub mod catalog_organization;
+pub mod cli_versions;
+pub mod cooldown_manager;
 pub mod cooldowns;
 pub mod credential_crypto;
 pub mod custom_checkers;
 pub mod database;
 pub mod debug;
 pub mod debug_logs;
+pub mod engine;
+pub mod media_routes;
+pub mod decisions;
 pub mod errors;
-pub mod inference;
+pub mod http_compat;
+pub mod models_routes;
 pub mod keys;
 pub mod kimi_oauth;
+pub mod meta_oauth;
 pub mod logging;
 pub mod mcp;
+pub mod mcp_local;
 pub mod mcp_logs;
 pub mod mcp_oauth;
 pub mod mcp_plexus;
@@ -35,11 +44,15 @@ pub mod oauth_server;
 pub mod oauth_transport;
 pub mod openapi;
 pub mod performance;
+pub mod pi_catalog;
 pub mod pi_resolve;
 pub mod provider_presets;
+pub mod provider_schema;
+pub mod provider_view;
 pub mod providers;
 pub mod quota_management;
 pub mod raw;
+pub mod secret_crypto;
 pub mod restart;
 pub mod self_routes;
 pub mod state;
@@ -49,6 +62,11 @@ pub mod usage;
 pub mod user_quotas;
 pub mod vision;
 pub mod xai_oauth;
+pub mod zod;
+pub mod openai_chatgpt_oauth;
+pub mod oauth_login;
+pub mod anthropic_oauth;
+pub mod openrouter_oauth;
 
 pub use state::AppState;
 
@@ -69,7 +87,10 @@ pub fn app(state: AppState) -> Router {
         .merge(debug::router())
         .merge(debug_logs::router())
         .merge(errors::router())
-        .merge(inference::router())
+        .merge(decisions::router())
+        .merge(engine::dispatcher::routes::router())
+        .merge(media_routes::router())
+        .merge(models_routes::router())
         .merge(logging::router())
         .merge(mcp::router())
         .merge(mcp_proxy::router())
@@ -81,6 +102,7 @@ pub fn app(state: AppState) -> Router {
         .merge(oauth_server::router())
         .merge(openapi::router())
         .merge(performance::router())
+        .merge(pi_catalog::router())
         .merge(pi_resolve::router())
         .merge(keys::router())
         .merge(provider_presets::router())
@@ -93,7 +115,26 @@ pub fn app(state: AppState) -> Router {
         .merge(system_settings::router())
         .merge(system_logs::router())
         .merge(usage::router())
+        .route("/health", get(http_compat::health))
+        .route("/", get(http_compat::root_redirect))
+        .route("/ui/", get(http_compat::ui_index))
+        .fallback(http_compat::fallback)
+        .layer(axum::middleware::from_fn(http_compat::method_not_allowed_as_404))
+        .layer(axum::middleware::from_fn(http_compat::body_parser))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), log_request))
         .with_state(state)
+}
+
+/// Pinned Plexus `middleware/log.ts`: every request is logged at debug
+/// (module `log`) before routing and authentication.
+async fn log_request(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = request.uri().path_and_query().map(|value| value.as_str()).unwrap_or("/");
+    system_logs::event(&state, "debug", format!("{} {path}", request.method()), [("module".into(), serde_json::json!("log"))]);
+    next.run(request).await
 }
 
 async fn healthz() -> &'static str {

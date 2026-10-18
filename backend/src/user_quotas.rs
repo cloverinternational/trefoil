@@ -78,102 +78,53 @@ fn is_valid_quota_name(name: &str) -> bool {
 
 /// Validates a merged JSON value against the load-bearing subset of
 /// `QuotaDefinitionSchema` and builds a `QuotaDefinition`.
-fn validate_quota(value: &Value) -> Result<QuotaDefinition, Vec<Value>> {
-    let mut issues = Vec::new();
-    let obj = value.as_object();
-
-    let quota_type = obj.and_then(|o| o.get("type")).and_then(|v| v.as_str());
-    match quota_type {
-        Some("rolling") | Some("daily") | Some("weekly") | Some("monthly") => {}
-        Some(other) => issues.push(serde_json::json!({
-            "code": "invalid_value",
-            "path": ["type"],
-            "message": format!("Invalid option: expected one of \"rolling\"|\"daily\"|\"weekly\"|\"monthly\", received \"{other}\"")
-        })),
-        None => issues.push(serde_json::json!({
-            "code": "invalid_type",
-            "path": ["type"],
-            "expected": "string",
-            "message": "Invalid input: expected string, received undefined"
-        })),
-    }
-
-    let limit_type = obj
-        .and_then(|o| o.get("limitType"))
-        .and_then(|v| v.as_str());
-    match limit_type {
-        Some("requests") | Some("tokens") | Some("cost") => {}
-        _ => issues.push(serde_json::json!({
-            "code": "invalid_value",
-            "path": ["limitType"],
-            "message": "Invalid option: expected one of \"requests\"|\"tokens\"|\"cost\""
-        })),
-    }
-
-    let limit = obj.and_then(|o| o.get("limit")).and_then(|v| v.as_f64());
-    match limit {
-        Some(l) if l >= 1.0 => {}
-        _ => issues.push(serde_json::json!({
-            "code": "too_small",
-            "path": ["limit"],
-            "message": "Too small: expected number to be >=1"
-        })),
-    }
-
-    let duration = obj.and_then(|o| o.get("duration")).and_then(|v| v.as_str());
-    if quota_type == Some("rolling") {
-        match duration {
-            Some(d) if !d.is_empty() => {}
-            _ => issues.push(serde_json::json!({
-                "code": "invalid_type",
-                "path": ["duration"],
-                "expected": "string",
-                "message": "Invalid input: expected string, received undefined"
-            })),
-        }
-    }
-
-    let warn_at = obj.and_then(|o| o.get("warnAt")).and_then(|v| v.as_f64());
-    if let Some(w) = warn_at {
-        if !(w > 0.0 && w < 1.0) {
-            issues.push(serde_json::json!({
-                "code": "custom",
-                "path": ["warnAt"],
-                "message": "warnAt must be between 0 and 1 (exclusive)"
-            }));
-        }
-    }
-
-    if !issues.is_empty() {
-        return Err(issues);
-    }
-
-    let string_array = |key: &str| -> Option<Vec<String>> {
-        obj.and_then(|o| o.get(key))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-    };
-
-    Ok(QuotaDefinition {
-        quota_type: quota_type.unwrap().to_string(),
-        limit_type: limit_type.unwrap().to_string(),
-        limit: limit.unwrap(),
-        duration: if quota_type == Some("rolling") {
-            duration.map(String::from)
-        } else {
-            None
-        },
-        allowed_providers: string_array("allowedProviders"),
-        excluded_providers: string_array("excludedProviders"),
-        allowed_models: string_array("allowedModels"),
-        excluded_models: string_array("excludedModels"),
-        shared: obj.and_then(|o| o.get("shared")).and_then(|v| v.as_bool()),
-        warn_at,
+/// Pinned Plexus `QuotaDefinitionSchema` (`config.ts`).
+fn quota_schema() -> &'static crate::zod::Schema {
+    use crate::zod::*;
+    static SCHEMA: std::sync::OnceLock<Schema> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        let variant = |kind: &'static str, rolling: bool| {
+            let mut shape = vec![
+                ("type", literal(kind)),
+                ("limitType", enumeration(&["requests", "tokens", "cost"])),
+                ("limit", number().min(1.0)),
+            ];
+            if rolling { shape.push(("duration", string().min(1.0))); }
+            shape.extend([
+                ("allowedProviders", array(string()).optional()),
+                ("excludedProviders", array(string()).optional()),
+                ("allowedModels", array(string()).optional()),
+                ("excludedModels", array(string()).optional()),
+                ("shared", boolean().optional()),
+                ("warnAt", number().gt(0.0).lt(1.0).optional()),
+            ]);
+            object(shape)
+        };
+        discriminated("type", vec![variant("rolling", true), variant("daily", false), variant("weekly", false), variant("monthly", false)])
     })
+}
+
+/// Returns the zod output (echoed by PUT/PATCH) and the definition as the
+/// quota repository stores and re-reads it (`saveUserQuota`/`getAllUserQuotas`).
+fn validate_quota(value: &Value) -> Result<(Value, QuotaDefinition), Vec<Value>> {
+    let parsed = quota_schema().safe_parse(value)?;
+    let list = |key: &str| -> Option<Vec<String>> {
+        let items: Vec<String> = parsed.get(key)?.as_array()?.iter().filter_map(Value::as_str).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+        (!items.is_empty()).then_some(items)
+    };
+    let stored = QuotaDefinition {
+        quota_type: parsed["type"].as_str().unwrap_or_default().to_owned(),
+        limit_type: parsed["limitType"].as_str().unwrap_or_default().to_owned(),
+        limit: parsed["limit"].as_f64().unwrap_or_default(),
+        duration: parsed.get("duration").and_then(Value::as_str).filter(|d| !d.is_empty()).map(str::to_owned),
+        allowed_providers: list("allowedProviders"),
+        excluded_providers: list("excludedProviders"),
+        allowed_models: list("allowedModels"),
+        excluded_models: list("excludedModels"),
+        shared: (parsed.get("shared") == Some(&Value::Bool(true))).then_some(true),
+        warn_at: parsed.get("warnAt").and_then(Value::as_f64),
+    };
+    Ok((parsed, stored))
 }
 
 async fn list_quotas(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -230,7 +181,7 @@ async fn put_quota(
             .into_response();
     }
 
-    let quota = match validate_quota(&raw) {
+    let (response_value, quota) = match validate_quota(&raw) {
         Ok(q) => q,
         Err(details) => {
             return (
@@ -244,7 +195,6 @@ async fn put_quota(
         }
     };
 
-    let response_value = serde_json::to_value(&quota).unwrap();
     if let Some(pool) = &state.inner.database {
         if let Err(error) = crate::database::upsert_user_quota(pool, &name, &quota).await {
             return (
@@ -292,7 +242,7 @@ async fn patch_quota(
         }
     }
 
-    let quota = match validate_quota(&merged) {
+    let (response_value, quota) = match validate_quota(&merged) {
         Ok(q) => q,
         Err(details) => {
             return (
@@ -306,7 +256,6 @@ async fn patch_quota(
         }
     };
 
-    let response_value = serde_json::to_value(&quota).unwrap();
     if let Some(pool) = &state.inner.database {
         if let Err(error) = crate::database::upsert_user_quota(pool, &name, &quota).await {
             return (

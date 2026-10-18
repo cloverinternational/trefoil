@@ -22,33 +22,22 @@ async fn oauth_tokens_are_encrypted_and_round_trip_with_timestamps() {
     assert!(database::load_oauth_credentials(&pool).await.is_err());
 }
 
+/// OAuth login sessions are in-memory only (Plexus parity); completed logins
+/// persist through `upsert_oauth_credential`, and the management routes read
+/// timestamps / delete rows without decrypting tokens.
 #[tokio::test]
 #[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL and TREFOIL_CREDENTIAL_KEY"]
-async fn cancelled_exchange_cannot_write_credentials_and_completion_is_once_only() {
+async fn credential_timestamps_listing_and_delete_do_not_need_tokens() {
     let pool = database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
     database::migrate(&pool).await.unwrap();
-    let now = chrono::Utc::now().timestamp_millis();
-    for (id, status) in [("cancel-test", "cancelled"), ("complete-test", "exchanging")] {
-        sqlx::query("INSERT INTO oauth_login_sessions(id,provider_id,account_id,status,created_at,updated_at,expires_at) VALUES($1,'openrouter',$1,$2,$3,$3,$4)").bind(id).bind(status).bind(now).bind(now+60000).execute(&pool).await.unwrap();
-    }
-    assert!(!database::complete_oauth_exchange(&pool,"cancel-test","openrouter","cancel-test","secret","",i64::MAX).await.unwrap());
-    assert!(database::complete_oauth_exchange(&pool,"complete-test","openrouter","complete-test","secret","",i64::MAX).await.unwrap());
-    assert!(!database::complete_oauth_exchange(&pool,"complete-test","openrouter","complete-test","replacement","",i64::MAX).await.unwrap());
-    let count:i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_credentials WHERE account_id='cancel-test'").fetch_one(&pool).await.unwrap();
-    assert_eq!(count,0);
-}
-
-#[tokio::test]
-#[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL and TREFOIL_CREDENTIAL_KEY"]
-async fn concurrent_claim_has_exactly_one_winner() {
-    let pool = database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
-    database::migrate(&pool).await.unwrap();
-    let now = chrono::Utc::now().timestamp_millis();
-    sqlx::query("INSERT INTO oauth_login_sessions(id,provider_id,account_id,status,created_at,updated_at,expires_at,pkce_verifier) VALUES('claim-race','openrouter','claim-race','waiting',$1,$1,$2,'verifier')").bind(now).bind(now+60000).execute(&pool).await.unwrap();
-    let (first, second) = tokio::join!(database::claim_oauth_exchange(&pool,"claim-race"), database::claim_oauth_exchange(&pool,"claim-race"));
-    assert_ne!(first.unwrap(), second.unwrap());
-    let verifier:Option<String> = sqlx::query_scalar("SELECT pkce_verifier FROM oauth_login_sessions WHERE id='claim-race'").fetch_one(&pool).await.unwrap();
-    assert!(verifier.is_none());
+    database::upsert_oauth_credential(&pool, "github-copilot", "ts-test", "copilot", "corp.ghe.com\ngh-token", 1234).await.unwrap();
+    let (created, updated, expires) = database::oauth_credential_timestamps(&pool, "github-copilot", "ts-test").await.unwrap().unwrap();
+    assert!(created > 0 && updated >= created);
+    assert_eq!(expires, 1234);
+    assert!(database::list_oauth_credential_accounts(&pool).await.unwrap().iter().any(|(p, a, e)| p == "github-copilot" && a == "ts-test" && *e == 1234));
+    assert!(database::delete_oauth_credential(&pool, "github-copilot", "ts-test").await.unwrap());
+    assert!(!database::delete_oauth_credential(&pool, "github-copilot", "ts-test").await.unwrap());
+    assert!(database::oauth_credential_timestamps(&pool, "github-copilot", "ts-test").await.unwrap().is_none());
 }
 
 #[tokio::test]

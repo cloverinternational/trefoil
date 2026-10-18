@@ -81,9 +81,8 @@ pub fn start_poller(state: AppState) {
                     continue;
                 };
                 let checker_type = quota.checker_type.clone().or_else(||quota.id.clone());
-                let Some(checker_id) = quota.id.or(quota.checker_type) else {
-                    continue;
-                };
+                // Plexus `buildProviderQuotaConfigs`: id is `quota_checker.id ?? provider`.
+                let checker_id = quota.id.clone().unwrap_or_else(|| provider.clone()).trim().to_owned();
                 let schedule_key = (provider.clone(), checker_id.clone());
                 let now = tokio::time::Instant::now();
                 if !checker_due(
@@ -104,7 +103,7 @@ pub fn start_poller(state: AppState) {
                     let Ok(Some(code)) = sqlx::query_scalar::<_, String>(
                         "SELECT code FROM custom_checkers WHERE id=$1 AND enabled=true",
                     )
-                    .bind(&checker_id)
+                    .bind(runtime_type)
                     .fetch_optional(pool)
                     .await
                     else {
@@ -589,7 +588,7 @@ async fn fetch_builtin_meters(id: &str, endpoint: &str, token: &str) -> Result<V
     } else if id == "openai-codex" {
         request = request.header("content-type","application/json")
             .header("user-agent",crate::codex_masking::user_agent())
-            .header("version",crate::codex_masking::CODEX_VERSION);
+            .header("version",crate::cli_versions::codex_version());
         if let Some(account)=crate::codex_masking::account_id(token) { request=request.header("chatgpt-account-id",account); }
     }
     let response = request.send().await.map_err(|e| e.to_string())?;
@@ -707,7 +706,7 @@ async fn persist_result(
     };
     let checker_type = state.inner.providers.read().unwrap().get(provider)
         .and_then(|provider|provider.quota_checker.as_ref())
-        .filter(|quota|quota.id.as_deref()==Some(checker_id))
+        .filter(|quota|quota.id.as_deref().unwrap_or(provider)==checker_id)
         .and_then(|quota|quota.checker_type.clone()).unwrap_or_else(||checker_id.into());
     let now = chrono::Utc::now().timestamp_millis();
     if let Some(message) = error {

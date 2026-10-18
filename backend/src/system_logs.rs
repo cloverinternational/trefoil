@@ -20,13 +20,40 @@ use std::{convert::Infallible, time::Duration};
 use tokio::sync::broadcast;
 
 /// A structured entry delivered to `/v0/system/logs/stream`.
-#[derive(Debug, Clone, Serialize)]
+///
+/// Key order follows Plexus's winston entries: `{message, level, timestamp,
+/// ...meta}`, or for `logger.error(msg, error)` the error's own properties
+/// first, then `{level, message, stack, timestamp, module, functionName}`.
+#[derive(Debug, Clone)]
 pub struct SystemLog {
-    pub level: String,
     pub message: String,
+    pub level: String,
     pub timestamp: String,
-    #[serde(flatten)]
     pub context: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Serialize for SystemLog {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        if let Some(stack) = self.context.get("stack") {
+            const TAIL: [&str; 3] = ["stack", "module", "functionName"];
+            for (k, v) in self.context.iter().filter(|(k, _)| !TAIL.contains(&k.as_str())) { map.serialize_entry(k, v)?; }
+            map.serialize_entry("level", &self.level)?;
+            map.serialize_entry("message", &self.message)?;
+            map.serialize_entry("stack", stack)?;
+            map.serialize_entry("timestamp", &self.timestamp)?;
+            for key in ["module", "functionName"] {
+                if let Some(v) = self.context.get(key) { map.serialize_entry(key, v)?; }
+            }
+        } else {
+            map.serialize_entry("message", &self.message)?;
+            map.serialize_entry("level", &self.level)?;
+            map.serialize_entry("timestamp", &self.timestamp)?;
+            for (k, v) in &self.context { map.serialize_entry(k, v)?; }
+        }
+        map.end()
+    }
 }
 
 /// Publish a system log entry to all currently connected admin clients.
@@ -236,4 +263,15 @@ mod tests {
             0
         );
     }
+}
+
+/// `logger.error('<label>', e)` from a Plexus route `catch` block in `module`.
+pub fn route_error(state: &AppState, label: &str, module: &str, error: &serde_json::Value) {
+    let message = crate::engine::js::to_string(error.get("message"));
+    let mut context: Vec<(String, serde_json::Value)> = Vec::new();
+    if let Some(rc) = error.get("routingContext") { context.push(("routingContext".into(), rc.clone())); }
+    let name = crate::engine::js::get_str(error, &["name"]).unwrap_or("Error");
+    context.push(("stack".into(), serde_json::json!(format!("{name}: {message}"))));
+    context.push(("module".into(), serde_json::json!(module)));
+    event(state, "error", format!("{label} {message}"), context);
 }

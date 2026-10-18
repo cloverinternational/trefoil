@@ -125,14 +125,24 @@ async fn pi_models(
         return response;
     }
     let Some(provider) = query.provider.filter(|value| !value.is_empty()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"Missing 'provider' parameter"})),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Missing 'provider' parameter"}))).into_response();
     };
+    // Catalog chat models for this provider (built-in baseline + pi.dev overlay).
+    let merged = crate::pi_catalog::catalog().get_models(Some(&provider)).into_iter().map(|model| {
+        let mut row = serde_json::Map::new();
+        for key in ["id", "name", "api"] {
+            if let Some(value) = model.get(key) {
+                row.insert(key.into(), value.clone());
+            }
+        }
+        row.insert("custom".into(), serde_json::Value::Bool(false));
+        serde_json::Value::Object(row)
+    });
     let q = query.q.unwrap_or_default().to_lowercase();
-    let data = state.inner.providers.read().unwrap().get(&provider).map(|config| config.adapter.iter().map(|adapter| serde_json::json!({"id":adapter.name,"name":adapter.name,"api":adapter.name,"custom":false})).filter(|value| q.is_empty() || value["id"].as_str().unwrap_or_default().to_lowercase().contains(&q)).collect::<Vec<_>>()).unwrap_or_default();
+    let data = merged.filter(|model| {
+        q.is_empty() || model["id"].as_str().unwrap_or_default().to_lowercase().contains(&q)
+            || model["name"].as_str().unwrap_or_default().to_lowercase().contains(&q)
+    }).collect::<Vec<_>>();
     Json(serde_json::json!({"data":data})).into_response()
 }
 
@@ -368,49 +378,10 @@ async fn pi_providers(State(state): State<AppState>, headers: HeaderMap) -> Resp
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    // Pinned to Plexus's pi-ai provider registry at the reference revision.
-    let data = [
-        "amazon-bedrock",
-        "ant-ling",
-        "anthropic",
-        "azure-openai-responses",
-        "baseten",
-        "cerebras",
-        "cloudflare-ai-gateway",
-        "cloudflare-workers-ai",
-        "deepseek",
-        "fireworks",
-        "github-copilot",
-        "google",
-        "google-vertex",
-        "groq",
-        "huggingface",
-        "kimi-coding",
-        "minimax",
-        "minimax-cn",
-        "mistral",
-        "moonshotai",
-        "moonshotai-cn",
-        "nvidia",
-        "openai",
-        "openai-codex",
-        "opencode",
-        "opencode-go",
-        "openrouter",
-        "qwen-token-plan",
-        "qwen-token-plan-cn",
-        "qwen-token-plan-individual",
-        "together",
-        "vercel-ai-gateway",
-        "xai",
-        "xiaomi",
-        "xiaomi-token-plan-ams",
-        "xiaomi-token-plan-cn",
-        "xiaomi-token-plan-sgp",
-        "zai",
-        "zai-coding-cn",
-    ];
-    Json(serde_json::json!({ "data": data.as_slice() })).into_response()
+    // pi-ai getBuiltinProviders().sort(): JS default sort is by UTF-16 code unit.
+    let mut data = crate::pi_catalog::catalog().builtin_provider_ids().to_vec();
+    data.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    Json(serde_json::json!({ "data": data })).into_response()
 }
 
 async fn quota_checker_types(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -451,6 +422,7 @@ pub(crate) fn checker_types() -> serde_json::Value {
         {"type":"kilo","displayName":"Kilo"},
         {"type":"openai-codex","displayName":"OpenAI Codex"},
         {"type":"kimi-code","displayName":"Kimi Code"},
+        {"type":"muse-code","displayName":"Muse Code"},
         {"type":"claude-code","displayName":"Claude Code"},
         {"type":"copilot","displayName":"GitHub Copilot"},
         {"type":"wisdomgate","displayName":"Wisdom Gate"},
@@ -461,7 +433,6 @@ pub(crate) fn checker_types() -> serde_json::Value {
         {"type":"neuralwatt","displayName":"Neuralwatt"},
         {"type":"zenmux","displayName":"Zenmux"},
         {"type":"devpass","displayName":"DevPass"},
-        {"type":"wafer","displayName":"Wafer"},
         {"type":"opencode-go","displayName":"OpenCode Go"},
         {"type":"crof","displayName":"Crof"},
         {"type":"exedev","displayName":"exe.dev"},
@@ -572,7 +543,7 @@ fn snapshot_json(row: &sqlx::postgres::PgRow) -> serde_json::Value {
     })
 }
 
-fn meter_json(row: &sqlx::postgres::PgRow) -> serde_json::Value {
+pub(crate) fn meter_json(row: &sqlx::postgres::PgRow) -> serde_json::Value {
     let stored=snapshot_json(row);
     let mut meter=serde_json::Map::new();
     meter.insert("key".into(),stored["meterKey"].clone());
@@ -812,7 +783,7 @@ fn parse_ip(value: &str) -> Option<(IpFamily, u128)> {
     }
 }
 
-fn valid_ip_rule(rule: &str) -> bool {
+pub(crate) fn valid_ip_rule(rule: &str) -> bool {
     let rule = rule.trim();
     if rule.is_empty() || rule.contains('%') || rule.starts_with('[') {
         return false;
@@ -2625,7 +2596,7 @@ mod tests {
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         let providers = body["data"].as_array().unwrap();
-        assert_eq!(providers.len(), 39);
+        assert_eq!(providers.len(), 42);
         assert_eq!(providers.first().unwrap(), "amazon-bedrock");
         assert_eq!(providers.last().unwrap(), "zai-coding-cn");
         assert!(providers.contains(&serde_json::json!("openai")));

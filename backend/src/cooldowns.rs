@@ -125,8 +125,8 @@ async fn delete_all_cooldowns(State(state): State<AppState>, headers: HeaderMap)
         }
     }
     state.inner.cooldowns.write().unwrap().clear();
-    crate::system_logs::event(&state,"info","[AUDIT] admin cleared all cooldowns",[("module".into(),serde_json::json!("cooldowns"))]);
     crate::system_logs::event(&state,"info","Manually cleared all cooldowns",[("module".into(),serde_json::json!("cooldown-manager")),("functionName".into(),serde_json::json!("clearCooldown"))]);
+    crate::system_logs::event(&state,"info","[AUDIT] admin cleared all cooldowns",[("module".into(),serde_json::json!("cooldowns"))]);
     Json(serde_json::json!({ "success": true })).into_response()
 }
 
@@ -160,6 +160,7 @@ async fn delete_provider_cooldowns(
     }
 
     let mut cooldowns = state.inner.cooldowns.write().unwrap();
+    let before = cooldowns.len();
     match &query.model {
         Some(model) => {
             cooldowns.retain(|(p, m), _| !(p == &provider && m == model));
@@ -169,9 +170,11 @@ async fn delete_provider_cooldowns(
         }
     }
 
+    let removed = before - cooldowns.len();
+    drop(cooldowns);
     let suffix=query.model.clone().unwrap_or_else(||"*".into());
     crate::system_logs::event(&state,"info",format!("[AUDIT] admin cleared cooldown for provider='{provider}' model='{suffix}'"),[("module".into(),serde_json::json!("cooldowns"))]);
-    crate::system_logs::event(&state,"info",format!("Manually cleared all cooldowns for provider '{provider}'{}",query.model.as_ref().map(|model|format!(" model '{model}'")).unwrap_or_default()),[("module".into(),serde_json::json!("cooldown-manager")),("functionName".into(),serde_json::json!("clearCooldown"))]);
+    crate::system_logs::event(&state,"info",format!("Manually cleared all cooldowns for provider '{provider}'{}",query.model.as_ref().map(|model|format!(" model '{model}'")).unwrap_or_default()+&format!(" ({removed} total)")),[("module".into(),serde_json::json!("cooldown-manager")),("functionName".into(),serde_json::json!("clearCooldown"))]);
     Json(serde_json::json!({ "success": true })).into_response()
 }
 

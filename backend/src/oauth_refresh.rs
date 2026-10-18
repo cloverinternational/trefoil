@@ -24,9 +24,9 @@ fn endpoint(provider: &str) -> Option<&'static str> {
 }
 
 async fn refresh_one(state: &AppState, provider: String, account: String, refresh_token: String) {
-    let Some(_url) = endpoint(&provider) else {
+    if endpoint(&provider).is_none() && !matches!(provider.as_str(), "meta" | "openai") {
         return;
-    };
+    }
     if refresh_token.is_empty() {
         return;
     }
@@ -48,13 +48,22 @@ async fn refresh_one(state: &AppState, provider: String, account: String, refres
     if !refresh_due(now_ms(), expires) || current_refresh.is_empty() { return; }
     let refresh_token = current_refresh;
     if provider == "github-copilot" {
-        if let Ok((access, expires)) = crate::copilot_oauth::exchange(&refresh_token).await {
-            let _ = crate::database::upsert_oauth_credential(pool, &provider, &account, &access, &refresh_token, expires).await;
+        // The stored value carries a GitHub Enterprise domain as
+        // `<domain>\n<github_token>` (see `OAuthCredentials::stored_refresh`).
+        if let Ok((access, stored, expires)) = crate::copilot_oauth::refresh_stored(&refresh_token).await {
+            let _ = crate::database::upsert_oauth_credential(pool, &provider, &account, &access, &stored, expires).await;
         }
         return;
     }
     if provider == "kimi-coding" {
         if let Ok((access, refresh, expires)) = crate::kimi_oauth::refresh(&refresh_token).await {
+            let _ = crate::database::upsert_oauth_credential(pool, &provider, &account, &access, &refresh, expires).await;
+        }
+        return;
+    }
+    if provider == "meta" || provider == "openai" {
+        let refreshed = if provider == "meta" { crate::meta_oauth::mint(&refresh_token).await } else { crate::openai_chatgpt_oauth::refresh(&refresh_token).await };
+        if let Ok((access, refresh, expires)) = refreshed {
             let _ = crate::database::upsert_oauth_credential(pool, &provider, &account, &access, &refresh, expires).await;
         }
         return;

@@ -1,6 +1,6 @@
 //! PostgreSQL-backed MCP server configuration and key management.
 
-use crate::mcp_stdio::LocalMcpTransport;
+use crate::mcp_local::LocalConfig;
 use crate::{
     auth::{resolve_principal, Principal},
     AppState,
@@ -12,11 +12,8 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
+use serde_json::{json, Value};
 use sqlx::Row;
-use std::collections::HashMap;
-use tokio::process::Command;
-use tokio::time::{sleep, Duration, Instant};
-use url::Url;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -73,26 +70,91 @@ fn admin(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     }
 }
 
-#[derive(Deserialize, Default)]
-struct ServerBody {
-    upstream_url: Option<String>,
-    enabled: Option<bool>,
-    mode: Option<String>,
-    auth_scheme: Option<String>,
-    launcher: Option<String>,
-    package_name: Option<String>,
-    args: Option<String>,
-    env: Option<String>,
-    startup_timeout_ms: Option<i64>,
-}
 #[derive(Deserialize)]
 struct KeyBody {
     key: String,
     is_active: Option<bool>,
 }
 
-fn serialize_server(row: &sqlx::postgres::PgRow) -> serde_json::Value {
-    serde_json::json!({"upstream_url":row.try_get::<String,_>("upstream_url").unwrap_or_default(),"enabled":row.try_get::<bool,_>("enabled").unwrap_or(true),"auth_scheme":row.try_get::<Option<String>,_>("auth_scheme").unwrap_or(None),"rate_limit_cooldown_ms":row.try_get::<i64,_>("rate_limit_cooldown_ms").unwrap_or(60000),"quota_cooldown_ms":row.try_get::<i64,_>("quota_cooldown_ms").unwrap_or(86400000)})
+/// Pinned Plexus `McpServerConfigSchema` (`@plexus/shared` mcp.ts).
+fn server_schema() -> &'static crate::zod::Schema {
+    use crate::zod::*;
+    static SCHEMA: std::sync::OnceLock<Schema> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        let settings = || vec![
+            ("auth_scheme", trimmed().min(1.0).nullable().optional()),
+            ("rate_limit_cooldown_ms", number().int().min(0.0).default(60_000).optional()),
+            ("quota_cooldown_ms", number().int().min(0.0).default(86_400_000).optional()),
+        ];
+        let local = object(vec![
+            ("mode", literal("local_http")),
+            ("enabled", boolean().default(true)),
+            ("launcher", enumeration(&["bunx", "uvx"])),
+            ("package", trimmed().min(1.0)),
+            ("args", array(string()).default(json!([])).optional()),
+            ("env", record(string(), string()).default(json!({})).optional()),
+            ("port", number().int().min(1.0).max(65_535.0)),
+            ("path", trimmed().min(1.0).default("/mcp").optional()),
+            ("startup_timeout_ms", number().int().min(1_000.0).max(300_000.0).default(30_000).optional()),
+            ("headers", record(string(), string()).optional()),
+        ]).extend(settings());
+        let remote = object(vec![
+            ("mode", literal("remote_http").default("remote_http").optional()),
+            ("upstream_url", string().url()),
+            ("enabled", boolean().default(true)),
+            ("headers", record(string(), string()).optional()),
+        ]).extend(settings());
+        union(vec![local, remote])
+    })
+}
+
+fn encrypt_json(value: &Value) -> String { crate::secret_crypto::encrypt(&value.to_string()) }
+fn decrypt_json(text: Option<String>) -> Option<Value> {
+    let text = text?;
+    let plain = crate::secret_crypto::decrypt(&text).ok()?;
+    serde_json::from_str(&plain).ok().or(Some(Value::String(plain)))
+}
+
+/// `getAllMcpServers` row mapping.
+fn server_view(row: &sqlx::postgres::PgRow) -> Value {
+    let mode: String = row.try_get::<Option<String>, _>("mode").ok().flatten().filter(|m| !m.is_empty()).unwrap_or_else(|| "remote_http".into());
+    let headers = decrypt_json(row.try_get("headers").ok().flatten());
+    let auth_scheme: Option<String> = row.try_get("auth_scheme").ok().flatten();
+    let rate: i64 = row.try_get::<i32, _>("rate_limit_cooldown_ms").map(i64::from).unwrap_or(60_000);
+    let quota: i64 = row.try_get::<i32, _>("quota_cooldown_ms").map(i64::from).unwrap_or(86_400_000);
+    if mode == "local_http" {
+        let mut out = serde_json::Map::new();
+        out.insert("mode".into(), json!("local_http"));
+        out.insert("enabled".into(), json!(row.try_get::<bool, _>("enabled").unwrap_or(true)));
+        out.insert("launcher".into(), json!(row.try_get::<Option<String>, _>("launcher").ok().flatten()));
+        out.insert("package".into(), json!(row.try_get::<Option<String>, _>("package_name").ok().flatten().unwrap_or_default()));
+        out.insert("args".into(), decrypt_json(row.try_get("args").ok().flatten()).unwrap_or(json!([])));
+        if let Some(env) = decrypt_json(row.try_get("env").ok().flatten()) { out.insert("env".into(), env); }
+        out.insert("port".into(), json!(row.try_get::<Option<i64>, _>("port").ok().flatten().unwrap_or(0)));
+        out.insert("path".into(), json!(row.try_get::<Option<String>, _>("path").ok().flatten().filter(|p| !p.is_empty()).unwrap_or_else(|| "/mcp".into())));
+        out.insert("startup_timeout_ms".into(), json!(row.try_get::<Option<i64>, _>("startup_timeout_ms").ok().flatten().filter(|t| *t != 0).unwrap_or(30_000)));
+        if let Some(h) = headers { out.insert("headers".into(), h); }
+        out.insert("auth_scheme".into(), json!(auth_scheme));
+        out.insert("rate_limit_cooldown_ms".into(), json!(rate));
+        out.insert("quota_cooldown_ms".into(), json!(quota));
+        return Value::Object(out);
+    }
+    let mut out = serde_json::Map::new();
+    out.insert("upstream_url".into(), json!(row.try_get::<String, _>("upstream_url").unwrap_or_default()));
+    out.insert("enabled".into(), json!(row.try_get::<bool, _>("enabled").unwrap_or(true)));
+    if let Some(h) = headers { out.insert("headers".into(), h); }
+    out.insert("auth_scheme".into(), json!(auth_scheme));
+    out.insert("rate_limit_cooldown_ms".into(), json!(rate));
+    out.insert("quota_cooldown_ms".into(), json!(quota));
+    Value::Object(out)
+}
+
+const SERVER_COLUMNS: &str = "name,upstream_url,enabled,mode,headers,auth_scheme,rate_limit_cooldown_ms,quota_cooldown_ms,launcher,package_name,args,env,port,path,startup_timeout_ms";
+
+pub(crate) async fn load_server(state: &AppState, name: &str) -> Result<Option<Value>, ()> {
+    let Some(pool) = &state.inner.database else { return Ok(None) };
+    let row = sqlx::query(&format!("SELECT {SERVER_COLUMNS} FROM mcp_servers WHERE name=$1")).bind(name).fetch_optional(pool).await.map_err(|_| ())?;
+    Ok(row.map(|row| server_view(&row)))
 }
 
 async fn list_servers(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -100,193 +162,133 @@ async fn list_servers(State(state): State<AppState>, headers: HeaderMap) -> Resp
         return r;
     }
     let Some(pool) = &state.inner.database else {
-        return Json(serde_json::json!({})).into_response();
+        return Json(json!({})).into_response();
     };
-    let Ok(rows) = sqlx::query(
-        "SELECT name,upstream_url,enabled,mode,auth_scheme,launcher,package_name,args,env,startup_timeout_ms FROM mcp_servers ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await
-    else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error":"Internal server error"})),
-        )
-            .into_response();
+    let Ok(rows) = sqlx::query(&format!("SELECT {SERVER_COLUMNS} FROM mcp_servers ORDER BY id")).fetch_all(pool).await else {
+        return internal_error();
     };
     let mut out = serde_json::Map::new();
     for row in rows {
-        let name: String = row.try_get("name").unwrap_or_default();
-        out.insert(name, serialize_server(&row));
+        out.insert(row.try_get::<String, _>("name").unwrap_or_default(), server_view(&row));
     }
-    Json(serde_json::Value::Object(out)).into_response()
+    Json(Value::Object(out)).into_response()
 }
-async fn get_server(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(name): Path<String>,
-) -> Response {
+
+async fn get_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
-    let Some(pool) = &state.inner.database else {
-        return not_found(&name);
-    };
-    match sqlx::query(
-        "SELECT name,upstream_url,enabled,mode,auth_scheme,launcher,package_name,args,env,startup_timeout_ms FROM mcp_servers WHERE name=$1",
-    )
-    .bind(&name)
-    .fetch_optional(pool)
-    .await
-    {
-        Ok(Some(row)) => {
-            let mut value = serialize_server(&row);
-            value["name"] = name.into();
-            Json(value).into_response()
+    match load_server(&state, &name).await {
+        Ok(Some(mut view)) => {
+            view["name"] = json!(name);
+            Json(view).into_response()
         }
-        _ => not_found(&name),
+        Ok(None) => not_found(&name),
+        Err(()) => internal_error(),
     }
 }
-async fn put_server(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(name): Path<String>,
-    Json(body): Json<ServerBody>,
-) -> Response {
+
+/// `validateServerName`: slug, 2–63 chars, not reserved.
+fn valid_name(value: &str) -> bool {
+    let b = value.as_bytes();
+    (2..=63).contains(&b.len())
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'_')
+        && value != "plexus"
+}
+
+fn invalid_name() -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({"error":"Invalid server name. Must be a non-reserved slug (lowercase letters, numbers, hyphens, underscores, 2-63 characters)"}))).into_response()
+}
+
+/// `saveMcpServer`.
+async fn save_server(state: &AppState, name: &str, config: &Value) -> Result<(), ()> {
+    let Some(pool) = &state.inner.database else { return Err(()) };
+    let local = config.get("mode").and_then(Value::as_str) == Some("local_http");
+    let port = config.get("port").and_then(Value::as_i64);
+    let path = config.get("path").and_then(Value::as_str).filter(|p| !p.is_empty()).unwrap_or("/mcp").to_owned();
+    let upstream = if local { format!("http://127.0.0.1:{}{path}", port.unwrap_or(0)) } else { config.get("upstream_url").and_then(Value::as_str).unwrap_or_default().to_owned() };
+    let opt_enc = |key: &str| config.get(key).filter(|v| !v.is_null()).map(encrypt_json);
+    let now = chrono::Utc::now().timestamp_millis();
+    sqlx::query("INSERT INTO mcp_servers (name,upstream_url,enabled,headers,auth_scheme,rate_limit_cooldown_ms,quota_cooldown_ms,mode,launcher,package_name,args,env,port,path,startup_timeout_ms,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
+        ON CONFLICT(name) DO UPDATE SET upstream_url=EXCLUDED.upstream_url,enabled=EXCLUDED.enabled,headers=EXCLUDED.headers,auth_scheme=EXCLUDED.auth_scheme,
+        rate_limit_cooldown_ms=EXCLUDED.rate_limit_cooldown_ms,quota_cooldown_ms=EXCLUDED.quota_cooldown_ms,mode=EXCLUDED.mode,launcher=EXCLUDED.launcher,
+        package_name=EXCLUDED.package_name,args=EXCLUDED.args,env=EXCLUDED.env,port=EXCLUDED.port,path=EXCLUDED.path,startup_timeout_ms=EXCLUDED.startup_timeout_ms,updated_at=EXCLUDED.updated_at")
+        .bind(name).bind(upstream)
+        .bind(config.get("enabled") != Some(&Value::Bool(false)))
+        .bind(opt_enc("headers"))
+        .bind(config.get("auth_scheme").and_then(Value::as_str))
+        .bind(config.get("rate_limit_cooldown_ms").and_then(Value::as_i64).unwrap_or(60_000) as i32)
+        .bind(config.get("quota_cooldown_ms").and_then(Value::as_i64).unwrap_or(86_400_000) as i32)
+        .bind(if local { "local_http" } else { "remote_http" })
+        .bind(local.then(|| config.get("launcher").and_then(Value::as_str)).flatten())
+        .bind(local.then(|| config.get("package").and_then(Value::as_str)).flatten())
+        .bind(if local { opt_enc("args") } else { None })
+        .bind(if local { opt_enc("env") } else { None })
+        .bind(if local { port } else { None })
+        .bind(local.then_some(path))
+        .bind(if local { Some(config.get("startup_timeout_ms").and_then(Value::as_i64).filter(|t| *t != 0).unwrap_or(30_000)) } else { None })
+        .bind(now)
+        .execute(pool).await.map(|_| ()).map_err(|_| ())
+}
+
+async fn put_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>, Json(body): Json<Value>) -> Response {
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
     if !valid_name(&name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"invalid server name"})),
-        )
-            .into_response();
+        return invalid_name();
     }
-    let Some(url) = body.upstream_url else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"upstream_url is required"})),
-        )
-            .into_response();
+    let parsed = match server_schema().safe_parse(&body) {
+        Ok(parsed) => parsed,
+        Err(details) => return (StatusCode::BAD_REQUEST, Json(json!({"error":"Validation failed","details":details}))).into_response(),
     };
-    if Url::parse(&url).is_err() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"upstream_url must be a valid URL"})),
-        )
-            .into_response();
+    match save_server(&state, &name, &parsed).await {
+        Ok(()) => Json(json!({"success":true,"name":name})).into_response(),
+        Err(()) => internal_error(),
     }
-    let mode = body.mode.clone().unwrap_or_else(|| "remote_http".into());
-    if mode != "remote_http" && mode != "local_process" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Validation failed",
-                "details": [{
-                    "code": "invalid_union",
-                    "errors": [[
-                        {"code":"invalid_value","values":["local_http"],"path":["mode"],"message":"Invalid input: expected \"local_http\""},
-                        {"code":"invalid_value","values":["bunx","uvx"],"path":["launcher"],"message":"Invalid option: expected one of \"bunx\"|\"uvx\""},
-                        {"expected":"string","code":"invalid_type","path":["package"],"message":"Invalid input: expected string, received undefined"},
-                        {"expected":"number","code":"invalid_type","path":["port"],"message":"Invalid input: expected number, received undefined"}
-                    ],[
-                        {"code":"invalid_value","values":["remote_http"],"path":["mode"],"message":"Invalid input: expected \"remote_http\""}
-                    ]],
-                    "path": [],
-                    "message": "Invalid input"
-                }]
-            })),
-        )
-            .into_response();
-    }
-    let Some(pool) = &state.inner.database else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error":"PostgreSQL is required"})),
-        )
-            .into_response();
-    };
-    // The migration stores these timestamps as epoch milliseconds (the
-    // management tables predate the timestamp columns used by mcp_keys).
-    let now = chrono::Utc::now().timestamp_millis();
-    match sqlx::query("INSERT INTO mcp_servers (name,upstream_url,enabled,mode,auth_scheme,launcher,package_name,args,env,startup_timeout_ms,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11) ON CONFLICT(name) DO UPDATE SET upstream_url=EXCLUDED.upstream_url,enabled=EXCLUDED.enabled,mode=EXCLUDED.mode,auth_scheme=EXCLUDED.auth_scheme,launcher=EXCLUDED.launcher,package_name=EXCLUDED.package_name,args=EXCLUDED.args,env=EXCLUDED.env,startup_timeout_ms=EXCLUDED.startup_timeout_ms,updated_at=EXCLUDED.updated_at").bind(&name).bind(url).bind(body.enabled.unwrap_or(true)).bind(mode).bind(body.auth_scheme).bind(body.launcher).bind(body.package_name).bind(body.args).bind(body.env).bind(body.startup_timeout_ms).bind(now).execute(pool).await {Ok(_)=>Json(serde_json::json!({"success":true,"name":name})).into_response(),Err(_)=>internal_error()}
 }
-async fn patch_server(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(name): Path<String>,
-    Json(body): Json<ServerBody>,
-) -> Response {
+
+async fn patch_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>, Json(body): Json<Value>) -> Response {
+    if let Err(r) = admin(&state, &headers) {
+        return r;
+    }
+    let Some(patch) = body.as_object() else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"Object body is required"}))).into_response();
+    };
+    if !valid_name(&name) {
+        return invalid_name();
+    }
+    let mut merged = match load_server(&state, &name).await {
+        Ok(Some(view)) => view,
+        Ok(None) => return not_found(&name),
+        Err(()) => return internal_error(),
+    };
+    if let Some(map) = merged.as_object_mut() { for (k, v) in patch { map.insert(k.clone(), v.clone()); } }
+    let parsed = match server_schema().safe_parse(&merged) {
+        Ok(parsed) => parsed,
+        Err(details) => return (StatusCode::BAD_REQUEST, Json(json!({"error":"Validation failed","details":details}))).into_response(),
+    };
+    match save_server(&state, &name, &parsed).await {
+        Ok(()) => Json(json!({"success":true,"name":name})).into_response(),
+        Err(()) => internal_error(),
+    }
+}
+
+async fn delete_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
     if let Err(r) = admin(&state, &headers) {
         return r;
     }
     let Some(pool) = &state.inner.database else {
-        return not_found(&name);
+        return Json(json!({"success":true})).into_response();
     };
-    let Ok(row) =
-        sqlx::query("SELECT upstream_url,enabled,mode,auth_scheme,launcher,package_name,args,env,startup_timeout_ms FROM mcp_servers WHERE name=$1")
-            .bind(&name)
-            .fetch_optional(pool)
-            .await
-    else {
-        return not_found(&name);
-    };
-    let Some(row) = row else {
-        return not_found(&name);
-    };
-    put_server(
-        State(state),
-        headers,
-        Path(name),
-        Json(ServerBody {
-            upstream_url: body
-                .upstream_url
-                .or_else(|| row.try_get("upstream_url").ok()),
-            enabled: body.enabled.or_else(|| row.try_get("enabled").ok()),
-            mode: body.mode.or_else(|| row.try_get("mode").ok()),
-            auth_scheme: body
-                .auth_scheme
-                .or_else(|| row.try_get("auth_scheme").ok().flatten()),
-            launcher: body
-                .launcher
-                .or_else(|| row.try_get("launcher").ok().flatten()),
-            package_name: body
-                .package_name
-                .or_else(|| row.try_get("package_name").ok().flatten()),
-            args: body.args.or_else(|| row.try_get("args").ok().flatten()),
-            env: body.env.or_else(|| row.try_get("env").ok().flatten()),
-            startup_timeout_ms: body
-                .startup_timeout_ms
-                .or_else(|| row.try_get("startup_timeout_ms").ok().flatten()),
-        }),
-    )
-    .await
-}
-async fn delete_server(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(name): Path<String>,
-) -> Response {
-    if let Err(r) = admin(&state, &headers) {
-        return r;
-    }
-    let Some(pool) = &state.inner.database else {
-        return Json(serde_json::json!({"success":true})).into_response();
-    };
-    match sqlx::query("DELETE FROM mcp_servers WHERE name=$1")
-        .bind(name)
-        .execute(pool)
-        .await
-    {
-        Ok(_) => Json(serde_json::json!({"success":true})).into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error":"Internal server error"})),
-        )
-            .into_response(),
+    match sqlx::query("DELETE FROM mcp_servers WHERE name=$1").bind(name).execute(pool).await {
+        Ok(_) => Json(json!({"success":true})).into_response(),
+        Err(_) => internal_error(),
     }
 }
+
 async fn list_keys(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -389,254 +391,62 @@ fn lifecycle_log(state:&AppState, message:String) {
     crate::system_logs::event(state,"info",message,[("module".into(),serde_json::json!("config"))]);
 }
 
-async fn start_server(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(name): Path<String>,
-) -> Response {
+fn lifecycle_error(message: String) -> Response {
+    // Plexus's global error handler for a thrown handler error.
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":{"message":message,"type":"api_error"}}))).into_response()
+}
+
+async fn start_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
-    let Some(pool) = &state.inner.database else {
-        return not_found(&name);
+    lifecycle_log(&state, format!("MCP local start requested for '{name}'"));
+    let view = match load_server(&state, &name).await { Ok(Some(view)) => view, Ok(None) => return not_found(&name), Err(()) => return internal_error() };
+    let Some(config) = LocalConfig::from_view(&view) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"MCP server is not local_http"}))).into_response();
     };
-    let row = match sqlx::query(
-        "SELECT mode,launcher,package_name,args,env FROM mcp_servers WHERE name=$1",
-    )
-    .bind(&name)
-    .fetch_optional(pool)
-    .await
-    {
-        Ok(Some(row)) => row,
-        Ok(None) => return not_found(&name),
-        Err(_) => return internal_error(),
-    };
-    if row.try_get::<String, _>("mode").unwrap_or_default() != "local_process" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"MCP server is not local_http"})),
-        )
-            .into_response();
-    }
-    let launcher = row
-        .try_get::<Option<String>, _>("launcher")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    if !allowed_launcher(&launcher) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"launcher is not allowlisted"})),
-        )
-            .into_response();
-    }
-    let mut command = Command::new(&launcher);
-    command.kill_on_drop(true);
-    if let Some(package) = row
-        .try_get::<Option<String>, _>("package_name")
-        .ok()
-        .flatten()
-    {
-        command.arg(package);
-    }
-    command.args(parse_string_list(
-        row.try_get::<Option<String>, _>("args")
-            .ok()
-            .flatten()
-            .as_deref(),
-    ));
-    command.envs(parse_env(
-        row.try_get::<Option<String>, _>("env")
-            .ok()
-            .flatten()
-            .as_deref(),
-    ));
-    let transport =
-        match LocalMcpTransport::spawn(command).await {
-            Ok(transport) => transport,
-            Err(error) => return (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({"error":format!("failed to start MCP process: {error}")})),
-            )
-                .into_response(),
-        };
-    let timeout_ms = row
-        .try_get::<Option<i64>, _>("startup_timeout_ms")
-        .ok()
-        .flatten()
-        .unwrap_or(30_000)
-        .clamp(100, 300_000) as u64;
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    while Instant::now() < deadline {
-        // Keep the startup window compatible with the management API while the
-        // transport reader establishes the subprocess protocol.
-        sleep(Duration::from_millis(100)).await;
-        if Instant::now() >= deadline {
-            break;
-        }
-    }
-    let mut processes = state.inner.mcp_processes.lock().await;
-    if let Some(old) = processes.insert(name.clone(), transport) {
-        let _ = old.shutdown().await;
-    }
-    state
-        .inner
-        .mcp_process_status
-        .lock()
-        .await
-        .insert(name.clone(), ("running".into(), None));
-    Json(serde_json::json!({"success":true,"name":name,"status":"running"})).into_response()
+    match state.inner.mcp_manager.start(&name, &config).await { Ok(status) => Json(status).into_response(), Err(error) => lifecycle_error(error) }
 }
 
-async fn stop_server(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(name): Path<String>,
-) -> Response {
+async fn stop_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
     lifecycle_log(&state, format!("MCP local stop requested for '{name}'"));
-    let mut processes = state.inner.mcp_processes.lock().await;
-    if let Some(transport) = processes.remove(&name) {
-        let _ = transport.shutdown().await;
-    }
-    state
-        .inner
-        .mcp_process_status
-        .lock()
-        .await
-        .insert(name.clone(), ("stopped".into(), None));
-    Json(serde_json::json!({"serverName":name,"status":"stopped","pid":null,"url":null,"lastError":null,"startedAt":null,"exitedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis,true)})).into_response()
+    match state.inner.mcp_manager.stop(&name).await { Ok(status) => Json(status).into_response(), Err(error) => lifecycle_error(error) }
 }
 
-async fn restart_server(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(name): Path<String>,
-) -> Response {
+async fn restart_server(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
     lifecycle_log(&state, format!("MCP local restart requested for '{name}'"));
-    { let mut processes=state.inner.mcp_processes.lock().await; if let Some(transport)=processes.remove(&name) {let _=transport.shutdown().await;} }
-    state.inner.mcp_process_status.lock().await.insert(name.clone(),("stopped".into(),None));
-    start_server(State(state), headers, Path(name)).await
+    let view = match load_server(&state, &name).await { Ok(Some(view)) => view, Ok(None) => return not_found(&name), Err(()) => return internal_error() };
+    let Some(config) = LocalConfig::from_view(&view) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"MCP server is not local_http"}))).into_response();
+    };
+    match state.inner.mcp_manager.restart(&name, &config).await { Ok(status) => Json(status).into_response(), Err(error) => lifecycle_error(error) }
 }
 
-/// Return the in-memory runtime state for a managed MCP process.  The
-/// configuration is read from PostgreSQL first so that an unknown server is
-/// not indistinguishable from a known, stopped server.
-async fn server_status(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(name): Path<String>,
-) -> Response {
+async fn server_status(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
     lifecycle_log(&state, format!("MCP local status requested for '{name}'"));
-    let Some(pool) = &state.inner.database else {
-        return not_found(&name);
-    };
-    let row = match sqlx::query("SELECT upstream_url FROM mcp_servers WHERE name=$1")
-        .bind(&name)
-        .fetch_optional(pool)
-        .await
-    {
-        Ok(Some(row)) => row,
-        Ok(None) => return not_found(&name),
-        Err(_) => return internal_error(),
-    };
-
-    let recorded = state
-        .inner
-        .mcp_process_status
-        .lock()
-        .await
-        .get(&name)
-        .cloned();
-    let process = state.inner.mcp_processes.lock().await;
-    let pid = if let Some(transport) = process.get(&name) {
-        transport.pid().await
-    } else {
-        None
-    };
-    let status = if pid.is_some() {
-        "running"
-    } else {
-        recorded
-            .as_ref()
-            .map(|value| value.0.as_str())
-            .unwrap_or("stopped")
-    };
-    let status = status.to_owned();
-    let last_error = recorded.and_then(|value| value.1);
-    let url = row.try_get::<String, _>("upstream_url").ok();
-    let url = (status == "running").then_some(url).flatten();
-
-    Json(serde_json::json!({
-        "serverName": name,
-        "status": status,
-        "pid": pid,
-        "url": url,
-        "lastError": last_error,
-        "startedAt": null,
-        "exitedAt": null
-    }))
-    .into_response()
+    let view = match load_server(&state, &name).await { Ok(Some(view)) => view, Ok(None) => return not_found(&name), Err(()) => return internal_error() };
+    Json(state.inner.mcp_manager.status(&name, LocalConfig::from_view(&view).as_ref())).into_response()
 }
 
-fn allowed_launcher(value: &str) -> bool {
-    matches!(
-        value,
-        "node" | "npx" | "uvx" | "python" | "python3" | "bun" | "deno"
-    )
-}
-fn valid_name(value: &str) -> bool {
-    let b = value.as_bytes();
-    (2..=63).contains(&b.len())
-        && b[0].is_ascii_lowercase()
-        && b.iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'_')
-}
-
-fn parse_string_list(value: Option<&str>) -> Vec<String> {
-    value
-        .and_then(|v| serde_json::from_str(v).ok())
-        .unwrap_or_default()
-}
-fn parse_env(value: Option<&str>) -> HashMap<String, String> {
-    value
-        .and_then(|v| serde_json::from_str(v).ok())
-        .unwrap_or_default()
-}
 fn internal_error() -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({"error":"Internal server error"})),
-    )
-        .into_response()
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"Internal server error"}))).into_response()
 }
 
-async fn process_logs(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(name): Path<String>,
-) -> Response {
+async fn process_logs(State(state): State<AppState>, headers: HeaderMap, Path(name): Path<String>) -> Response {
     if let Err(response) = admin(&state, &headers) {
         return response;
     }
     lifecycle_log(&state, format!("MCP local process logs requested for '{name}'"));
-    let logs = state
-        .inner
-        .mcp_process_logs
-        .lock()
-        .await
-        .get(&name)
-        .cloned()
-        .unwrap_or_default();
-    Json(serde_json::json!({"data":logs})).into_response()
+    Json(json!({"data": state.inner.mcp_manager.logs(&name)})).into_response()
 }
 
 #[cfg(test)]
@@ -665,64 +475,5 @@ mod contract_tests {
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         assert_eq!(body, serde_json::json!({"error":"MCP key '999' not found"}));
-    }
-
-    #[tokio::test]
-    async fn process_logs_returns_stored_logs_without_invented_status_fields() {
-        let state = AppState::new(Some("admin".into()), Default::default());
-        state
-            .inner
-            .mcp_process_logs
-            .lock()
-            .await
-            .insert("example".into(), vec!["started".into()]);
-        let response = router()
-            .with_state(state)
-            .oneshot(
-                Request::get("/v0/management/mcp-servers/example/process-logs")
-                    .header("x-admin-key", "admin")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body: Value =
-            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        assert_eq!(body, serde_json::json!({"data":["started"]}));
-    }
-}
-
-#[cfg(test)]
-mod stop_contract_tests {
-    use super::*;
-    use axum::{body::Body, http::Request};
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-    #[tokio::test]
-    async fn stop_is_idempotent_and_reports_reference_runtime_shape() {
-        let state = AppState::new(Some("admin".into()), Default::default());
-        for _ in 0..2 {
-            let response = router().with_state(state.clone()).oneshot(Request::post("/v0/management/mcp-servers/absent/stop").header("x-admin-key","admin").body(Body::empty()).unwrap()).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            let body: serde_json::Value = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-            assert_eq!(body["serverName"], "absent");
-            assert_eq!(body["status"], "stopped");
-            assert!(chrono::DateTime::parse_from_rfc3339(body["exitedAt"].as_str().unwrap()).is_ok());
-            assert_eq!(body.as_object().unwrap().len(), 7);
-        }
-    }
-}
-
-#[cfg(test)]
-mod lifecycle_log_tests {
-    use super::*;
-    #[test]
-    fn management_actions_emit_reference_module_and_messages() {
-        let state=AppState::new(Some("admin".into()),Default::default());
-        lifecycle_log(&state,"MCP local start requested for 'fixture'".into());
-        let logs=state.inner.recent_system_logs.lock().unwrap();
-        assert_eq!(logs.back().unwrap().message,"MCP local start requested for 'fixture'");
-        assert_eq!(logs.back().unwrap().context["module"],"config");
     }
 }

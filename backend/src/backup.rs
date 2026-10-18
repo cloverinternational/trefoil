@@ -39,6 +39,53 @@ const TABLES: &[&str] = &[
     "response_items",
 ];
 
+
+#[derive(Clone, Copy, PartialEq)]
+enum Col { Text, Number, Bool, Timestamp }
+
+/// Plexus drizzle (PostgreSQL) columns per operational table, in schema
+/// order: `(property, column, kind)`. Generated from the pinned reference.
+type ColumnSpec = (&'static str, &'static str, Col);
+const PLEXUS_COLUMNS: &[(&str, &[ColumnSpec])] = &[
+    ("request_usage", &[("id", "id", Col::Number), ("requestId", "request_id", Col::Text), ("clientRequestId", "client_request_id", Col::Text), ("date", "date", Col::Text), ("sourceIp", "source_ip", Col::Text), ("apiKey", "api_key", Col::Text), ("attribution", "attribution", Col::Text), ("incomingApiType", "incoming_api_type", Col::Text), ("provider", "provider", Col::Text), ("attemptCount", "attempt_count", Col::Number), ("retryHistory", "retry_history", Col::Text), ("incomingModelAlias", "incoming_model_alias", Col::Text), ("canonicalModelName", "canonical_model_name", Col::Text), ("selectedModelName", "selected_model_name", Col::Text), ("finalAttemptProvider", "final_attempt_provider", Col::Text), ("finalAttemptModel", "final_attempt_model", Col::Text), ("upstreamModel", "upstream_model", Col::Text), ("allAttemptedProviders", "all_attempted_providers", Col::Text), ("outgoingApiType", "outgoing_api_type", Col::Text), ("reasoningEffort", "reasoning_effort", Col::Text), ("requestedServiceTier", "requested_service_tier", Col::Text), ("requestedServiceTierRaw", "requested_service_tier_raw", Col::Text), ("serviceTier", "service_tier", Col::Text), ("serviceTierRaw", "service_tier_raw", Col::Text), ("tokensInput", "tokens_input", Col::Number), ("tokensOutput", "tokens_output", Col::Number), ("tokensReasoning", "tokens_reasoning", Col::Number), ("tokensCached", "tokens_cached", Col::Number), ("tokensCacheWrite", "tokens_cache_write", Col::Number), ("costInput", "cost_input", Col::Number), ("costOutput", "cost_output", Col::Number), ("costCached", "cost_cached", Col::Number), ("costCacheWrite", "cost_cache_write", Col::Number), ("costTotal", "cost_total", Col::Number), ("costSource", "cost_source", Col::Text), ("costMetadata", "cost_metadata", Col::Text), ("startTime", "start_time", Col::Number), ("durationMs", "duration_ms", Col::Number), ("ttftMs", "ttft_ms", Col::Number), ("tokensPerSec", "tokens_per_sec", Col::Number), ("isStreamed", "is_streamed", Col::Bool), ("isPassthrough", "is_passthrough", Col::Bool), ("isRaw", "is_raw", Col::Number), ("requestMethod", "request_method", Col::Text), ("requestPath", "request_path", Col::Text), ("responseStatus", "response_status", Col::Text), ("tokensEstimated", "tokens_estimated", Col::Number), ("createdAt", "created_at", Col::Number), ("toolsDefined", "tools_defined", Col::Number), ("messageCount", "message_count", Col::Number), ("parallelToolCallsEnabled", "parallel_tool_calls_enabled", Col::Number), ("toolCallsCount", "tool_calls_count", Col::Number), ("finishReason", "finish_reason", Col::Text), ("isVisionFallthrough", "is_vision_fallthrough", Col::Bool), ("isDescriptorRequest", "is_descriptor_request", Col::Bool), ("visionFallthroughModel", "vision_fallthrough_model", Col::Text), ("kwhUsed", "kwh_used", Col::Number), ("providerReportedCost", "provider_reported_cost", Col::Number)]),
+    ("provider_cooldowns", &[("provider", "provider", Col::Text), ("model", "model", Col::Text), ("expiry", "expiry", Col::Number), ("consecutiveFailures", "consecutive_failures", Col::Number), ("createdAt", "created_at", Col::Number), ("lastError", "last_error", Col::Text)]),
+    ("debug_logs", &[("id", "id", Col::Number), ("requestId", "request_id", Col::Text), ("apiKey", "api_key", Col::Text), ("rawRequest", "raw_request", Col::Text), ("transformedRequest", "transformed_request", Col::Text), ("rawResponse", "raw_response", Col::Text), ("transformedResponse", "transformed_response", Col::Text), ("rawResponseSnapshot", "raw_response_snapshot", Col::Text), ("transformedResponseSnapshot", "transformed_response_snapshot", Col::Text), ("requestHeaders", "request_headers", Col::Text), ("responseHeaders", "response_headers", Col::Text), ("responseStatus", "response_status", Col::Number), ("createdAt", "created_at", Col::Number)]),
+    ("inference_errors", &[("id", "id", Col::Number), ("requestId", "request_id", Col::Text), ("date", "date", Col::Text), ("apiKey", "api_key", Col::Text), ("errorMessage", "error_message", Col::Text), ("errorStack", "error_stack", Col::Text), ("details", "details", Col::Text), ("createdAt", "created_at", Col::Number)]),
+    ("provider_performance", &[("id", "id", Col::Number), ("provider", "provider", Col::Text), ("model", "model", Col::Text), ("canonicalModelName", "canonical_model_name", Col::Text), ("requestId", "request_id", Col::Text), ("timeToFirstTokenMs", "time_to_first_token_ms", Col::Number), ("totalTokens", "total_tokens", Col::Number), ("durationMs", "duration_ms", Col::Number), ("tokensPerSec", "tokens_per_sec", Col::Number), ("e2eTokensPerSec", "e2e_tokens_per_sec", Col::Number), ("failureCount", "failure_count", Col::Number), ("successCount", "success_count", Col::Number), ("createdAt", "created_at", Col::Number)]),
+    ("quota_state", &[("keyName", "key_name", Col::Text), ("quotaName", "quota_name", Col::Text), ("limitType", "limit_type", Col::Text), ("currentUsage", "current_usage", Col::Number), ("lastUpdated", "last_updated", Col::Number), ("windowStart", "window_start", Col::Number)]),
+    ("meter_snapshots", &[("id", "id", Col::Number), ("checkerId", "checker_id", Col::Text), ("checkerType", "checker_type", Col::Text), ("provider", "provider", Col::Text), ("meterKey", "meter_key", Col::Text), ("kind", "kind", Col::Text), ("unit", "unit", Col::Text), ("label", "label", Col::Text), ("group", "group", Col::Text), ("scope", "scope", Col::Text), ("limit", "limit", Col::Number), ("used", "used", Col::Number), ("remaining", "remaining", Col::Number), ("utilizationState", "utilization_state", Col::Text), ("utilizationPercent", "utilization_percent", Col::Number), ("status", "status", Col::Text), ("periodValue", "period_value", Col::Number), ("periodUnit", "period_unit", Col::Text), ("periodCycle", "period_cycle", Col::Text), ("resetsAt", "resets_at", Col::Number), ("success", "success", Col::Bool), ("errorMessage", "error_message", Col::Text), ("checkedAt", "checked_at", Col::Number), ("createdAt", "created_at", Col::Number)]),
+    ("quota_snapshots", &[("id", "id", Col::Number), ("provider", "provider", Col::Text), ("checkerId", "checker_id", Col::Text), ("groupId", "group_id", Col::Text), ("windowType", "window_type", Col::Text), ("description", "description", Col::Text), ("checkedAt", "checked_at", Col::Number), ("limit", "limit", Col::Number), ("used", "used", Col::Number), ("remaining", "remaining", Col::Number), ("utilizationPercent", "utilization_percent", Col::Number), ("unit", "unit", Col::Text), ("resetsAt", "resets_at", Col::Number), ("status", "status", Col::Text), ("success", "success", Col::Number), ("errorMessage", "error_message", Col::Text), ("createdAt", "created_at", Col::Number)]),
+    ("mcp_request_usage", &[("id", "id", Col::Number), ("requestId", "request_id", Col::Text), ("createdAt", "created_at", Col::Timestamp), ("startTime", "start_time", Col::Number), ("durationMs", "duration_ms", Col::Number), ("serverName", "server_name", Col::Text), ("upstreamUrl", "upstream_url", Col::Text), ("method", "method", Col::Text), ("jsonrpcMethod", "jsonrpc_method", Col::Text), ("toolName", "tool_name", Col::Text), ("apiKey", "api_key", Col::Text), ("attribution", "attribution", Col::Text), ("sourceIp", "source_ip", Col::Text), ("responseStatus", "response_status", Col::Number), ("isStreamed", "is_streamed", Col::Bool), ("hasDebug", "has_debug", Col::Bool), ("errorCode", "error_code", Col::Text), ("errorMessage", "error_message", Col::Text)]),
+    ("mcp_debug_logs", &[("id", "id", Col::Number), ("requestId", "request_id", Col::Text), ("rawRequestHeaders", "raw_request_headers", Col::Text), ("rawRequestBody", "raw_request_body", Col::Text), ("rawResponseHeaders", "raw_response_headers", Col::Text), ("rawResponseBody", "raw_response_body", Col::Text), ("createdAt", "created_at", Col::Timestamp)]),
+    ("responses", &[("id", "id", Col::Text), ("object", "object", Col::Text), ("createdAt", "created_at", Col::Number), ("completedAt", "completed_at", Col::Number), ("status", "status", Col::Text), ("model", "model", Col::Text), ("outputItems", "output_items", Col::Text), ("instructions", "instructions", Col::Text), ("temperature", "temperature", Col::Number), ("topP", "top_p", Col::Number), ("maxOutputTokens", "max_output_tokens", Col::Number), ("topLogprobs", "top_logprobs", Col::Number), ("parallelToolCalls", "parallel_tool_calls", Col::Number), ("toolChoice", "tool_choice", Col::Text), ("tools", "tools", Col::Text), ("textConfig", "text_config", Col::Text), ("reasoningConfig", "reasoning_config", Col::Text), ("usageInputTokens", "usage_input_tokens", Col::Number), ("usageOutputTokens", "usage_output_tokens", Col::Number), ("usageReasoningTokens", "usage_reasoning_tokens", Col::Number), ("usageCachedTokens", "usage_cached_tokens", Col::Number), ("usageTotalTokens", "usage_total_tokens", Col::Number), ("previousResponseId", "previous_response_id", Col::Text), ("conversationId", "conversation_id", Col::Text), ("store", "store", Col::Number), ("background", "background", Col::Number), ("truncation", "truncation", Col::Text), ("incompleteDetails", "incomplete_details", Col::Text), ("error", "error", Col::Text), ("safetyIdentifier", "safety_identifier", Col::Text), ("serviceTier", "service_tier", Col::Text), ("promptCacheKey", "prompt_cache_key", Col::Text), ("promptCacheRetention", "prompt_cache_retention", Col::Text), ("metadata", "metadata", Col::Text), ("plexusProvider", "plexus_provider", Col::Text), ("plexusTargetModel", "plexus_target_model", Col::Text), ("plexusApiType", "plexus_api_type", Col::Text), ("plexusCanonicalModel", "plexus_canonical_model", Col::Text)]),
+    ("conversations", &[("id", "id", Col::Text), ("createdAt", "created_at", Col::Number), ("updatedAt", "updated_at", Col::Number), ("items", "items", Col::Text), ("metadata", "metadata", Col::Text), ("plexusAccountId", "plexus_account_id", Col::Text)]),
+    ("response_items", &[("id", "id", Col::Text), ("responseId", "response_id", Col::Text), ("itemIndex", "item_index", Col::Number), ("itemType", "item_type", Col::Text), ("itemData", "item_data", Col::Text)]),
+];
+
+fn plexus_columns(table: &str) -> &'static [ColumnSpec] {
+    PLEXUS_COLUMNS.iter().find(|(t, _)| *t == table).map(|(_, c)| *c).unwrap_or(&[])
+}
+
+/// `normaliseForCsv` + `csvEscape` for one Trefoil row value, as Plexus
+/// (PostgreSQL dialect) writes it.
+fn plexus_csv_value(value: Option<&serde_json::Value>, kind: Col) -> String {
+    use serde_json::Value;
+    let text = match value {
+        None | Some(Value::Null) => return "\\N".into(),
+        Some(Value::Number(n)) if kind == Col::Bool => if n.as_f64() == Some(1.0) { "true".into() } else { "false".into() },
+        Some(Value::Number(n)) => crate::engine::js::js_number_text(n.as_f64().unwrap_or(0.0)),
+        Some(Value::Bool(b)) => b.to_string(),
+        Some(Value::String(s)) if kind == Col::Timestamp => chrono::DateTime::parse_from_rfc3339(s)
+            .or_else(|_| chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%#z"))
+            .map(|d| d.with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+            .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").map(|d| d.and_utc().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)))
+            .unwrap_or_else(|_| s.clone()),
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => crate::engine::js::stringify(other),
+    };
+    csv_escape(&Value::String(text))
+}
+
 #[derive(Deserialize, Default)]
 struct BackupQuery {
     full: Option<bool>,
@@ -204,7 +251,7 @@ async fn restore_archive(
     }
     let mut counts = HashMap::new();
     for table in TABLES {
-        let rows = parsed.remove(table).unwrap_or_default();
+        let rows: Vec<_> = parsed.remove(table).unwrap_or_default().into_iter().map(|row| plexus_row_to_db(table, row)).collect();
         for row in &rows {
             sqlx::query(&format!(
                 "INSERT INTO {table} SELECT * FROM jsonb_populate_record(NULL::{table}, $1::jsonb)"
@@ -239,6 +286,20 @@ fn valid_archive_entry(
         && size <= MAX_ENTRY_BYTES
         && total_size.saturating_add(size) <= MAX_UNCOMPRESSED_BACKUP_BYTES
         && !duplicate
+}
+
+/// Maps a Plexus CSV row (drizzle property names, `"true"`/`"false"`
+/// booleans) onto Trefoil's columns; snake_case headers pass through.
+fn plexus_row_to_db(table: &str, row: serde_json::Map<String, serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+    let columns = plexus_columns(table);
+    row.into_iter().map(|(key, value)| {
+        let Some((_, column, kind)) = columns.iter().find(|(prop, column, _)| *prop == key || *column == key) else { return (key, value) };
+        let value = match (kind, &value) {
+            (Col::Bool, serde_json::Value::Bool(b)) if !(table == "meter_snapshots" && *column == "success") => serde_json::Value::from(*b as i32),
+            _ => value,
+        };
+        ((*column).to_owned(), value)
+    }).collect()
 }
 
 fn parse_csv(data: &[u8]) -> Result<Vec<serde_json::Map<String, serde_json::Value>>, String> {
@@ -283,9 +344,14 @@ async fn restore_config(
     envelope: &serde_json::Value,
 ) -> Result<(), String> {
     let data = envelope.get("data").ok_or("missing data")?;
-    let providers: HashMap<String, crate::state::ProviderConfig> =
+    // Plexus restores raw configs through `saveProvider` (no schema parse);
+    // credentials are restored afterwards, so no account link exists yet.
+    let raw_providers: serde_json::Map<String, serde_json::Value> =
         serde_json::from_value(data.get("providers").cloned().ok_or("missing providers")?)
             .map_err(|_| "invalid providers")?;
+    let providers: HashMap<String, crate::state::ProviderConfig> = raw_providers.iter()
+        .map(|(slug, raw)| (slug.clone(), crate::provider_view::from_view(crate::provider_view::repository_view(raw, None), 1)))
+        .collect();
     let aliases: HashMap<String, crate::state::ModelConfig> =
         serde_json::from_value(data.get("models").cloned().ok_or("missing models")?)
             .map_err(|_| "invalid models")?;
@@ -421,27 +487,16 @@ async fn build_archive(
                     serde_json::Map<String, serde_json::Value>,
                 >(&row.try_get::<String, _>("row")?)?);
             }
+            // `Object.keys(rows[0])`: the Plexus schema's property names and
+            // order; lines joined by "\n" with no trailing newline.
             let mut csv = String::new();
-            if let Some(first) = objects.first() {
-                let columns: Vec<String> = first.keys().cloned().collect();
-                csv.push_str(
-                    &columns
-                        .iter()
-                        .map(|c| csv_escape(&serde_json::Value::String(c.clone())))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                );
-                csv.push('\n');
-                for object in objects {
-                    csv.push_str(
-                        &columns
-                            .iter()
-                            .map(|c| csv_escape(object.get(c).unwrap_or(&serde_json::Value::Null)))
-                            .collect::<Vec<_>>()
-                            .join(","),
-                    );
-                    csv.push('\n');
+            if !objects.is_empty() {
+                let columns = plexus_columns(table);
+                let mut lines = vec![columns.iter().map(|(prop, _, _)| *prop).collect::<Vec<_>>().join(",")];
+                for object in &objects {
+                    lines.push(columns.iter().map(|(_, column, kind)| plexus_csv_value(object.get(*column), *kind)).collect::<Vec<_>>().join(","));
                 }
+                csv = lines.join("\n");
             }
             if csv.is_empty() {
                 append_bytes(&mut archive, &format!("{table}.csv"), &[])?;
@@ -559,7 +614,7 @@ fn csv_escape(value: &serde_json::Value) -> String {
         other => other.to_string(),
     };
     if text == "\\N" {
-        return "\\\\N".into();
+        return "\"\\N\"".into();
     }
     if text.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", text.replace('"', "\"\""))
