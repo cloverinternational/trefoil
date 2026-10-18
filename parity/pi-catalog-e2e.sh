@@ -9,9 +9,11 @@ TMP="$(mktemp -d /dev/shm/trefoil-pi-catalog.XXXXXX)"
 NAME="trefoil-pi-catalog-$$"
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$TMP"; }
 trap cleanup EXIT
-docker run -d --name "$NAME" -p 127.0.0.1::5432 --tmpfs /var/lib/postgresql/data:rw,size=256m -e POSTGRES_PASSWORD=localtest -e POSTGRES_DB=trefoil postgres:16-alpine >/dev/null
+# shellcheck source=lib/pg.sh
+source "$ROOT/parity/lib/pg.sh"
+pg_start --name "$NAME" --tmpfs /var/lib/postgresql/data:rw,size=256m -e POSTGRES_PASSWORD=localtest -e POSTGRES_DB=trefoil >/dev/null
 for _ in $(seq 1 60); do docker exec "$NAME" pg_isready -U postgres -d trefoil >/dev/null 2>&1 && break; sleep 1; done
-db_port=$(docker port "$NAME" 5432/tcp | sed -E 's/.*:([0-9]+)$/\1/')
+db_port=$pg_port
 export DATABASE_URL="postgres://postgres:localtest@127.0.0.1:$db_port/trefoil"
 port=$(python3 - <<'PY'
 import socket

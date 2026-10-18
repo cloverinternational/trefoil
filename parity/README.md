@@ -90,7 +90,9 @@ overlay. Known, accepted differences are tracked in `oracle/GAPS.md`.
 
 Each script builds `trefoil-backend`, starts it against a throwaway PostgreSQL
 container, exercises one area over HTTP, and cleans up. None of them contact a
-real provider or touch `DATABASE_URL`.
+real provider or touch `DATABASE_URL`. They share `lib/pg.sh`, which honours
+the same `POSTGRES_NETWORK=host` + `POSTGRES_PORT=<free port>` opt-in as
+`run.sh` for hosts where Docker bridge port publishing does not work.
 
 | Script | Area |
 |---|---|

@@ -5,9 +5,11 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 command -v docker >/dev/null
 cargo build --locked -q --bin trefoil-backend
-container=$(docker run --rm -d --tmpfs /var/lib/postgresql/data \
-  -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil \
-  -p 127.0.0.1::5432 postgres:16-alpine)
+# shellcheck source=lib/pg.sh
+source "$ROOT/parity/lib/pg.sh"
+pg_start --tmpfs /var/lib/postgresql/data \
+  -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil
+container=$pg_container
 gateway_pid=
 log=$(mktemp)
 cleanup() {
@@ -16,7 +18,7 @@ cleanup() {
   rm -f "$log"
 }
 trap cleanup EXIT
-db_port=$(docker port "$container" 5432/tcp | sed -E 's/.*:([0-9]+)$/\1/')
+db_port=$pg_port
 for i in {1..40}; do docker exec "$container" pg_isready -U trefoil -d trefoil >/dev/null 2>&1 && break; sleep 1; done
 port=$(python3 - <<'PY'
 import socket
@@ -47,21 +49,26 @@ def get(query, key='disposable-logs-e2e'):
     return json.load(urllib.request.urlopen(request, timeout=4))
 create = urllib.request.Request(key_url, method='PUT', headers={'x-admin-key':'disposable-logs-e2e','content-type':'application/json'}, data=b'{"secret":"disposable-limited-key"}')
 with urllib.request.urlopen(create, timeout=4) as response: assert response.status in (200, 204)
-for query, total, request_id in [
-    ('?apiKey=key-a&limit=1&offset=0', 2, 'log-c'),
-    ('?apiKey=key-a&limit=1&offset=1', 2, 'log-a'),
-    ('?provider=beta&incomingModelAlias=model-b', 1, 'log-b'),
-    ('?startDate=2026-10-16&endDate=2026-10-16', 2, 'log-c'),
+# Rows sort by `date` DESC (as in Plexus). log-a and log-c share the same
+# date, so their relative order is unspecified: assert page membership.
+for query, total, request_ids in [
+    ('?apiKey=key-a&limit=1&offset=0', 2, {'log-a', 'log-c'}),
+    ('?apiKey=key-a&limit=1&offset=1', 2, {'log-a', 'log-c'}),
+    ('?provider=beta&incomingModelAlias=model-b', 1, {'log-b'}),
+    ('?startDate=2026-10-16&endDate=2026-10-16', 2, {'log-a', 'log-c'}),
     ('?provider=missing', 0, None),
 ]:
     result = get(query)
-    assert result['total'] == total and (request_id is None or result['data'][0]['requestId'] == request_id), (query, result)
+    assert result['total'] == total and (request_ids is None or result['data'][0]['requestId'] in request_ids), (query, result)
     print(f'{query}: total={total}, returned={len(result["data"])}')
-for query, expected in [('?startDate=invalid', 400), ('?startDate=2026-10-17&endDate=2026-10-16', 400)]:
-    try: get(query)
-    except urllib.error.HTTPError as error: assert error.code == expected, error.code
-    else: raise AssertionError(f'{query} should return {expected}')
-print('invalid and reversed date ranges: 400')
+pages = [get(f'?apiKey=key-a&limit=1&offset={offset}')['data'][0]['requestId'] for offset in (0, 1)]
+assert sorted(pages) == ['log-a', 'log-c'], pages
+print('apiKey pagination: two distinct pages')
+# Plexus parity: the list route passes date bounds straight to the
+# (string) date filter without validating them, so these match nothing.
+for query in ['?startDate=invalid', '?startDate=2026-10-17&endDate=2026-10-16']:
+    assert get(query)['total'] == 0, query
+print('invalid and reversed date ranges: 200, no rows')
 own = get('?apiKey=key-b&limit=1&offset=0', 'disposable-limited-key')
 assert own['total'] == 2 and own['data'][0]['apiKey'] == 'key-a', own
 assert get('?provider=beta', 'disposable-limited-key')['total'] == 0

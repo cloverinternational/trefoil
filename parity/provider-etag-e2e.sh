@@ -4,9 +4,11 @@ set -Eeuo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 cargo build --locked -q --bin trefoil-backend
-container=$(docker run --rm -d --tmpfs /var/lib/postgresql/data \
-  -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil \
-  -p 127.0.0.1::5432 postgres:16-alpine)
+# shellcheck source=lib/pg.sh
+source "$ROOT/parity/lib/pg.sh"
+pg_start --tmpfs /var/lib/postgresql/data \
+  -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil
+container=$pg_container
 gateway_pid=
 log=$(mktemp)
 cleanup() {
@@ -15,7 +17,7 @@ cleanup() {
   rm -f "$log"
 }
 trap cleanup EXIT
-db_port=$(docker port "$container" 5432/tcp | sed -E 's/.*:([0-9]+)$/\1/')
+db_port=$pg_port
 for i in {1..40}; do docker exec "$container" pg_isready -U trefoil -d trefoil >/dev/null 2>&1 && break; sleep 1; done
 port=$(python3 - <<'PY'
 import socket
@@ -37,7 +39,10 @@ TREFOIL_E2E_URL="http://127.0.0.1:$port" python3 - <<'PY'
 import json, os, urllib.request, urllib.error
 base=os.environ['TREFOIL_E2E_URL']; admin='disposable-provider-etag-e2e'
 def call(path,method='GET',data=None,headers=None):
-    h={'x-admin-key':admin,'content-type':'application/json'}
+    # Like Plexus (Fastify), an empty body with a JSON content-type is a 400,
+    # so only label requests that carry a body.
+    h={'x-admin-key':admin}
+    if data is not None: h['content-type']='application/json'
     if headers: h.update(headers)
     req=urllib.request.Request(base+path,method=method,headers=h,data=None if data is None else json.dumps(data).encode())
     try:

@@ -2,6 +2,13 @@
 use trefoil_backend::database;
 use sqlx::Row;
 
+/// Inference routes authenticate against configured API keys only (Plexus
+/// parity: the admin key is not an inference credential), so the dispatch
+/// cases register a key whose secret is the `x-api-key` they send.
+fn inference_keys(secret: &str) -> std::collections::HashMap<String, trefoil_backend::state::KeyConfig> {
+    [("integration".to_owned(), trefoil_backend::state::KeyConfig { secret: secret.into(), ..Default::default() })].into_iter().collect()
+}
+
 #[tokio::test]
 #[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL and TREFOIL_CREDENTIAL_KEY"]
 async fn oauth_tokens_are_encrypted_and_round_trip_with_timestamps() {
@@ -55,14 +62,21 @@ async fn chat_failover_audit_has_contiguous_candidate_numbers() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr=listener.local_addr().unwrap();
     let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
-    let state=AppState::new(Some("admin".into()),Default::default()).with_database(pool.clone());
-    for name in ["first","second","third"] { state.inner.providers.write().unwrap().insert(name.into(),ProviderConfig{api_base_url:format!("http://{addr}"),enabled:true,..Default::default()}); }
+    let state=AppState::new(Some("admin".into()),inference_keys("inference-secret")).with_database(pool.clone());
+    for name in ["first","second","third"] { state.inner.providers.write().unwrap().insert(name.into(),ProviderConfig{api_base_url:format!("http://{addr}"),api_key:Some("fixture-key".into()),enabled:true,..Default::default()}); }
     state.inner.aliases.write().unwrap().insert("alias".into(),ModelConfig{target_groups:vec![ModelTargetGroup{name:"ordered".into(),selector:"in_order".into(),targets:["first","second","third"].into_iter().map(|name|ModelTarget{provider:Some(name.into()),model:Some(name.into()),enabled:true,..Default::default()}).collect()}],..Default::default()});
-    let response=trefoil_backend::app(state).oneshot(Request::post("/v1/chat/completions").header("x-api-key","admin").header("content-type","application/json").body(Body::from(r#"{"model":"alias","messages":[{"role":"user","content":"hello"}]}"#)).unwrap()).await.unwrap();
+    let response=trefoil_backend::app(state).oneshot(Request::post("/v1/chat/completions").header("x-api-key","inference-secret").header("content-type","application/json").body(Body::from(r#"{"model":"alias","messages":[{"role":"user","content":"hello"}]}"#)).unwrap()).await.unwrap();
     assert_eq!(response.status(),axum::http::StatusCode::OK);
     let id=response.headers()["x-request-id"].to_str().unwrap();
-    let attempts:Vec<i32>=sqlx::query_scalar("SELECT attempt_index FROM inference_attempts WHERE request_id=$1 ORDER BY attempt_index").bind(id).fetch_all(&pool).await.unwrap();
-    assert_eq!(attempts,vec![1,2,3]);
+    // Plexus parity: the failover audit is the usage record's retry history
+    // (written asynchronously after the response), not a separate table.
+    let mut row=None;
+    for _ in 0..50 { row=sqlx::query("SELECT attempt_count, retry_history FROM request_usage WHERE request_id=$1").bind(id).fetch_optional(&pool).await.unwrap(); if row.is_some() {break;} tokio::time::sleep(std::time::Duration::from_millis(100)).await; }
+    let row=row.expect("usage row for the request");
+    assert_eq!(row.get::<Option<i32>,_>("attempt_count"),Some(3));
+    let history:serde_json::Value=serde_json::from_str(&row.get::<String,_>("retry_history")).unwrap();
+    let attempts:Vec<(i64,&str)>=history.as_array().unwrap().iter().map(|a|(a["index"].as_i64().unwrap(),a["status"].as_str().unwrap())).collect();
+    assert_eq!(attempts,vec![(1,"failed"),(2,"failed"),(3,"success")]);
     server.abort();
 }
 
@@ -75,7 +89,10 @@ async fn responses_route_enforces_request_quota_before_upstream_selection() {
     database::migrate(&pool).await.unwrap();
     let definition=serde_json::from_value(serde_json::json!({"type":"daily","limitType":"requests","limit":0})).unwrap();
     database::upsert_user_quota(&pool,"response-zero",&definition).await.unwrap();
+    // The enforcer reads the in-memory registry (loaded from the database at
+    // startup), so mirror the stored definition into this state.
     let state=trefoil_backend::AppState::new(Some("admin".into()),[("quota-key".into(),trefoil_backend::state::KeyConfig{secret:"quota-secret".into(),quota_names:vec!["response-zero".into()],..Default::default()})].into_iter().collect()).with_database(pool);
+    state.inner.user_quotas.write().unwrap().insert("response-zero".into(),definition);
     let response=trefoil_backend::app(state).oneshot(Request::post("/v1/responses").header("x-api-key","quota-secret").header("content-type","application/json").body(Body::from(r#"{"model":"absent/model","input":"hello"}"#)).unwrap()).await.unwrap();
     assert_eq!(response.status(),StatusCode::TOO_MANY_REQUESTS);
 }
@@ -96,23 +113,18 @@ async fn provider_selected_oauth_account_survives_database_reload() {
 #[tokio::test]
 #[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL and TREFOIL_CREDENTIAL_KEY"]
 async fn encrypted_openrouter_key_is_used_by_real_inference_dispatch() {
-    use axum::{body::Body,http::{Request,HeaderMap,StatusCode},routing::post,Json,Router};
-    use tower::ServiceExt;
     let pool=database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
     database::migrate(&pool).await.unwrap();
     // Each integration case owns its account; remove deliberately corrupt rows
     // left by the account-binding test before exercising the reader.
     sqlx::query("DELETE FROM oauth_credentials WHERE account_id='moved'").execute(&pool).await.unwrap();
     database::upsert_oauth_credential(&pool,"openrouter","dispatch","fixture-key","",i64::MAX).await.unwrap();
-    let app=Router::new().route("/chat/completions",post(|headers:HeaderMap| async move {
-        assert_eq!(headers["authorization"],"Bearer fixture-key");Json(serde_json::json!({"choices":[]}))
-    }));
-    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();
-    let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+    // Plexus parity: OAuth routes (`oauth://` base URLs) dispatch to the pi-ai
+    // catalog host, never a configured http base URL, so assert the decrypted
+    // credential the dispatcher would send instead of contacting OpenRouter.
     let state=trefoil_backend::AppState::new(Some("admin".into()),Default::default()).with_database(pool);
-    state.inner.providers.write().unwrap().insert("oauth".into(),trefoil_backend::state::ProviderConfig{api_base_url:format!("http://{addr}"),oauth_provider:Some("openrouter".into()),oauth_account:Some("dispatch".into()),enabled:true,..Default::default()});
-    let response=trefoil_backend::app(state).oneshot(Request::post("/v1/chat/completions").header("x-api-key","admin").header("content-type","application/json").body(Body::from(r#"{"model":"oauth/model","messages":[{"role":"user","content":"hello"}]}"#)).unwrap()).await.unwrap();
-    assert_eq!(response.status(),StatusCode::OK);server.abort();
+    let token=trefoil_backend::engine::dispatcher::oauth::auth::get_api_key(&state,"openrouter",Some("dispatch"),false).await.unwrap();
+    assert_eq!(token,"fixture-key");
 }
 
 #[tokio::test]
@@ -177,21 +189,21 @@ async fn latest_quota_uses_public_meter_contract_not_storage_rows() {
 #[tokio::test]
 #[ignore = "requires disposable TREFOIL_TEST_DATABASE_URL and TREFOIL_CREDENTIAL_KEY"]
 async fn encrypted_copilot_token_and_client_headers_reach_inference() {
-    use axum::{body::Body,http::{Request,HeaderMap,StatusCode},routing::post,Json,Router};
-    use tower::ServiceExt;
+    use trefoil_backend::engine::{dispatch::request_payload::OAuthPlan,routing::RouteResult};
     let pool=database::connect(&std::env::var("TREFOIL_TEST_DATABASE_URL").unwrap()).await.unwrap();
     database::migrate(&pool).await.unwrap();
     // Each integration case owns its account; remove deliberately corrupt rows
     // left by the account-binding test before exercising the reader.
     sqlx::query("DELETE FROM oauth_credentials WHERE account_id='moved'").execute(&pool).await.unwrap();
     database::upsert_oauth_credential(&pool,"github-copilot","copilot-dispatch","fixture-key","",i64::MAX).await.unwrap();
-    let app=Router::new().route("/chat/completions",post(|headers:HeaderMap| async move {
-        assert_eq!(headers["authorization"],"Bearer fixture-key");assert_eq!(headers["copilot-integration-id"],"vscode-chat");assert_eq!(headers["x-github-api-version"],"2026-06-01");Json(serde_json::json!({"choices":[]}))
-    }));
-    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();
-    let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+    // Build the native Copilot wire request offline (Plexus parity: the URL is
+    // derived from the token / enterprise domain, not a configured base URL).
     let state=trefoil_backend::AppState::new(Some("admin".into()),Default::default()).with_database(pool);
-    state.inner.providers.write().unwrap().insert("oauth".into(),trefoil_backend::state::ProviderConfig{api_base_url:format!("http://{addr}"),oauth_provider:Some("github-copilot".into()),oauth_account:Some("copilot-dispatch".into()),enabled:true,..Default::default()});
-    let response=trefoil_backend::app(state).oneshot(Request::post("/v1/chat/completions").header("x-api-key","admin").header("content-type","application/json").body(Body::from(r#"{"model":"oauth/model","messages":[{"role":"user","content":"hello"}]}"#)).unwrap()).await.unwrap();
-    assert_eq!(response.status(),StatusCode::OK);server.abort();
+    let route=RouteResult{provider:"oauth".into(),model:"gpt-4o".into(),config:serde_json::json!({"api_base_url":"oauth://github-copilot","oauth_provider":"github-copilot","oauth_account":"copilot-dispatch"}),model_config:None,incoming_model_alias:None,canonical_model:None};
+    let plan=OAuthPlan{native:true,provider:"github-copilot".into(),masking_route:false,codex_passthrough:false,claude_passthrough:false};
+    let prepared=trefoil_backend::engine::dispatcher::oauth::prepare(&state,&route,&plan,serde_json::json!({"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}),&serde_json::json!({}),"chat").await.unwrap();
+    assert_eq!(prepared.url,"https://api.individual.githubcopilot.com/chat/completions");
+    let header=|name:&str|prepared.headers.iter().find(|(k,_)|k==name).map(|(_,v)|v.clone());
+    assert_eq!(header("Authorization"),Some(serde_json::json!("Bearer fixture-key")));
+    assert_eq!(header("Copilot-Integration-Id"),Some(serde_json::json!("vscode-chat")));
 }

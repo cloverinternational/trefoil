@@ -5,9 +5,11 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 command -v docker >/dev/null
 cargo build --locked -q --bin trefoil-backend
-container=$(docker run --rm -d --tmpfs /var/lib/postgresql/data \
-  -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil \
-  -p 127.0.0.1::5432 postgres:16-alpine)
+# shellcheck source=lib/pg.sh
+source "$ROOT/parity/lib/pg.sh"
+pg_start --tmpfs /var/lib/postgresql/data \
+  -e POSTGRES_DB=trefoil -e POSTGRES_USER=trefoil -e POSTGRES_PASSWORD=trefoil
+container=$pg_container
 gateway_pid=
 log=$(mktemp)
 cleanup() {
@@ -16,7 +18,7 @@ cleanup() {
   rm -f "$log"
 }
 trap cleanup EXIT
-db_port=$(docker port "$container" 5432/tcp | sed -E 's/.*:([0-9]+)$/\1/')
+db_port=$pg_port
 for i in {1..40}; do docker exec "$container" pg_isready -U trefoil -d trefoil >/dev/null 2>&1 && break; sleep 1; done
 port=$(python3 - <<'PY'
 import socket
@@ -59,7 +61,7 @@ status, payload = request('/v0/management/providers/provider-contract-oauth', 'P
 })
 assert status == 400, (status, payload)
 assert [issue.get('message') for issue in payload.get('details', [])] == [
-    "'oauth_provider' must be a supported OAuth provider"
+    'oauth_provider must be a supported OAuth provider id'
 ], payload
 print('provider contract: PATCH missing-slug 404 includes slug')
 print('provider contract: oauth:// missing account adds no account-required validation issue')
