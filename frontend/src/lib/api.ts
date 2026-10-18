@@ -427,6 +427,30 @@ export interface ModelTargetGroup {
   targets: ModelTarget[];
 }
 
+/** Alias `metadata.overrides` (Plexus `MetadataOverridesSchema`). */
+export interface MetadataOverrides {
+  name?: string;
+  /** Compact display label (1–64 chars after trim); derived from `name` when omitted. */
+  short_name?: string;
+  description?: string;
+  context_length?: number;
+  [key: string]: unknown;
+}
+
+export interface AliasMetadata {
+  source: 'auto' | 'disabled' | 'openrouter' | 'models.dev' | 'catwalk' | 'custom';
+  source_path?: string;
+  overrides?: MetadataOverrides;
+}
+
+/** `GET /v1/models` entry (metadata fields present when resolved). */
+export interface ModelListEntry {
+  id: string;
+  name?: string;
+  /** Explicit `metadata.overrides.short_name`, otherwise derived from `name`. */
+  short_name?: string;
+}
+
 export interface ModelAlias {
   priority?: string;
   target_groups?: ModelTargetGroup[];
@@ -435,6 +459,7 @@ export interface ModelAlias {
   enforce_limits?: boolean;
   sticky_session?: boolean;
   type?: string;
+  metadata?: AliasMetadata;
 }
 
 export async function getAliases(): Promise<Record<string, ModelAlias>> {

@@ -42,6 +42,7 @@ fn overrides(name_required: bool) -> Schema {
     ]);
     object(vec![
         ("name", if name_required { string().min(1.0) } else { string().optional() }),
+        ("short_name", trimmed().min(1.0).max(64.0).optional()),
         ("description", string().optional()),
         ("context_length", number().int().positive().optional()),
         ("pricing", pricing.optional()),
@@ -137,7 +138,7 @@ pub fn model_config() -> &'static Schema {
 
 fn has_any_override(o: &Value) -> bool {
     let defined = |v: Option<&Value>| v.is_some();
-    defined(o.get("name")) || defined(o.get("description")) || defined(o.get("context_length"))
+    defined(o.get("name")) || defined(o.get("short_name")) || defined(o.get("description")) || defined(o.get("context_length"))
         || o.get("pricing").and_then(Value::as_object).is_some_and(|p| p.values().any(|_| true))
         || o.get("architecture").is_some_and(|a| defined(a.get("tokenizer")) || defined(a.get("input_modalities")) || defined(a.get("output_modalities")))
         || defined(o.get("supported_parameters"))
@@ -149,6 +150,7 @@ fn stored_overrides(o: &Value) -> Value {
     let mut out = Map::new();
     let nn = |v: Option<&Value>| v.filter(|v| !v.is_null()).cloned();
     if let Some(v) = nn(o.get("name")) { out.insert("name".into(), v); }
+    if let Some(v) = nn(o.get("short_name")) { out.insert("short_name".into(), v); }
     if let Some(v) = nn(o.get("description")) { out.insert("description".into(), v); }
     if let Some(v) = nn(o.get("context_length")) { out.insert("context_length".into(), v); }
     let mut pricing = Map::new();

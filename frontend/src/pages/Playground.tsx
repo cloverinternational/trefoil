@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronDown, Code2, Play, RefreshCw, Route, ShieldAlert, SlidersHorizontal, TriangleAlert } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { getAliases, getKeys, getProviders, getRecentUsage, type ApiKeyConfig, type ModelAlias } from '../lib/api';
+import { getAliases, getKeys, getProviders, getRecentUsage, type ApiKeyConfig, type ModelAlias, type ModelListEntry } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 
-type Model = { id: string };
+type Model = ModelListEntry;
 type RouteState = { status: 'idle' | 'pending' | 'complete' | 'error'; provider?: string; model?: string; requestId?: string };
 type ApiMode = 'chat' | 'messages' | 'responses' | 'gemini';
 

@@ -158,7 +158,7 @@ impl Schema {
             Kind::Transform(inner, f) => { let start = issues.len(); let out = inner.run(input, path, issues); if issues.len() == start { out.map(f) } else { out } }
             Kind::Any => input.cloned(),
             Kind::Str { trim } => match input {
-                Some(Value::String(v)) => Some(Value::String(if *trim { v.trim().to_owned() } else { v.clone() })),
+                Some(Value::String(v)) => Some(Value::String(if *trim { crate::engine::responses::js_ext::js_trim(v).to_owned() } else { v.clone() })),
                 other => { issues.push(invalid_type("string", other, path)); None }
             },
             Kind::Num => match input { Some(Value::Number(_)) => input.cloned(), other => { issues.push(invalid_type("number", other, path)); None } },

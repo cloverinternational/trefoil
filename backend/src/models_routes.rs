@@ -153,10 +153,17 @@ fn merge_overrides(base: Option<Value>, overrides: Option<&Value>) -> Option<Val
     let mut merged = Obj::new();
     merged.insert("id".into(), b.and_then(|b| js::coalesce(b.get("id"), None)).unwrap_or(json!("")));
     merged.insert("name".into(), b.and_then(|b| js::coalesce(b.get("name"), None)).unwrap_or(json!("")));
+    if let Some(v) = b.and_then(|b| b.get("short_name")) { merged.insert("short_name".into(), v.clone()); }
     for key in ["description", "context_length", "architecture", "pricing", "supported_parameters", "top_provider"] {
         if let Some(v) = b.and_then(|b| b.get(key)) { merged.insert(key.into(), v.clone()); }
     }
-    for key in ["name", "description", "context_length"] {
+    if let Some(v) = overrides.get("name") { merged.insert("name".into(), v.clone()); }
+    if let Some(short_name) = overrides.get("short_name") {
+        let trimmed = js::to_string(Some(short_name));
+        let trimmed = crate::engine::responses::js_ext::js_trim(&trimmed);
+        if !trimmed.is_empty() { merged.insert("short_name".into(), json!(trimmed)); }
+    }
+    for key in ["description", "context_length"] {
         if let Some(v) = overrides.get(key) { merged.insert(key.into(), v.clone()); }
     }
     for key in ["pricing", "architecture", "top_provider"] {
@@ -219,33 +226,64 @@ fn catalog_metadata(source: &str, path: &str) -> Option<Value> {
     crate::metadata::lookup(source, path).and_then(|m| serde_json::to_value(m).ok())
 }
 
-/// `findExactMetadata(provider, model)`.
-fn find_exact_metadata(provider: &str, model: &str) -> Option<Value> {
+/// `findExactMetadata(provider, model)` as `(metadata, source, sourcePath)`.
+fn find_exact_metadata(provider: &str, model: &str) -> Option<(Value, &'static str, String)> {
     [("models.dev", format!("{provider}.{model}")), ("openrouter", format!("{provider}/{model}")), ("catwalk", format!("{provider}.{model}"))]
-        .into_iter().find_map(|(source, path)| catalog_metadata(source, &path))
+        .into_iter().find_map(|(source, path)| catalog_metadata(source, &path).map(|m| (m, source, path)))
+}
+
+/// `withDefaultShortName(metadata, idHint)`: derive `short_name` from `name`
+/// unless an explicit override already set one.
+fn with_default_short_name(mut metadata: Value, id_hint: &str) -> Value {
+    if metadata.get("short_name").is_some() || !truthy(metadata.get("name")) { return metadata; }
+    let name = js::to_string(metadata.get("name"));
+    if let Some(derived) = crate::short_name::derive_short_name(Some(&name), Some(id_hint)).filter(|d| !d.is_empty()) {
+        metadata["short_name"] = json!(derived);
+    }
+    metadata
+}
+
+/// `metadata.id || fallback`.
+fn id_or(metadata: &Value, fallback: &str) -> String {
+    if truthy(metadata.get("id")) { js::to_string(metadata.get("id")) } else { fallback.to_owned() }
 }
 
 /// `resolveModelMetadata(...)?.metadata`.
 pub(crate) fn resolve_model_metadata(alias_id: &str, model: &Value, providers: &Obj) -> Option<Value> {
+    resolve_model_metadata_with_source(alias_id, model, providers).map(|(m, _, _)| m)
+}
+
+/// `resolveModelMetadata(...)` as `(metadata, source, sourcePath)`.
+pub(crate) fn resolve_model_metadata_with_source(alias_id: &str, model: &Value, providers: &Obj) -> Option<(Value, String, Option<String>)> {
     let configured = model.get("metadata").filter(|v| v.is_object());
     let source = configured.and_then(|c| s(c.get("source")));
     let overrides = configured.and_then(|c| c.get("overrides"));
     let ty = s(model.get("type"));
     match source {
         Some("disabled") => None,
-        Some("custom") => merge_overrides(None, overrides).map(|m| apply_configured_model_type(m, ty)),
+        Some("custom") => merge_overrides(None, overrides)
+            .map(|m| (apply_configured_model_type(with_default_short_name(m, alias_id), ty), "heuristic".into(), None)),
         Some(src @ ("openrouter" | "models.dev" | "catwalk")) => {
             let path = configured.map(|c| js::to_string(c.get("source_path"))).unwrap_or_default();
-            catalog_metadata(src, &path).and_then(|c| merge_overrides(Some(c), overrides)).map(|m| apply_configured_model_type(m, ty))
+            catalog_metadata(src, &path).and_then(|c| merge_overrides(Some(c), overrides)).map(|m| {
+                let hint = id_or(&m, &path);
+                (apply_configured_model_type(with_default_short_name(m, &hint), ty), src.into(), Some(path.clone()))
+            })
         }
         _ => {
             let identity = automatic_identity(alias_id, model, providers);
             let exact = identity.provider.as_deref().filter(|p| !p.is_empty()).and_then(|p| find_exact_metadata(p, &identity.model));
-            if let Some(exact) = exact {
-                return merge_overrides(Some(exact), overrides).map(|m| apply_configured_model_type(m, ty));
+            if let Some((exact, src, path)) = exact {
+                return merge_overrides(Some(exact), overrides).map(|m| {
+                    let hint = id_or(&m, &identity.model);
+                    (apply_configured_model_type(with_default_short_name(m, &hint), ty), src.into(), Some(path))
+                });
             }
             let heuristic = json!({"id": identity.model, "name": humanize_model_name(&identity.model), "architecture": infer_architecture(&identity.model, ty)});
-            merge_overrides(Some(heuristic), overrides).map(|m| apply_configured_model_type(m, ty))
+            merge_overrides(Some(heuristic), overrides).map(|m| {
+                let hint = id_or(&m, &identity.model);
+                (apply_configured_model_type(with_default_short_name(m, &hint), ty), "heuristic".into(), None)
+            })
         }
     }
 }
@@ -399,6 +437,7 @@ fn model_entry(alias_id: &str, model: &Value, snap: &Snapshot, created: i64) -> 
     };
     let out = result.as_object_mut().unwrap();
     out.insert("name".into(), enriched.get("name").cloned().unwrap_or(Value::Null));
+    if let Some(v) = enriched.get("short_name") { out.insert("short_name".into(), v.clone()); }
     for key in ["description", "context_length", "architecture", "pricing", "supported_parameters", "top_provider"] {
         if let Some(v) = enriched.get(key) { out.insert(key.into(), v.clone()); }
     }
@@ -538,7 +577,15 @@ async fn metadata_lookup(RawQuery(raw): RawQuery) -> Response {
         return error(StatusCode::SERVICE_UNAVAILABLE, format!("Metadata source '{source}' is not yet loaded or failed to load"));
     }
     match catalog_metadata(&source, &path) {
-        Some(metadata) => (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "application/json; charset=utf-8")], js::stringify(&json!({"data": metadata}))).into_response(),
+        Some(mut metadata) => {
+            // `{ ...metadata, ...(shortName && { short_name }) }` — derived default, never stored.
+            let name = metadata.get("name").filter(|v| !v.is_null()).map(|v| js::to_string(Some(v)));
+            let id = metadata.get("id").filter(|v| !v.is_null()).map(|v| js::to_string(Some(v)));
+            if let Some(short_name) = crate::short_name::derive_short_name(name.as_deref(), id.as_deref()).filter(|d| !d.is_empty()) {
+                if let Some(obj) = metadata.as_object_mut() { obj.insert("short_name".into(), json!(short_name)); }
+            }
+            (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "application/json; charset=utf-8")], js::stringify(&json!({"data": metadata}))).into_response()
+        }
         None => error(StatusCode::NOT_FOUND, format!("No metadata found for '{path}' in source '{source}'")),
     }
 }

@@ -55,6 +55,7 @@ pub mod raw;
 pub mod secret_crypto;
 pub mod restart;
 pub mod self_routes;
+pub mod short_name;
 pub mod state;
 pub mod system_logs;
 pub mod system_settings;

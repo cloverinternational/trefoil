@@ -11955,6 +11955,10 @@
             "type": "string",
             "description": "Display name (e.g. \"OpenAI: GPT-4.1 Nano\").\n"
           },
+          "short_name": {
+            "type": "string",
+            "description": "Compact display label (e.g. \"Sonnet 5.5\"). Explicitly configured via the alias `metadata.overrides.short_name`, otherwise deterministically derived from `name`.\n"
+          },
           "description": {
             "type": "string",
             "description": "Model description from metadata."
@@ -12486,6 +12490,12 @@
           "name": {
             "type": "string",
             "description": "Human-readable model name. Required when `metadata.source` is `custom` (no catalog fallback).\n"
+          },
+          "short_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Compact display label advertised as `short_name` in `GET /v1/models`. When omitted, Plexus deterministically derives one from `name` (e.g. \"Claude Sonnet 5.5\" becomes \"Sonnet 5.5\").\n"
           },
           "description": {
             "type": "string",

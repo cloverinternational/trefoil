@@ -29,3 +29,10 @@ before 0094 keep loading from the legacy columns until next written.
 `0095_usage_upstream_model_service_tiers.sql` adds the `request_usage` columns from
 Plexus pg migrations 0083/0089 (`upstream_model`, requested/actual service tier
 and their raw values) used by the engine usage storage.
+
+`0096_add_alias_short_name.sql` adds the nullable `alias_metadata_overrides.short_name`
+column from Plexus pg migration 0092 (PR #999) for schema compatibility with
+Plexus data. Trefoil persists the `metadata.overrides.short_name` alias override
+inside `model_aliases.config`; derived short names are computed at resolve time
+and are never stored. A fresh disposable PostgreSQL migration and an alias
+PUT/GET round trip are checked by `parity/models-metadata-e2e.sh`.

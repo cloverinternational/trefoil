@@ -503,14 +503,19 @@ pub async fn resolve_metadata(
     let Some(alias_id) = body.get("alias_id").and_then(serde_json::Value::as_str) else {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"alias_id is required"}))).into_response();
     };
-    let parsed: crate::state::ModelConfig = match serde_json::from_value(body.get("model").cloned().unwrap_or(serde_json::Value::Null)) {
-        Ok(config) => config,
-        Err(error) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Validation failed","details":[{"message":error.to_string()}]}))).into_response(),
+    // `ModelConfigSchema.safeParse(body.model)`.
+    let model_view = match crate::alias_view::model_config().safe_parse(body.get("model").unwrap_or(&serde_json::Value::Null)) {
+        Ok(view) => view,
+        Err(issues) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Validation failed","details":issues}))).into_response(),
     };
+    let parsed = crate::alias_view::from_view(model_view.clone());
 
     let providers = state.inner.providers.read().unwrap();
     let identity = automatic_identity(alias_id, &parsed, &providers);
-    let resolved = resolve_catalog_metadata(&identity, parsed.metadata.as_ref());
+    // `resolveModelMetadata(alias_id, parsed.data, providers)`: same resolution
+    // as `/v1/models`, including the derived/overridden `short_name`.
+    let provider_views: serde_json::Map<String, serde_json::Value> = providers.iter().map(|(k, p)| (k.clone(), p.public_view())).collect();
+    let resolved = crate::models_routes::resolve_model_metadata_with_source(alias_id, &model_view, &provider_views);
     let preferred_api = parsed.preferred_api.clone().or_else(|| {
         if parsed.model_type.as_deref().is_some_and(|t| t != "text") { return None; }
         let provider = identity.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
@@ -526,7 +531,14 @@ pub async fn resolve_metadata(
         let model = identity.get("model")?.as_str()?;
         crate::pi_catalog::catalog().get_model(provider, model).map(|m| serde_json::json!({"provider":provider,"model_id":model,"name":m.get("name")}))
     }).unwrap_or(serde_json::Value::Null);
-    let metadata = resolved.map(|(source, path, name)| serde_json::json!({"source":source,"source_path":path,"name":name})).unwrap_or(serde_json::Value::Null);
+    let metadata = resolved.map(|(metadata, source, path)| {
+        let mut out = serde_json::Map::new();
+        out.insert("source".into(), serde_json::json!(source));
+        if let Some(path) = path { out.insert("source_path".into(), serde_json::json!(path)); }
+        out.insert("name".into(), metadata.get("name").cloned().unwrap_or(serde_json::Value::Null));
+        out.insert("short_name".into(), metadata.get("short_name").cloned().unwrap_or(serde_json::Value::Null));
+        serde_json::Value::Object(out)
+    }).unwrap_or(serde_json::Value::Null);
     Json(serde_json::json!({"canonical_model":identity,"pi_model":pi_model,"metadata":metadata,"preferred_api":preferred_api})).into_response()
 }
 
@@ -557,24 +569,6 @@ fn automatic_identity(alias: &str, config: &crate::state::ModelConfig, providers
     identities.sort(); identities.dedup();
     if identities.len() == 1 { let (provider, model)=identities.remove(0); serde_json::json!({"provider":provider,"model":model,"basis":"target"}) }
     else { serde_json::json!({"provider":infer_provider(alias),"model":alias,"basis":"alias"}) }
-}
-
-fn resolve_catalog_metadata(identity: &serde_json::Value, configured: Option<&serde_json::Value>) -> Option<(String,String,String)> {
-    if configured.and_then(|v|v["source"].as_str()) == Some("disabled") { return None; }
-    let provider = identity["provider"].as_str(); let model = identity["model"].as_str()?;
-    if let Some(source) = configured.and_then(|v|v["source"].as_str()) {
-        if source == "custom" { return configured.and_then(|v|v["overrides"]["name"].as_str()).map(|name|("heuristic".into(),String::new(),name.into())); }
-        if let Some(path) = configured.and_then(|v|v["source_path"].as_str()) {
-            if let Some(found)=lookup(source,path) { return Some((source.into(),path.into(),configured.and_then(|v|v["overrides"]["name"].as_str()).unwrap_or(&found.name).into())); }
-        }
-        return None;
-    }
-    if let Some(provider)=provider {
-        for (source,path) in [("models.dev",format!("{provider}.{model}")),("openrouter",format!("{provider}/{model}")),("catwalk",format!("{provider}.{model}"))] {
-            if let Some(found)=lookup(source,&path) { return Some((source.into(),path,found.name)); }
-        }
-    }
-    Some(("heuristic".into(),String::new(),model.rsplit('/').next().unwrap_or(model).split(['-','_','.']).filter(|s|!s.is_empty()).map(|s| { let mut c=s.chars(); c.next().map(|f|f.to_uppercase().to_string()+c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(" ")))
 }
 
 #[cfg(test)]
