@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { mockHost } from './mock-host';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -23,7 +24,7 @@ test('api_match picks compatible Messages target and falls back for unmatched Ch
   try {
     for (let i = 0; i < servers.length; i++) {
       await new Promise<void>(done => servers[i].listen(0, '0.0.0.0', done));
-      const origin = `http://192.168.96.1:${(servers[i].address() as { port: number }).port}`;
+      const origin = `http://${mockHost}:${(servers[i].address() as { port: number }).port}`;
       const response = await request.put(`/v0/management/providers/${providers[i]}`, { headers, data: { api_base_url: origin, api_key: 'disposable', models: { sample: { type: 'text', access_via: [i === 0 ? 'chat' : 'messages'] } }, enabled: true } });
       expect(response.status()).toBe(200);
     }

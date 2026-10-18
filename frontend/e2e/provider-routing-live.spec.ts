@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { mockHost } from './mock-host';
 import { createServer, type Server } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -30,7 +31,7 @@ test('typed URLs and model ID survive reload and reach their intended upstreams'
       });
       await new Promise<void>(done => server.listen(0, '0.0.0.0', done));
       servers.push(server);
-      origins.push(`http://192.168.96.1:${(server.address() as { port: number }).port}`);
+      origins.push(`http://${mockHost}:${(server.address() as { port: number }).port}`);
     }
     const headers = { 'x-admin-key': key };
     await page.addInitScript(credential => localStorage.setItem('trefoil_admin_key', credential), key);

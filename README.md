@@ -186,6 +186,12 @@ npm --prefix frontend run build
 Database-backed tests are opt-in: `parity/test-oauth-storage.sh` and the other
 `parity/*-e2e.sh` scripts each start a throwaway PostgreSQL container.
 Playwright UI tests live in `frontend/e2e/` (`npm --prefix frontend run test:e2e`).
+The `*-live` specs drive a running stack and are skipped unless
+`TREFOIL_E2E_BASE_URL` is set (e.g. `http://127.0.0.1:8080`). Also set
+`TREFOIL_E2E_MOCK_HOST` (the address the backend
+container uses to reach mock upstreams on the test host; default
+`host.docker.internal`, on Linux usually the Compose network gateway), and
+`TREFOIL_E2E_PLAYGROUND_MODEL` for the playground spec.
 
 ## Parity with Plexus
 
