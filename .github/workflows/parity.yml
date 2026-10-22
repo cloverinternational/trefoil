@@ -9,8 +9,8 @@ jobs:
   parity:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           repository: mcowger/plexus
           ref: 17b7e60804e3401acbe2bc2beb6b9b9042b31cce
