@@ -31,7 +31,7 @@ Plexus include:
 - Other backend modules (management API, OAuth login flows, MCP, quotas,
   cooldowns, usage, logging) and parts of `frontend/` (for example
   `frontend/src/contexts/AuthContext.tsx`, `frontend/src/lib/api.ts`,
-  `frontend/src/lib/types.ts`, `frontend/src/components/layout/TrefoilMark.tsx`)
+  `frontend/src/lib/types.ts`)
   that port Plexus behaviour and are marked as such in their source comments.
 
 ```text
