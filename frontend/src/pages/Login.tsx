@@ -34,15 +34,15 @@ export const Login: React.FC = () => {
       <div className="w-full max-w-md">
         <div className="mb-6 flex items-center justify-center gap-3">
           <TrefoilMark size={42} />
-          <span className="font-heading text-3xl font-bold tracking-tight">Trefoil</span>
+          <span className="font-heading text-base font-bold tracking-tight">Trefoil</span>
         </div>
         <Card>
           <CardHeader>
-            <CardTitle className="text-2xl">Sign in</CardTitle>
+            <CardTitle className="text-base">Sign in</CardTitle>
             <CardDescription>Enter your admin key for full access, or an API key secret for a scoped view of your key&apos;s activity.</CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+            <form onSubmit={handleSubmit} className="space-y-3" noValidate>
               <div className="space-y-2">
                 <Label htmlFor="adminKey">Admin key or API key secret</Label>
                 <div className="relative">
@@ -50,7 +50,7 @@ export const Login: React.FC = () => {
                   <Input id="adminKey" type={showKey ? 'text' : 'password'} autoComplete="current-password" autoFocus value={key} onChange={event => { setKey(event.target.value); if (error) setError(''); }} placeholder="sk-admin-•••• or sk-•••••••••••••" className="pr-20 pl-10 font-mono" />
                   <Button type="button" variant="ghost" size="sm" className="absolute right-1 top-1/2 -translate-y-1/2" aria-label={showKey ? 'Hide key' : 'Show key'} onClick={() => setShowKey(value => !value)}>{showKey ? <EyeOff /> : <Eye />}</Button>
                 </div>
-                {error && <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"><AlertCircle className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
+                {error && <div role="alert" className="flex items-start gap-2  border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive"><AlertCircle className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
               </div>
               <Button type="submit" className="w-full">Access Dashboard <ArrowRight /></Button>
             </form>

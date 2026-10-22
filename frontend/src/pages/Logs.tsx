@@ -52,12 +52,12 @@ export const Logs: React.FC = () => {
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to delete request log'); }
   };
 
-  return <main className="mx-auto w-full max-w-[1700px] space-y-5 p-4 sm:p-6">
-    <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
-      <div><h1 className="flex items-center gap-2 text-2xl font-semibold"><FileText className="size-5 text-primary"/>Logs</h1><p className="mt-1 text-sm text-muted-foreground">All API requests routed through the gateway</p></div>
+  return <main className="w-full min-w-0 space-y-3">
+    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
+      <div><h1 className="flex items-center gap-2 text-base font-semibold"><FileText className="size-5 text-primary"/>Logs</h1><p className="mt-1 text-xs text-muted-foreground">All API requests routed through the gateway</p></div>
       <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? 'animate-spin' : ''}/>Refresh</Button>
     </header>
-    <section aria-label="Log filters" className="grid gap-2 rounded-lg border border-border bg-card p-3 md:grid-cols-3">
+    <section aria-label="Log filters" className="grid gap-2  border border-border bg-card p-3 md:grid-cols-3">
       <label className="relative"><span className="sr-only">Filter API key</span><Search className="absolute left-3 top-2.5 size-4 text-muted-foreground"/><Input className="pl-9" placeholder="Key…" value={filters.key} onChange={e => setFilters({ ...filters, key: e.target.value })}/></label>
       <label className="relative"><span className="sr-only">Filter model</span><Search className="absolute left-3 top-2.5 size-4 text-muted-foreground"/><Input className="pl-9" placeholder="Model…" value={filters.model} onChange={e => setFilters({ ...filters, model: e.target.value })}/></label>
       <label className="relative"><span className="sr-only">Filter provider</span><Search className="absolute left-3 top-2.5 size-4 text-muted-foreground"/><Input className="pl-9" placeholder="Provider…" value={filters.provider} onChange={e => setFilters({ ...filters, provider: e.target.value })}/></label>
@@ -66,10 +66,10 @@ export const Logs: React.FC = () => {
       <div className="flex items-end gap-2"><Button onClick={search}>Search</Button><span className="ml-auto text-xs text-muted-foreground">Per page</span><Select value={String(limit)} onValueChange={value => { setLimit(Number(value)); setOffset(0); }}><SelectTrigger className="w-24" aria-label="Rows per page"><SelectValue/></SelectTrigger><SelectContent>{[20, 50, 100, 200].map(size => <SelectItem key={size} value={String(size)}>{size}</SelectItem>)}</SelectContent></Select></div>
       <p className="text-xs text-muted-foreground md:col-span-3">Filters search all request logs before pagination. Limited keys can only view their own records.</p>
     </section>
-    {error && <div role="alert" className="flex items-center gap-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}<Button variant="link" className="ml-auto" onClick={() => void load()}>Retry</Button></div>}
+    {error && <div role="alert" className="flex items-center gap-3  border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">{error}<Button variant="link" className="ml-auto" onClick={() => void load()}>Retry</Button></div>}
     <Card className="overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3 text-xs text-muted-foreground"><span>{rows.length ? `${offset + 1}–${Math.min(offset + rows.length, total)} of ${total}` : `${total} total requests`}</span><span>Page {Math.floor(offset / limit) + 1} of {Math.max(1, Math.ceil(total / limit))}</span></div>
-      {loading ? <div className="space-y-2 p-4">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-12 w-full"/>)}</div> : rows.length === 0 ? <div className="py-16 text-center text-sm text-muted-foreground">{total ? 'No requests on this page.' : 'No requests match these filters.'}</div> :
+      {loading ? <div className="space-y-2 p-4">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-12 w-full"/>)}</div> : rows.length === 0 ? <div className="py-8 text-center text-xs text-muted-foreground">{total ? 'No requests on this page.' : 'No requests match these filters.'}</div> :
         <div className="overflow-x-auto"><Table className="min-w-[980px]"><TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Key</TableHead><TableHead>API</TableHead><TableHead>Model</TableHead><TableHead>Tokens</TableHead><TableHead>Cost</TableHead><TableHead>Perf</TableHead><TableHead>Status</TableHead>{isAdmin && <TableHead className="w-12"/>}</TableRow></TableHeader><TableBody>{rows.map(row => <TableRow key={row.requestId} className="cursor-pointer" onClick={() => setSelected(row)}>
           <TableCell className="whitespace-nowrap"><span>{formatTime(row.startTime, row.date)}</span><span className="block font-mono text-[11px] text-muted-foreground">{row.requestId.slice(0, 12)}</span></TableCell>
           <TableCell className="max-w-36 truncate" title={row.apiKey ?? ''}>{row.apiKey || '—'}</TableCell><TableCell>{row.provider || '—'}</TableCell>
@@ -80,6 +80,6 @@ export const Logs: React.FC = () => {
         </TableRow>)}</TableBody></Table></div>}
       <div className="flex items-center justify-end gap-3 border-t border-border p-3"><span className="text-xs text-muted-foreground">Page {Math.floor(offset / limit) + 1} of {Math.max(1, Math.ceil(total / limit))}</span><Button variant="outline" size="icon" disabled={!offset || loading} onClick={() => setOffset(Math.max(0, offset - limit))} aria-label="Previous page"><ChevronLeft/></Button><Button variant="outline" size="icon" disabled={offset + limit >= total || loading} onClick={() => setOffset(offset + limit)} aria-label="Next page"><ChevronRight/></Button></div>
     </Card>
-    <Dialog open={!!selected} onOpenChange={open => !open && setSelected(null)}><DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>Request details</DialogTitle><DialogDescription className="font-mono">{selected?.requestId}</DialogDescription></DialogHeader>{selected && <pre className="overflow-auto rounded-md border border-border bg-muted/40 p-4 font-mono text-xs">{JSON.stringify(selected, null, 2)}</pre>}</DialogContent></Dialog>
+    <Dialog open={!!selected} onOpenChange={open => !open && setSelected(null)}><DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>Request details</DialogTitle><DialogDescription className="font-mono">{selected?.requestId}</DialogDescription></DialogHeader>{selected && <pre className="overflow-auto  border border-border bg-muted/40 p-4 font-mono text-xs">{JSON.stringify(selected, null, 2)}</pre>}</DialogContent></Dialog>
   </main>;
 };
