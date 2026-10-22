@@ -15,7 +15,7 @@ jobs:
           repository: mcowger/plexus
           ref: 17b7e60804e3401acbe2bc2beb6b9b9042b31cce
           path: .reference/plexus
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
       - uses: oven-sh/setup-bun@v2
       - name: Install reference dependencies
         working-directory: .reference/plexus
