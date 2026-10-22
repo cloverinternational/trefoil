@@ -2,6 +2,16 @@
   "name": "trefoil-frontend",
   "private": true,
   "version": "0.1.0",
+  "description": "Trefoil admin UI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloverinternational/trefoil.git",
+    "directory": "frontend"
+  },
+  "homepage": "https://github.com/cloverinternational/trefoil",
+  "bugs": {
+    "url": "https://github.com/cloverinternational/trefoil/issues"
+  },
   "license": "MIT",
   "type": "module",
   "scripts": {

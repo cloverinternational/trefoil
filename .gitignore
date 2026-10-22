@@ -18,3 +18,11 @@ migration/*.db
 migration/*.db-*
 migration/models-store.json
 .swarmpi/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.log

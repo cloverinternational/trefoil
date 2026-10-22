@@ -1,10 +1,67 @@
-# Trefoil
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="Trefoil — self-hosted LLM API gateway and router" width="100%">
+</p>
 
-Trefoil is a self-hosted LLM API gateway and router written in Rust (axum,
-sqlx, PostgreSQL) with a React admin UI. Clients talk to one endpoint using the
-OpenAI, Anthropic or Gemini wire formats; Trefoil authenticates them, resolves
-model aliases to provider targets, translates between API formats, fails over
-between providers, enforces quotas, and records usage.
+<p align="center">
+  <a href="https://github.com/cloverinternational/trefoil/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/cloverinternational/trefoil/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0a0a0a&color=ff8300"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-ff8300?style=flat-square&labelColor=0a0a0a"></a>
+  <img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-ff8300?style=flat-square&labelColor=0a0a0a&logo=rust&logoColor=white">
+  <img alt="PostgreSQL 16" src="https://img.shields.io/badge/postgresql-16-ff8300?style=flat-square&labelColor=0a0a0a&logo=postgresql&logoColor=white">
+  <img alt="Plexus compatible" src="https://img.shields.io/badge/plexus-compatible-ff8300?style=flat-square&labelColor=0a0a0a">
+</p>
+
+<p align="center">
+  <a href="#quick-start-docker-compose">Quick start</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#admin-ui">Admin UI</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="docs/deployment.md">Deployment</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+---
+
+**Trefoil** is a self-hosted LLM API gateway and router written in Rust (axum,
+sqlx, PostgreSQL) with a React admin UI. Point every client at one endpoint
+using the OpenAI, Anthropic or Gemini wire format; Trefoil authenticates the
+request, resolves model aliases to provider targets, translates between API
+formats, fails over between providers, enforces quotas, and records usage.
+
+```mermaid
+flowchart LR
+  subgraph clients [Clients]
+    A[OpenAI SDK]
+    B[Anthropic SDK]
+    C[Gemini SDK]
+  end
+  subgraph trefoil [Trefoil]
+    direction TB
+    R[Auth · aliases · quotas] --> T[Format translation] --> F[Failover · cooldowns]
+  end
+  subgraph up [Upstreams]
+    P1[OpenAI-compatible]
+    P2[Anthropic]
+    P3[Gemini]
+    P4[OAuth subscriptions]
+    P5[Self-hosted models]
+  end
+  A & B & C --> R
+  F --> P1 & P2 & P3 & P4 & P5
+  trefoil <--> DB[(PostgreSQL)]
+```
+
+**Why Trefoil**
+
+- **One endpoint, any format.** An OpenAI client can talk to a Claude or Gemini
+  upstream (and vice versa); requests, responses and SSE streams are translated.
+- **Resilient by default.** Ordered, random, cost-, latency- and
+  usage-aware selectors, retries, provider cooldowns, stall detection and
+  per-provider concurrency limits.
+- **Operable.** Usage, cost, TTFT and throughput per request; Prometheus
+  metrics; a keyboard-driven admin UI; a full `/v0` management API.
+- **Drop-in Plexus replacement.** Same inference and management API, same data
+  model, plus a [migration script](#migrating-from-plexus).
 
 Trefoil is a port of [Plexus](https://github.com/mcowger/plexus) by Matt
 Cowger. It is API compatible with Plexus — including the `/v0` management API —
@@ -57,8 +114,26 @@ Trefoil translates requests, responses and SSE streams between them.
   server at `/mcp/plexus`.
 - Usage records with token counts, cost, TTFT and throughput; error and debug
   logs; provider performance; Prometheus metrics at `/v0/management/metrics`.
-- Admin UI: providers, models, aliases, keys, quotas, MCP, usage analytics
-  with saved dashboards, logs, errors, system logs, and a playground.
+- [Admin UI](#admin-ui): providers, models, aliases, keys, quotas, MCP, usage
+  analytics with saved dashboards, logs, errors, system logs, and a playground.
+
+## Admin UI
+
+A compact, dense console built for operators: square-edged, information-first
+and fully usable from the keyboard.
+
+| Shortcut | Action |
+|---|---|
+| <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>K</kbd> | Command palette — jump to any page |
+| <kbd>g</kbd> then a letter | Go to a page (the hint is shown next to each sidebar item, e.g. <kbd>g</kbd> <kbd>l</kbd> for Logs) |
+| <kbd>/</kbd> | Focus the page's search or filter box |
+| <kbd>[</kbd> | Collapse or expand the sidebar |
+| <kbd>?</kbd> | Show all shortcuts |
+
+Pages: overview, providers, models, aliases, API keys, quotas, usage,
+analytics (saved dashboards), metrics, logs, errors, debug traces, system logs,
+MCP servers, configuration and a playground. Light and dark themes follow the
+toggle in the header.
 
 ## Quick start (Docker Compose)
 
@@ -141,7 +216,8 @@ backend/            Rust service (crate trefoil-backend)
 frontend/           React + Vite admin UI, served by nginx (nginx.conf)
 migration/          Plexus → Trefoil data migration
 parity/             differential and oracle tests against Plexus
-docs/               deployment and parity documentation
+docs/               deployment and parity documentation, brand assets
+.github/            CI, issue and pull request templates, Dependabot
 ```
 
 The backend is a single process. At startup it runs migrations, encrypts any
@@ -192,6 +268,13 @@ The `*-live` specs drive a running stack and are skipped unless
 container uses to reach mock upstreams on the test host; default
 `host.docker.internal`, on Linux usually the Compose network gateway), and
 `TREFOIL_E2E_PLAYGROUND_MODEL` for the playground spec.
+
+## Contributing
+
+Bug reports, fixes and features are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
+for the workflow and checks, and our [Code of Conduct](CODE_OF_CONDUCT.md).
+Good first steps: run the [development setup](#development), pick an issue, and
+open a pull request against `main`.
 
 ## Parity with Plexus
 

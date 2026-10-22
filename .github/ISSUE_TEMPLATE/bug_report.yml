@@ -1,0 +1,48 @@
+name: Bug report
+description: Something is broken or behaves differently from Plexus
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do **not** include API keys, `ADMIN_KEY`, or other secrets.
+        For security issues use private vulnerability reporting instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you see instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps, request examples (redacted) or a failing test.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Trefoil version or commit
+      placeholder: "0.1.0 or a commit SHA"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Inference API, Routing / failover, Management API, Admin UI, OAuth providers, MCP, Migration, Deployment, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: How you run Trefoil (Docker Compose, source), OS, browser for UI issues.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output (System logs page or container logs). Redact secrets.
+      render: shell

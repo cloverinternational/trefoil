@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Admin UI: compact, square-edged redesign across every page (no rounded
+  corners or shadows, 13px base type, denser tables, cards and forms), a
+  brighter destructive color in dark mode, and a full-width layout.
+- Admin UI: catalog filter toolbar (providers, models, aliases, API keys) is a
+  single row with inline group and tag controls.
+
+### Added
+
+- Admin UI keyboard shortcuts: command palette (Ctrl/⌘+K), `g` + letter
+  navigation, `/` to focus search, `[` to collapse the sidebar, `?` for help.
+- Brand assets (`docs/assets/banner.svg`, `docs/assets/logo.svg`) and a UI
+  favicon.
+- Community health files: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, issue and
+  pull request templates, Dependabot configuration and `.editorconfig`.
+- Cargo and npm package metadata (`rust-version`, repository, description).
+
+### Fixed
+
+- `Button` ignored `asChild`, so link buttons rendered as a `<button>` wrapping
+  an anchor (the Models "Add model" button wrapped onto two lines).
+- Overview used CSS classes that were not defined in this app, leaving an
+  unreadable banner.
+
 ## [0.1.0] - 2026-10-18
 
 First public release. Trefoil is a Rust port of

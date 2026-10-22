@@ -3,6 +3,14 @@ name = "trefoil-backend"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+rust-version = "1.88"
+description = "Self-hosted LLM API gateway and router: one endpoint for OpenAI, Anthropic and Gemini formats, with failover, quotas and usage tracking. Plexus-compatible."
+repository = "https://github.com/cloverinternational/trefoil"
+homepage = "https://github.com/cloverinternational/trefoil"
+readme = "../README.md"
+keywords = ["llm", "gateway", "router", "openai", "anthropic"]
+categories = ["web-programming::http-server"]
+publish = false
 
 [dependencies]
 axum = { version = "0.7", features = ["multipart"] }
