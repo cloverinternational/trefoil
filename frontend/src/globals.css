@@ -53,7 +53,7 @@
   --chart-4: #a3a3a3;
   --chart-grid: #e5e5e5;
   --chart-label: #737373;
-  --radius: 0.5rem;
+  --radius: 0;
   --sidebar: #ffffff;
   --sidebar-foreground: #171717;
 }
@@ -73,7 +73,7 @@
   --muted-foreground: hsl(0 0% 64%);
   --accent: hsl(31 100% 15%);
   --accent-foreground: hsl(31 100% 60%);
-  --destructive: hsl(0 63% 31%);
+  --destructive: hsl(0 72% 56%);
   --destructive-foreground: hsl(0 0% 98%);
   --success: #34d399;
   --border: hsl(0 0% 15%);
@@ -110,9 +110,8 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --radius-xs: 0; --radius-sm: 0; --radius-md: 0; --radius-lg: 0;
+  --radius-xl: 0; --radius-2xl: 0; --radius-3xl: 0; --radius-4xl: 0;
   --font-heading: "Red Hat Display", Geist, ui-sans-serif, system-ui, sans-serif;
   --font-body: Geist, ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -123,12 +122,21 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
 }
+td, th, .stat-num, code, pre, kbd { font-variant-numeric: tabular-nums; }
+kbd {
+  font-family: var(--font-mono); font-size: 10px; padding: 0 4px; line-height: 16px;
+  border: 1px solid var(--border); background: var(--muted); color: var(--muted-foreground);
+}
+tbody tr:hover { background: var(--muted); }
+thead th { position: sticky; top: 0; background: var(--card); z-index: 1; }
 
 .display {
   font-family: var(--font-heading);
-  font-size: clamp(1.75rem, 1.3rem + 1.2vw, 2.25rem);
+  font-size: 1.125rem;
   letter-spacing: -0.025em;
   line-height: 1.15;
   font-weight: 700;
@@ -147,7 +155,7 @@ body {
   letter-spacing: -0.02em;
 }
 * { border-color: var(--border); }
-:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: var(--muted); }
-::-webkit-scrollbar-thumb { background: var(--muted-foreground); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: var(--muted-foreground); border: 2px solid var(--muted); }

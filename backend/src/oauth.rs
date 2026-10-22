@@ -1,58 +1,30 @@
-//! OAuth management discovery surface.
+//! OAuth management routes — port of pinned Plexus
+//! `routes/management/oauth.ts` on top of [`crate::oauth_login`].
 //!
-//! Plexus discovers these descriptors dynamically from its pinned pi-ai
-//! provider registry. Trefoil has no pi-ai dependency, so this list mirrors
-//! the reference registry at the pinned Plexus revision and must be refreshed
-//! when that dependency's OAuth provider set changes.
+//! Plexus discovers its descriptors from the pinned pi-ai registry; Trefoil
+//! mirrors that list (`oauth_login::PROVIDERS`) and must be refreshed when the
+//! pinned dependency's OAuth provider set changes.
 
 use crate::{
     auth::{resolve_principal, Principal},
+    oauth_login::{database_store, OAuthSession},
     AppState,
 };
 use axum::{
-    extract::{Path, Query, State},
+    body::Bytes,
+    extract::{Path, RawQuery, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand::{distributions::Alphanumeric, Rng};
-use serde::Deserialize;
-use serde::Serialize;
-use sha2::{Digest, Sha256};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use serde_json::{json, Map, Value};
+use std::time::Duration;
 
-const SUPPORTED_PROVIDERS: &[&str] = &[
-    "anthropic",
-    "github-copilot",
-    "kimi-coding",
-    "openai-codex",
-    "openrouter",
-    "xai",
-];
-
-#[derive(Debug, Clone, Copy)]
-struct OAuthCapabilities {
-    callback: bool,
-    manual_code: bool,
-}
-
-fn capabilities(provider: &str) -> Option<OAuthCapabilities> {
-    match provider {
-        "anthropic" | "openai-codex" => Some(OAuthCapabilities {
-            callback: true,
-            manual_code: false,
-        }),
-        "github-copilot" | "kimi-coding" | "openrouter" | "xai" => Some(OAuthCapabilities {
-            callback: false,
-            manual_code: true,
-        }),
-        _ => None,
-    }
-}
-
+/// Plexus `isKnownOAuthProviderId`.
 pub(crate) fn is_supported_provider(provider: &str) -> bool {
-    SUPPORTED_PROVIDERS.contains(&provider)
+    crate::oauth_login::PROVIDERS
+        .iter()
+        .any(|(id, _, _)| *id == provider)
 }
 
 pub fn router() -> Router<AppState> {
@@ -62,24 +34,20 @@ pub fn router() -> Router<AppState> {
             axum::routing::get(providers),
         )
         .route(
-            "/v0/management/oauth/credentials/status",
-            axum::routing::get(credential_status),
+            "/v0/management/oauth/sessions",
+            axum::routing::post(create_session),
         )
         .route(
             "/v0/management/oauth/credentials",
             axum::routing::delete(delete_credentials),
         )
         .route(
+            "/v0/management/oauth/credentials/status",
+            axum::routing::get(credential_status),
+        )
+        .route(
             "/v0/management/oauth/sessions/:id",
             axum::routing::get(get_session),
-        )
-        .route(
-            "/v0/management/oauth/sessions",
-            axum::routing::post(create_session),
-        )
-        .route(
-            "/v0/management/oauth/sessions/:id/cancel",
-            axum::routing::post(cancel_session),
         )
         .route(
             "/v0/management/oauth/sessions/:id/prompt",
@@ -90,445 +58,130 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(manual_code),
         )
         .route(
-            "/v0/management/oauth/sessions/:id/callback",
-            axum::routing::get(callback),
+            "/v0/management/oauth/sessions/:id/select",
+            axum::routing::post(select_session),
+        )
+        .route(
+            "/v0/management/oauth/sessions/:id/cancel",
+            axum::routing::post(cancel_session),
         )
         .route("/v0/management/oauth/models", axum::routing::get(models))
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OAuthSession {
-    pub id: String,
-    pub provider_id: String,
-    pub account_id: String,
-    pub status: String,
-    pub auth_info: Option<serde_json::Value>,
-    pub prompt: Option<serde_json::Value>,
-    pub progress: Vec<serde_json::Value>,
-    pub error: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub expires_at: i64,
-    #[serde(skip)]
-    pub pkce_verifier: Option<String>,
+#[allow(clippy::result_large_err)]
+fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    match resolve_principal(state, headers.get("x-admin-key").and_then(|value| value.to_str().ok())) {
+        Some(Principal::Admin) => Ok(()),
+        Some(Principal::Limited { .. }) => Err((StatusCode::FORBIDDEN, Json(json!({"error": {"message": "Admin privileges required", "type": "forbidden", "code": 403}}))).into_response()),
+        None => Err((StatusCode::UNAUTHORIZED, Json(json!({"error": {"message": "Unauthorized", "type": "auth_error", "code": 401}}))).into_response()),
+    }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateSession {
-    provider_id: String,
-    account_id: String,
+fn error(status: StatusCode, message: impl Into<String>) -> Response {
+    (status, Json(json!({"error": message.into()}))).into_response()
 }
 
-#[derive(Debug, Deserialize)]
-struct SessionInput {
-    value: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CallbackQuery {
-    code: Option<String>,
-    state: Option<String>,
-    error: Option<String>,
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
 fn session_response(session: OAuthSession) -> Response {
-    Json(serde_json::json!({"data": session})).into_response()
-}
-fn session_id() -> String {
-    rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect()
+    Json(json!({"data": session})).into_response()
 }
 
-fn openrouter_authorization_url(origin: &str, session_id: &str, verifier: &str) -> Option<String> {
-    let mut callback = url::Url::parse(origin).ok()?;
-    if !matches!(callback.scheme(), "http" | "https") || callback.host_str().is_none() || !callback.username().is_empty() || callback.password().is_some() { return None; }
-    callback.set_path(&format!("/v0/management/oauth/sessions/{session_id}/callback"));
-    callback.set_query(None);
-    callback.query_pairs_mut().append_pair("state", session_id);
-    callback.set_fragment(None);
-    let mut authorize = url::Url::parse("https://openrouter.ai/auth").ok()?;
-    authorize.query_pairs_mut().append_pair("callback_url", callback.as_str())
-        .append_pair("code_challenge", &URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())))
-        .append_pair("code_challenge_method", "S256");
-    Some(authorize.into())
+/// The request body as zod sees it: `None` when absent (`undefined`).
+fn body_value(body: &Bytes) -> Option<Value> {
+    if body.is_empty() {
+        return None;
+    }
+    serde_json::from_slice(body).ok()
 }
 
-fn authorization_url(provider: &str, session_id: &str, verifier: &str) -> Option<String> {
-    let endpoint = match provider {
-        "anthropic" => "https://claude.ai/oauth/authorize",
-        "github-copilot" => "https://github.com/login/oauth/authorize",
-        "kimi-coding" => "https://auth.kimi.com/oauth/authorize",
-        "openai-codex" => "https://auth.openai.com/oauth/authorize",
-        "openrouter" => "https://openrouter.ai/auth",
-        "xai" => "https://accounts.x.ai/oauth/authorize",
-        _ => return None,
+/// `schema.safeParse(body)` for `z.object({...})`, including the
+/// `undefined` body case that `zod::Schema::safe_parse` cannot express.
+fn parse_body(schema: &crate::zod::Schema, body: &Bytes, label: &str) -> Result<Value, Response> {
+    let Some(value) = body_value(body) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": label, "details": [{"expected": "object", "code": "invalid_type", "path": [], "message": "Invalid input: expected object, received undefined"}]})),
+        )
+            .into_response());
     };
-    if provider == "openrouter" {
-        let origin = std::env::var("TREFOIL_PUBLIC_URL").unwrap_or_else(|_| format!("http://127.0.0.1:{}", std::env::var("PORT").unwrap_or_else(|_| "8080".into())));
-        return openrouter_authorization_url(&origin, session_id, verifier);
-    }
-    let origin = std::env::var("TREFOIL_PUBLIC_URL").ok().filter(|value| !value.trim().is_empty())
-        .or_else(|| std::env::var("PUBLIC_URL").ok().filter(|value| !value.trim().is_empty()))?;
-    let mut callback = url::Url::parse(&origin).ok()?;
-    if !matches!(callback.scheme(), "http" | "https") || callback.host_str().is_none() || !callback.username().is_empty() || callback.password().is_some() { return None; }
-    callback.set_path(&format!("/v0/management/oauth/sessions/{session_id}/callback"));
-    callback.set_query(None);
-    callback.set_fragment(None);
-    let redirect = callback.to_string();
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let mut url = url::Url::parse(endpoint).ok()?;
-    url.query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", crate::oauth_transport::provider_spec(provider)?.client_id)
-        .append_pair("redirect_uri", &redirect)
-        .append_pair("state", session_id)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256");
-    if provider == "anthropic" {
-        url.query_pairs_mut().append_pair("code", "true").append_pair("scope", "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload");
-    }
-    Some(url.to_string())
+    schema.safe_parse(&value).map_err(|details| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": label, "details": details})),
+        )
+            .into_response()
+    })
 }
 
-async fn start_device_session(state: AppState, account: String, provider: String) -> Response {
-    let Some(pool)=state.inner.database.as_ref() else {
-        return (StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"PostgreSQL is required for device login"}))).into_response();
-    };
-    if crate::credential_crypto::CredentialKey::from_env().is_err() {
-        return (StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"OAuth credential encryption is not configured"}))).into_response();
-    }
-    let device=match if provider == "kimi-coding" {crate::kimi_oauth::start().await} else if provider == "xai" {crate::xai_oauth::start().await} else {crate::copilot_oauth::start().await} {Ok(device)=>device,Err(message)=>return (StatusCode::BAD_GATEWAY,Json(serde_json::json!({"error":message}))).into_response()};
-    let now=now_ms();let id=session_id();
-    let session=OAuthSession{id:id.clone(),provider_id:provider.clone(),account_id:account,status:"waiting".into(),auth_info:Some(serde_json::json!({"url":device.verification_uri,"userCode":device.user_code,"instructions":format!("Enter code {} at the verification URL.",device.user_code)})),prompt:None,progress:vec![],error:None,created_at:now,updated_at:now,expires_at:now.saturating_add(device.expires_in.as_millis() as i64),pkce_verifier:None};
-    if crate::database::upsert_oauth_session(pool,&session).await.is_err(){return (StatusCode::INTERNAL_SERVER_ERROR,Json(serde_json::json!({"error":"Unable to persist device session"}))).into_response();}
-    state.inner.oauth_sessions.write().unwrap().insert(id.clone(),session.clone());
-    let account_id=session.account_id.clone();
-    tokio::spawn(async move {
-        let mut interval=device.interval;
-        loop {
-            if !state.inner.oauth_sessions.read().unwrap().get(&id).is_some_and(|s|s.status=="waiting"&&s.expires_at>now_ms()){break;}
-            tokio::time::sleep(interval).await;
-            if !state.inner.oauth_sessions.read().unwrap().get(&id).is_some_and(|s|s.status=="waiting"&&s.expires_at>now_ms()){break;}
-            let poll=if provider=="kimi-coding" {
-                match crate::kimi_oauth::poll(&device.secret,interval).await {
-                    Ok(crate::kimi_oauth::Poll::Pending)=>Ok(None),
-                    Ok(crate::kimi_oauth::Poll::SlowDown(next))=>{interval=next;Ok(None)},
-                    Ok(crate::kimi_oauth::Poll::Complete{access,refresh,expires})=>Ok(Some((access,refresh,expires))),
-                    Err(error)=>Err(error),
-                }
-            } else if provider=="xai" {
-                match crate::xai_oauth::poll(&device.secret,interval).await {
-                    Ok(crate::xai_oauth::Poll::Pending)=>Ok(None),
-                    Ok(crate::xai_oauth::Poll::SlowDown(next))=>{interval=next;Ok(None)},
-                    Ok(crate::xai_oauth::Poll::Complete{access,refresh,expires})=>Ok(Some((access,refresh,expires))),
-                    Err(error)=>Err(error),
-                }
-            } else {
-                match crate::copilot_oauth::poll(&device.secret,interval).await {
-                    Ok(crate::copilot_oauth::Poll::Pending)=>Ok(None),
-                    Ok(crate::copilot_oauth::Poll::SlowDown(next))=>{interval=next;Ok(None)},
-                    Ok(crate::copilot_oauth::Poll::Complete(github_token))=>crate::copilot_oauth::exchange(&github_token).await.map(|(access,expires)|Some((access,github_token,expires))),
-                    Err(error)=>Err(error),
-                }
-            };
-            match poll {
-                Ok(None)=>{},
-                Ok(Some((access,refresh,expires)))=>{
-                    let Some(pool)=state.inner.database.as_ref() else {break};
-                    if !matches!(crate::database::claim_oauth_exchange(pool,&id).await,Ok(true)){break;}
-                    if let Some(current)=state.inner.oauth_sessions.write().unwrap().get_mut(&id){if current.status!="waiting"{break;}current.status="exchanging".into();}
-                    match crate::database::complete_oauth_exchange(pool,&id,&provider,&account_id,&access,&refresh,expires).await {
-                        Ok(true)=>{let _=update_session(&state,&id,"manual-code",Some("complete".into())).await;},
-                        Ok(false)=>{},
-                        Err(_)=>{let _=oauth_failed(&state,&id,"Unable to persist device credentials",StatusCode::INTERNAL_SERVER_ERROR).await;},
-                    }
-                    break;
-                }
-                Err(message)=>{let _=oauth_failed(&state,&id,&message,StatusCode::BAD_GATEWAY).await;break;}
+/// Fastify query object (`fast-querystring`: repeated keys become arrays).
+fn query_value(raw: Option<String>) -> Value {
+    let mut out = Map::new();
+    for (key, value) in url::form_urlencoded::parse(raw.unwrap_or_default().as_bytes()) {
+        let value = Value::String(value.into_owned());
+        match out.get_mut(key.as_ref()) {
+            Some(Value::Array(items)) => items.push(value),
+            Some(existing) => {
+                let first = existing.take();
+                *existing = Value::Array(vec![first, value]);
+            }
+            None => {
+                out.insert(key.into_owned(), value);
             }
         }
-        let expired={let mut sessions=state.inner.oauth_sessions.write().unwrap();sessions.get_mut(&id).and_then(|session| {
-            if session.status=="waiting" && session.expires_at<=now_ms() {session.status="expired".into();session.auth_info=None;session.error=Some("Device authorization expired".into());Some(session.clone())} else {None}
-        })};
-        if let (Some(session),Some(pool))=(expired,state.inner.database.as_ref()){let _=crate::database::upsert_oauth_session(pool,&session).await;}
-    });
-    session_response(session)
+    }
+    Value::Object(out)
 }
 
-async fn start_codex_device_session(state:AppState,account:String)->Response {
- let Some(pool)=state.inner.database.as_ref() else{return(StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"PostgreSQL is required for device login"}))).into_response()};
- if crate::credential_crypto::CredentialKey::from_env().is_err(){return(StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"error":"OAuth credential encryption is not configured"}))).into_response()};
- let device=match crate::codex_oauth::start().await{Ok(device)=>device,Err(error)=>return(StatusCode::BAD_GATEWAY,Json(serde_json::json!({"error":error}))).into_response()};let now=now_ms();let id=session_id();let session=OAuthSession{id:id.clone(),provider_id:"openai-codex".into(),account_id:account,status:"waiting".into(),auth_info:Some(serde_json::json!({"url":"https://auth.openai.com/codex/device","userCode":device.code,"instructions":format!("Enter code {} at the verification URL.",device.code)})),prompt:None,progress:vec![],error:None,created_at:now,updated_at:now,expires_at:now+900000,pkce_verifier:None};if crate::database::upsert_oauth_session(pool,&session).await.is_err(){return(StatusCode::INTERNAL_SERVER_ERROR,Json(serde_json::json!({"error":"Unable to persist device session"}))).into_response()};state.inner.oauth_sessions.write().unwrap().insert(id.clone(),session.clone());let account_id=session.account_id.clone();tokio::spawn(async move{let mut interval=device.interval;loop{if !state.inner.oauth_sessions.read().unwrap().get(&id).is_some_and(|s|s.status=="waiting"&&s.expires_at>now_ms()){break}tokio::time::sleep(interval).await;match crate::codex_oauth::poll(&device).await{Ok(crate::codex_oauth::Poll::Pending)=>{},Ok(crate::codex_oauth::Poll::SlowDown)=>interval=interval.saturating_add(Duration::from_secs(5)),Ok(crate::codex_oauth::Poll::Complete{code,verifier})=>{let Some(pool)=state.inner.database.as_ref()else{break};if !matches!(crate::database::claim_oauth_exchange(pool,&id).await,Ok(true)){break}if let Some(s)=state.inner.oauth_sessions.write().unwrap().get_mut(&id){s.status="exchanging".into()}let transport=crate::oauth_transport::ReqwestTransport;match crate::oauth_transport::exchange(&transport,"openai-codex",&code,&verifier,"https://auth.openai.com/deviceauth/callback").await{Ok(token)=>{let expires=now_ms()+token.expires_in*1000;let _=crate::database::complete_oauth_exchange(pool,&id,"openai-codex",&account_id,&token.access_token,&token.refresh_token,expires).await;let _=update_session(&state,&id,"manual-code",Some("complete".into())).await;}Err(_)=>{let _=oauth_failed(&state,&id,"Codex device exchange failed",StatusCode::BAD_GATEWAY).await;}}break},Err(error)=>{let _=oauth_failed(&state,&id,&error,StatusCode::BAD_GATEWAY).await;break}}}});session_response(session)}
+fn provider_account_schema() -> crate::zod::Schema {
+    use crate::zod::*;
+    object(vec![
+        ("providerId", string().min(1.0)),
+        ("accountId", string().min(1.0)),
+    ])
+}
+
+fn input_schema() -> crate::zod::Schema {
+    use crate::zod::*;
+    object(vec![("value", string())])
+}
+
+async fn providers(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let data: Vec<Value> = state
+        .inner
+        .oauth_sessions
+        .list_providers()
+        .into_iter()
+        .map(|(id, name, cb)| json!({"id": id, "name": name, "usesCallbackServer": cb}))
+        .collect();
+    let total = data.len();
+    Json(json!({"data": data, "total": total})).into_response()
+}
 
 async fn create_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<CreateSession>,
+    body: Bytes,
 ) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    if body.provider_id.trim().is_empty() || body.account_id.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"providerId and accountId are required"})),
-        )
-            .into_response();
-    }
-    if !is_supported_provider(&body.provider_id) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"Unsupported OAuth provider"})),
-        )
-            .into_response();
-    }
-    if body.provider_id == "openai-codex" {return start_codex_device_session(state,body.account_id).await;}
-    if matches!(body.provider_id.as_str(), "github-copilot" | "kimi-coding" | "xai") { return start_device_session(state,body.account_id,body.provider_id).await; }
-    let now = now_ms();
-    let id = session_id();
-    let verifier: String = rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(64)
-        .map(char::from)
-        .collect();
-    let Some(auth_url) = authorization_url(&body.provider_id, &id, &verifier) else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Invalid OAuth public callback URL configuration"}))).into_response();
-    };
-    let session = OAuthSession {
-        id: id.clone(),
-        provider_id: body.provider_id.clone(),
-        account_id: body.account_id,
-        status: "waiting".into(),
-        auth_info: Some(
-            serde_json::json!({"url": auth_url, "instructions":"Open the authorization URL to continue."}),
-        ),
-        prompt: None,
-        progress: vec![serde_json::json!({"status":"waiting"})],
-        error: None,
-        created_at: now,
-        updated_at: now,
-        expires_at: now + 20 * 60 * 1000,
-        pkce_verifier: Some(verifier.clone()),
-    };
-    state
-        .inner
-        .oauth_sessions
-        .write()
-        .unwrap()
-        .insert(id, session.clone());
-    state
-        .inner
-        .oauth_pkce_verifiers
-        .write()
-        .unwrap()
-        .insert(session.id.clone(), verifier);
-    if let Some(pool) = &state.inner.database {
-        if let Err(error) = crate::database::upsert_oauth_session(pool, &session).await {
-            eprintln!("oauth session persistence failed: {error}");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error":"Unable to persist OAuth session"})),
-            )
-                .into_response();
-        }
-    }
-    session_response(session)
-}
-
-fn claim_exchange(state: &AppState, id: &str) -> Result<(OAuthSession, String), Response> {
-    let mut sessions = state.inner.oauth_sessions.write().unwrap();
-    let Some(session) = sessions.get_mut(id) else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error":"OAuth session not found"})),
-        )
-            .into_response());
-    };
-    if session.status != "waiting" || session.expires_at <= now_ms() {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error":"OAuth session is no longer active"})),
-        )
-            .into_response());
-    }
-    let verifier = state
-        .inner
-        .oauth_pkce_verifiers
-        .write()
-        .unwrap()
-        .remove(id)
-        .or_else(|| session.pkce_verifier.take());
-    let Some(verifier) = verifier else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"OAuth verifier unavailable"})),
-        )
-            .into_response());
-    };
-    session.pkce_verifier = None;
-    session.status = "exchanging".into();
-    session.updated_at = now_ms();
-    Ok((session.clone(), verifier))
-}
-
-async fn callback(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Query(query): Query<CallbackQuery>,
-) -> Response {
-    // The state parameter binds the browser redirect to the server-side session.
-    if query.state.as_deref() != Some(id.as_str()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"Invalid OAuth state"})),
-        )
-            .into_response();
-    }
-    if let Some(error) = query.error {
-        return oauth_failed(
-            &state,
-            &id,
-            &format!("Authorization was denied: {error}"),
-            StatusCode::BAD_REQUEST,
-        )
-        .await;
-    }
-    let Some(code) = query.code.filter(|code| !code.trim().is_empty()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"Authorization code is required"})),
-        )
-            .into_response();
-    };
-    let session = match state.inner.oauth_sessions.read().unwrap().get(&id).cloned() {
-        Some(session) if session.expires_at > now_ms() && session.status == "waiting" => session,
-        Some(_) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error":"OAuth session is no longer active"})),
-            )
-                .into_response()
-        }
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error":"OAuth session not found"})),
-            )
-                .into_response()
-        }
-    };
-    if session.provider_id != "openrouter" && !capabilities(&session.provider_id).is_some_and(|caps| caps.callback) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"OAuth callback flow is not supported by this provider"})),
-        )
-            .into_response();
-    }
-    let (session, verifier) = match claim_exchange(&state, &id) {
-        Ok(claim) => claim,
+    let parsed = match parse_body(&provider_account_schema(), &body, "Invalid request body") {
+        Ok(parsed) => parsed,
         Err(response) => return response,
     };
-    // Claim durable state before contacting the provider. Only one process
-    // may exchange a session, even if several loaded the same waiting snapshot.
-    if let Some(pool) = &state.inner.database {
-        match crate::database::claim_oauth_exchange(pool, &id).await {
-            Ok(true) => {},
-            Ok(false) => return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response(),
-            Err(_) => return oauth_failed(&state, &id, "Unable to persist OAuth session", StatusCode::INTERNAL_SERVER_ERROR).await,
-        }
-    }
-    let Some(redirect) = callback_redirect_uri(&id) else {
-        return oauth_failed(&state, &id, "OAuth public callback URL is not configured", StatusCode::SERVICE_UNAVAILABLE).await;
-    };
-    let transport = crate::oauth_transport::ReqwestTransport;
-    let token = match crate::oauth_transport::exchange_with_state(
-        &transport,
-        &session.provider_id,
-        &code,
-        &verifier,
-        &redirect,
-        Some(&id),
-    )
-    .await
-    {
-        Ok(token) => token,
-        Err(crate::oauth_transport::OAuthTransportError::Http { .. }) => {
-            return oauth_failed(
-                &state,
-                &id,
-                "OAuth token exchange rejected",
-                StatusCode::BAD_GATEWAY,
-            )
-            .await;
-        }
-        Err(_) => {
-            return oauth_failed(
-                &state,
-                &id,
-                "OAuth token request failed",
-                StatusCode::BAD_GATEWAY,
-            )
-            .await
-        }
-    };
-    if !state.inner.oauth_sessions.read().unwrap().get(&id)
-        .is_some_and(|current| current.status == "exchanging" && current.expires_at > now_ms()) {
-        return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response();
-    }
-    if state.inner.database.is_none() {
-        return oauth_failed(&state, &id, "PostgreSQL is required to persist OAuth credentials", StatusCode::SERVICE_UNAVAILABLE).await;
-    }
-    let access = token.access_token;
-    let refresh = token.refresh_token;
-    let expires = if session.provider_id == "openrouter" && token.expires_in == 0 {
-        i64::MAX
-    } else {
-        now_ms().saturating_add(token.expires_in.saturating_mul(1000))
-    };
-    if let Some(pool) = &state.inner.database {
-        match crate::database::complete_oauth_exchange(pool, &id, &session.provider_id, &session.account_id, &access, &refresh, expires).await {
-            Ok(true) => {},
-            Ok(false) => return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response(),
-            Err(_) => return oauth_failed(&state, &id, "Unable to persist OAuth credentials", StatusCode::INTERNAL_SERVER_ERROR).await,
-        }
-    }
-    state
+    let provider = parsed["providerId"].as_str().unwrap_or_default();
+    let account = parsed["accountId"].as_str().unwrap_or_default();
+    match state
         .inner
-        .oauth_pkce_verifiers
-        .write()
-        .unwrap()
-        .remove(&id);
-    if let Some(current) = state.inner.oauth_sessions.write().unwrap().get_mut(&id) {
-        current.pkce_verifier = None;
+        .oauth_sessions
+        .create_session(provider, account, database_store(state.clone()))
+        .await
+    {
+        Ok(session) => session_response(session),
+        Err(message) => error(StatusCode::BAD_REQUEST, message),
     }
-    update_session(&state, &id, "manual-code", Some("complete".into())).await
-}
-
-async fn oauth_failed(state: &AppState, id: &str, message: &str, status: StatusCode) -> Response {
-    let _ = update_session(state, id, "fail", Some(message.to_string())).await;
-    (status, Json(serde_json::json!({"error":message}))).into_response()
-}
-
-fn callback_redirect_uri(id: &str) -> Option<String> {
-    let origin = std::env::var("TREFOIL_PUBLIC_URL").ok().filter(|value| !value.trim().is_empty())
-        .or_else(|| std::env::var("PUBLIC_URL").ok().filter(|value| !value.trim().is_empty()))?;
-    let mut callback = url::Url::parse(&origin).ok()?;
-    if !matches!(callback.scheme(), "http" | "https") || callback.host_str().is_none() || !callback.username().is_empty() || callback.password().is_some() { return None; }
-    callback.set_path(&format!("/v0/management/oauth/sessions/{id}/callback"));
-    callback.set_query(None);
-    callback.set_fragment(None);
-    Some(callback.to_string())
 }
 
 async fn get_session(
@@ -539,99 +192,71 @@ async fn get_session(
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    match state.inner.oauth_sessions.read().unwrap().get(&id).cloned() {
+    match state.inner.oauth_sessions.get_session(&id) {
         Some(session) => session_response(session),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error":"OAuth session not found"})),
-        )
-            .into_response(),
+        None => error(StatusCode::NOT_FOUND, "OAuth session not found"),
     }
 }
 
-async fn update_session(
-    state: &AppState,
-    id: &str,
-    action: &str,
-    value: Option<String>,
+#[derive(Clone, Copy)]
+enum InputKind {
+    Prompt,
+    ManualCode,
+    Select,
+}
+
+async fn submit_input(
+    state: AppState,
+    headers: HeaderMap,
+    id: String,
+    body: Bytes,
+    kind: InputKind,
 ) -> Response {
-    let snapshot = {
-        let mut sessions = state.inner.oauth_sessions.write().unwrap();
-        let Some(session) = sessions.get_mut(id) else {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error":"OAuth session not found"})),
-            )
-                .into_response();
-        };
-        if session.expires_at <= now_ms()
-            && !matches!(
-                session.status.as_str(),
-                "complete" | "cancelled" | "failed" | "expired"
-            )
-        {
-            session.status = "expired".into();
-        }
-        if matches!(
-            session.status.as_str(),
-            "complete" | "cancelled" | "failed" | "expired"
-        ) {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error":"OAuth session is no longer active"})),
-            )
-                .into_response();
-        }
-        match action {
-            "cancel" => {
-                session.status = "cancelled".into();
-                session.pkce_verifier = None;
-                session.prompt = None;
-            }
-            "prompt" => {
-                if session.status == "exchanging" {
-                    return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth exchange is already in progress"}))).into_response();
-                }
-                session.status = "waiting".into();
-                session.prompt = None;
-                session
-                    .progress
-                    .push(serde_json::json!({"prompt":value,"status":"waiting"}));
-            }
-            "manual-code" => {
-                session.status = "complete".into();
-                session.auth_info = None;
-                session
-                    .progress
-                    .push(serde_json::json!({"status":"complete"}));
-            }
-            "fail" => {
-                session.status = "failed".into();
-                session.prompt = None;
-                session.error = value;
-                session.progress.push(serde_json::json!({
-                    "status": "failed",
-                    "error": session.error.clone()
-                }));
-            }
-            _ => unreachable!(),
-        }
-        session.updated_at = now_ms();
-        session.clone()
-    };
-    if let Some(pool) = &state.inner.database {
-        if crate::database::upsert_oauth_session(pool, &snapshot)
-            .await
-            .is_err()
-        {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error":"Unable to persist OAuth session"})),
-            )
-                .into_response();
-        }
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
     }
-    session_response(snapshot)
+    let parsed = match parse_body(&input_schema(), &body, "Invalid request body") {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+    let value = parsed["value"].as_str().unwrap_or_default().to_string();
+    let manager = &state.inner.oauth_sessions;
+    let result = match kind {
+        InputKind::Prompt => manager.submit_prompt(&id, value).await,
+        InputKind::ManualCode => manager.submit_manual_code(&id, value).await,
+        InputKind::Select => manager.submit_select(&id, value).await,
+    };
+    match result {
+        Ok(session) => session_response(session),
+        Err(message) => error(StatusCode::BAD_REQUEST, message),
+    }
+}
+
+async fn prompt_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    submit_input(state, headers, id, body, InputKind::Prompt).await
+}
+
+async fn manual_code(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    submit_input(state, headers, id, body, InputKind::ManualCode).await
+}
+
+async fn select_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    submit_input(state, headers, id, body, InputKind::Select).await
 }
 
 async fn cancel_session(
@@ -642,628 +267,411 @@ async fn cancel_session(
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    let response = update_session(&state, &id, "cancel", None).await;
-    if response.status().is_success() {
-        // A cancelled flow can never reach its callback. Do not retain the
-        // one-shot verifier until the session's normal expiry cleanup.
-        state
-            .inner
-            .oauth_pkce_verifiers
-            .write()
-            .unwrap()
-            .remove(&id);
-    }
-    response
-}
-async fn prompt_session(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(body): Json<SessionInput>,
-) -> Response {
-    if let Err(response) = require_admin(&state, &headers) {
-        return response;
-    }
-    if body.value.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"value is required"})),
-        )
-            .into_response();
-    }
-    update_session(&state, &id, "prompt", Some(body.value)).await
-}
-async fn manual_code(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(body): Json<SessionInput>,
-) -> Response {
-    if let Err(response) = require_admin(&state, &headers) {
-        return response;
-    }
-    if body.value.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"value is required"})),
-        )
-            .into_response();
-    }
-    let supported = state
-        .inner
-        .oauth_sessions
-        .read()
-        .unwrap()
-        .get(&id)
-        .and_then(|session| capabilities(&session.provider_id))
-        .is_some_and(|caps| caps.manual_code);
-    if !supported {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"OAuth manual-code flow is not supported by this provider"})),
-        )
-            .into_response();
-    }
-    let provider = state.inner.oauth_sessions.read().unwrap().get(&id).map(|s|s.provider_id.clone());
-    if provider.as_deref() == Some("openrouter") {
-        let code = match url::Url::parse(body.value.trim()) {
-            Ok(url) => url.query_pairs().find(|(key,_)|key == "code").map(|(_,value)|value.into_owned()),
-            Err(_) => Some(body.value.trim().to_owned()),
-        };
-        return callback(State(state), Path(id.clone()), Query(CallbackQuery { code, state:Some(id), error:None })).await;
-    }
-    let Some(provider) = provider else {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"OAuth session not found"}))).into_response();
-    };
-    let Some(pool) = state.inner.database.as_ref() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"PostgreSQL is required to persist OAuth credentials"}))).into_response();
-    };
-    if crate::credential_crypto::CredentialKey::from_env().is_err() {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"OAuth credential encryption is not configured"}))).into_response();
-    }
-    if !matches!(crate::database::claim_oauth_exchange(pool, &id).await, Ok(true)) {
-        return (StatusCode::CONFLICT, Json(serde_json::json!({"error":"OAuth session is no longer active"}))).into_response();
-    }
-    let (account, result) = {
-        let session = state.inner.oauth_sessions.read().unwrap().get(&id).cloned();
-        let Some(session) = session else { return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error":"OAuth session not found"}))).into_response(); };
-        if let Some(current) = state.inner.oauth_sessions.write().unwrap().get_mut(&id) { current.status = "exchanging".into(); }
-        let account = session.account_id;
-        let result = match provider.as_str() {
-            "github-copilot" => match crate::copilot_oauth::poll(body.value.trim(), Duration::from_secs(5)).await {
-                Ok(crate::copilot_oauth::Poll::Complete(token)) => crate::copilot_oauth::exchange(&token).await.map(|(access, expires)| (access, token, expires)),
-                Ok(_) => Err("Device authorization is still pending".into()),
-                Err(error) => Err(error),
-            },
-            "kimi-coding" => crate::kimi_oauth::poll(body.value.trim(), Duration::from_secs(5)).await.and_then(|poll| match poll { crate::kimi_oauth::Poll::Complete{access,refresh,expires} => Ok((access,refresh,expires)), crate::kimi_oauth::Poll::Pending|crate::kimi_oauth::Poll::SlowDown(_) => Err("Device authorization is still pending".into()) }),
-            "xai" => crate::xai_oauth::poll(body.value.trim(), Duration::from_secs(5)).await.and_then(|poll| match poll { crate::xai_oauth::Poll::Complete{access,refresh,expires} => Ok((access,refresh,expires)), crate::xai_oauth::Poll::Pending|crate::xai_oauth::Poll::SlowDown(_) => Err("Device authorization is still pending".into()) }),
-            _ => Err("Manual code exchange is unsupported for this provider".into()),
-        };
-        (account, result)
-    };
-    match result {
-        Ok((access, refresh, expires)) => match crate::database::complete_oauth_exchange(pool, &id, &provider, &account, &access, &refresh, expires).await {
-            Ok(true) => update_session(&state, &id, "manual-code", Some("complete".into())).await,
-            _ => oauth_failed(&state, &id, "Unable to persist OAuth credentials", StatusCode::INTERNAL_SERVER_ERROR).await,
-        },
-        Err(message) => oauth_failed(&state, &id, &message, StatusCode::BAD_GATEWAY).await,
-    }
-}
-
-async fn models(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<CredentialStatusQuery>,
-) -> Response {
-    if let Err(response) = require_admin(&state, &headers) {
-        return response;
-    }
-    if query.provider_id.as_deref().is_none_or(str::is_empty) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error":"providerId is required"})),
-        )
-            .into_response();
-    }
-    Json(serde_json::json!({"data": [], "source":"catalog"})).into_response()
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CredentialStatusQuery {
-    provider_id: Option<String>,
-    account_id: Option<String>,
-}
-
-#[allow(clippy::result_large_err)]
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
-    match resolve_principal(
-        state,
-        headers.get("x-admin-key").and_then(|value| value.to_str().ok()),
-    ) {
-        Some(Principal::Admin) => Ok(()),
-        Some(Principal::Limited { .. }) => Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": { "message": "Admin privileges required", "type": "forbidden", "code": 403 }
-            })),
-        )
-            .into_response()),
-        None => Err((
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "error": { "message": "Unauthorized", "type": "auth_error", "code": 401 }
-            })),
-        )
-            .into_response()),
-    }
-}
-
-async fn providers(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) = require_admin(&state, &headers) {
-        return response;
-    }
-    let data = serde_json::json!([
-        { "id": "anthropic", "name": "Anthropic (Claude Pro/Max)", "usesCallbackServer": true },
-        { "id": "github-copilot", "name": "GitHub Copilot", "usesCallbackServer": false },
-        { "id": "kimi-coding", "name": "Kimi Code (subscription)", "usesCallbackServer": false },
-        { "id": "openai-codex", "name": "OpenAI (ChatGPT Plus/Pro)", "usesCallbackServer": true },
-        { "id": "openrouter", "name": "OpenRouter OAuth", "usesCallbackServer": false },
-        { "id": "xai", "name": "xAI (Grok/X subscription)", "usesCallbackServer": false },
-    ]);
-    Json(serde_json::json!({ "data": data, "total": 6 })).into_response()
-}
-
-async fn credential_status(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<CredentialStatusQuery>,
-) -> Response {
-    if let Err(response) = require_admin(&state, &headers) {
-        return response;
-    }
-    let mut details = Vec::new();
-    for (field, value) in [
-        ("providerId", query.provider_id.as_deref()),
-        ("accountId", query.account_id.as_deref()),
-    ] {
-        if value.is_none_or(str::is_empty) {
-            details.push(query_issue(field, value.is_some()));
-        }
-    }
-    if !details.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Invalid query parameters", "details": details })),
-        )
-            .into_response();
-    }
-    let provider_id = query.provider_id.unwrap();
-    let account_id = query.account_id.unwrap();
-    let ready = if let Some(pool) = &state.inner.database {
-        sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM oauth_credentials WHERE oauth_provider_type = $1 AND account_id = $2)",
-        )
-        .bind(provider_id)
-        .bind(account_id)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(false)
-    } else {
-        false
-    };
-    Json(serde_json::json!({ "data": { "ready": ready } })).into_response()
-}
-
-fn query_issue(field: &str, present: bool) -> serde_json::Value {
-    if present {
-        serde_json::json!({
-            "origin": "string", "code": "too_small", "minimum": 1,
-            "inclusive": true, "path": [field],
-            "message": "Too small: expected string to have >=1 characters"
-        })
-    } else {
-        serde_json::json!({
-            "expected": "string", "code": "invalid_type", "path": [field],
-            "message": "Invalid input: expected string, received undefined"
-        })
+    match state.inner.oauth_sessions.cancel(&id).await {
+        Ok(session) => session_response(session),
+        Err(message) => error(StatusCode::BAD_REQUEST, message),
     }
 }
 
 async fn delete_credentials(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    body: Bytes,
 ) -> Response {
     if let Err(response) = require_admin(&state, &headers) {
         return response;
     }
-    let object = body.as_object();
-    let mut details = Vec::new();
-    for field in ["providerId", "accountId"] {
-        match object.and_then(|object| object.get(field)) {
-            Some(serde_json::Value::String(value)) if !value.is_empty() => {}
-            Some(serde_json::Value::String(_)) => details.push(serde_json::json!({
-                "origin": "string", "code": "too_small", "minimum": 1,
-                "inclusive": true, "path": [field],
-                "message": "Too small: expected string to have >=1 characters"
-            })),
-            Some(value) => details.push(serde_json::json!({
-                "expected": "string", "code": "invalid_type", "path": [field],
-                "message": format!("Invalid input: expected string, received {}", json_type(value))
-            })),
-            None => details.push(query_issue(field, false)),
+    let parsed = match parse_body(&provider_account_schema(), &body, "Invalid request body") {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+    let provider = parsed["providerId"].as_str().unwrap_or_default();
+    let account = parsed["accountId"].as_str().unwrap_or_default();
+    let not_found = || error(StatusCode::NOT_FOUND, "OAuth credentials not found");
+    if account.trim().is_empty() {
+        return not_found();
+    }
+    let Some(pool) = state.inner.database.as_ref() else {
+        return not_found();
+    };
+    match crate::database::delete_oauth_credential(pool, provider, account).await {
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Ok(false) => not_found(),
+        Ok(true) => {
+            state
+                .inner
+                .oauth_accounts
+                .write()
+                .unwrap()
+                .retain(|(p, a)| !(p == provider && a == account));
+            Json(json!({"data": {"deleted": true}})).into_response()
         }
     }
-    if !details.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Invalid request body", "details": details })),
-        )
-            .into_response();
-    }
-    let object = object.unwrap();
-    let deleted = if let Some(pool) = &state.inner.database {
-        sqlx::query(
-            "DELETE FROM oauth_credentials WHERE oauth_provider_type = $1 AND account_id = $2",
-        )
-        .bind(object["providerId"].as_str().unwrap())
-        .bind(object["accountId"].as_str().unwrap())
-        .execute(pool)
-        .await
-        .map(|result| result.rows_affected() > 0)
-        .unwrap_or(false)
-    } else {
-        false
-    };
-    if !deleted {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "OAuth credentials not found" })),
-        )
-            .into_response();
-    }
-    Json(serde_json::json!({ "data": { "deleted": true } })).into_response()
 }
 
-fn json_type(value: &serde_json::Value) -> &'static str {
-    match value {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "boolean",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
+/// Plexus `resolveAccountId` over persisted accounts: an explicit account,
+/// else `legacy`, else the provider's single account.
+fn resolve_account(
+    accounts: &[(String, String, i64)],
+    provider: &str,
+    account: Option<&str>,
+) -> Option<String> {
+    if let Some(account) = account.map(str::trim).filter(|a| !a.is_empty()) {
+        return Some(account.to_string());
+    }
+    let mine: Vec<&String> = accounts
+        .iter()
+        .filter(|(p, _, _)| p == provider)
+        .map(|(_, a, _)| a)
+        .collect();
+    if mine.is_empty() {
+        return None;
+    }
+    if mine.iter().any(|a| a.as_str() == "legacy") {
+        return Some("legacy".into());
+    }
+    (mine.len() == 1).then(|| mine[0].clone())
+}
+
+async fn credential_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let parsed = match provider_account_schema().safe_parse(&query_value(raw)) {
+        Ok(parsed) => parsed,
+        Err(details) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid query parameters", "details": details})),
+            )
+                .into_response()
+        }
+    };
+    let provider = parsed["providerId"].as_str().unwrap_or_default();
+    let account = parsed["accountId"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let Some(pool) = state.inner.database.as_ref() else {
+        return Json(json!({"data": {"ready": false}})).into_response();
+    };
+    let accounts = crate::database::list_oauth_credential_accounts(pool)
+        .await
+        .unwrap_or_default();
+    let ready = if account.is_empty() {
+        accounts.iter().any(|(p, _, _)| p == provider)
+    } else {
+        accounts
+            .iter()
+            .any(|(p, a, _)| p == provider && *a == account)
+    };
+    if !ready {
+        return Json(json!({"data": {"ready": ready}})).into_response();
+    }
+    let timestamps = crate::database::oauth_credential_timestamps(pool, provider, &account)
+        .await
+        .ok()
+        .flatten();
+    let expires = resolve_account(&accounts, provider, Some(&account)).and_then(|resolved| {
+        accounts
+            .iter()
+            .find(|(p, a, _)| p == provider && *a == resolved)
+            .map(|(_, _, e)| *e)
+    });
+    let mut data = Map::new();
+    data.insert("ready".into(), json!(true));
+    if let Some((created, updated, _)) = timestamps {
+        if created != 0 {
+            data.insert("connectedAt".into(), json!(created));
+        }
+        if updated != 0 {
+            data.insert("refreshedAt".into(), json!(updated));
+        }
+    }
+    if let Some(expires) = expires.filter(|e| *e > 0) {
+        data.insert("expiresAt".into(), json!(expires));
+    }
+    Json(json!({"data": data})).into_response()
+}
+
+// ─── /v0/management/oauth/models ─────────────────────────────────────────
+
+const MUSE_STATIC_MODELS: [&str; 6] = [
+    "muse-spark-1.1",
+    "muse-spark-1.2",
+    "muse-spark-1.2-contributor",
+    "muse-spark-1.3",
+    "muse-spark-1.3-contributor",
+    "muse-wonder-1.0",
+];
+const CODEX_IMAGE_MODELS: [&str; 3] = [
+    "gpt-image-2",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+];
+
+/// JavaScript `Number.prototype.toString` for catalog prices.
+fn js_number(value: f64) -> String {
+    if value.fract() == 0.0 && value.abs() < 1e21 {
+        return format!("{}", value as i64);
+    }
+    if value != 0.0 && value.abs() < 1e-6 {
+        return format!("{value:e}");
+    }
+    format!("{value}")
+}
+
+/// Plexus `getOAuthProviderModels` over the embedded pi-ai catalog.
+fn catalog_models(provider: &str) -> Vec<Value> {
+    let catalog: Value =
+        serde_json::from_str(include_str!("assets/pi-catalog.json")).unwrap_or(Value::Null);
+    let Some(models) = catalog["providers"]
+        .as_array()
+        .and_then(|providers| providers.iter().find(|p| p["id"] == provider))
+        .and_then(|p| p["models"].as_array())
+    else {
+        return vec![];
+    };
+    models
+        .iter()
+        .filter(|m| m["type"].as_str().unwrap_or("chat") == "chat")
+        .map(|m| {
+            let mut out = Map::new();
+            out.insert("id".into(), m["id"].clone());
+            if let Some(name) = m.get("name").filter(|v| !v.is_null()) {
+                out.insert("name".into(), name.clone());
+            }
+            if let Some(context) = m.get("contextWindow").filter(|v| !v.is_null()) {
+                out.insert("context_length".into(), context.clone());
+            }
+            if let (Some(input), Some(output)) =
+                (m["cost"]["input"].as_f64(), m["cost"]["output"].as_f64())
+            {
+                out.insert(
+                    "pricing".into(),
+                    json!({"prompt": js_number(input), "completion": js_number(output)}),
+                );
+            }
+            Value::Object(out)
+        })
+        .collect()
+}
+
+fn with_codex_image_models(mut models: Vec<Value>) -> Vec<Value> {
+    for id in CODEX_IMAGE_MODELS {
+        if !models.iter().any(|m| m["id"] == id) {
+            models.push(json!({"id": id, "name": id, "description": "Codex Images (ChatGPT OAuth)", "type": "image", "access_via": ["codex-images"]}));
+        }
+    }
+    models
+}
+
+/// Plexus `OAuthAuthManager.getApiKey` error semantics over persisted
+/// credentials (no refresh is attempted here).
+async fn oauth_api_key(
+    state: &AppState,
+    provider: &str,
+    account: Option<&str>,
+) -> Result<String, String> {
+    let not_authenticated = format!("OAuth: Not authenticated for provider '{provider}'. Please run OAuth login for this provider.");
+    let pool = state
+        .inner
+        .database
+        .as_ref()
+        .ok_or_else(|| not_authenticated.clone())?;
+    let credentials = crate::database::load_oauth_credentials(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let accounts: Vec<(String, String, i64)> = credentials
+        .iter()
+        .filter(|(p, ..)| p == provider)
+        .map(|(p, a, _, _, e)| (p.clone(), a.clone(), *e))
+        .collect();
+    if accounts.is_empty() {
+        return Err(not_authenticated);
+    }
+    let resolved = resolve_account(&accounts, provider, account).ok_or_else(|| {
+        format!("OAuth: accountId is required to resolve credentials for provider '{provider}'.")
+    })?;
+    credentials
+        .into_iter()
+        .find(|(p, a, ..)| p == provider && *a == resolved)
+        .map(|(_, _, access, _, _)| access)
+        .ok_or_else(|| format!("OAuth: Not authenticated for provider '{provider}' and account '{resolved}'. Please run OAuth login for this account."))
+}
+
+fn fetch_error(error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        "The operation timed out.".into()
+    } else {
+        error.to_string()
+    }
+}
+
+async fn list_codex_models(state: &AppState, account: Option<&str>) -> Result<Vec<Value>, String> {
+    let token = oauth_api_key(state, "openai-codex", account).await?;
+    let version = crate::cli_versions::codex_version();
+    let url = format!(
+        "https://chatgpt.com/backend-api/codex/models?client_version={}",
+        url::form_urlencoded::byte_serialize(version.as_bytes())
+            .collect::<String>()
+            .replace('+', "%20")
+    );
+    let mut request = reqwest::Client::new()
+        .get(url)
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("originator", "codex_cli_rs")
+        .header("Version", version)
+        .header("User-Agent", crate::codex_masking::user_agent())
+        .timeout(Duration::from_secs(15));
+    if let Some(account) = crate::codex_masking::account_id(&token) {
+        request = request.header("chatgpt-account-id", account);
+    }
+    let response = request.send().await.map_err(fetch_error)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Codex model list returned {} {}",
+            status.as_u16(),
+            crate::oauth_login::status_text(status)
+        ));
+    }
+    let body: Value = response.json().await.map_err(fetch_error)?;
+    let records = body["models"]
+        .as_array()
+        .ok_or("Codex model list response had no models array")?;
+    let mut records: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["slug"].as_str().is_some_and(|s| !s.is_empty()) && r["visibility"] != "none")
+        .collect();
+    records.sort_by(|a, b| {
+        let priority = |r: &Value| r["priority"].as_f64().unwrap_or(0.0);
+        priority(b)
+            .partial_cmp(&priority(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a["slug"].as_str().cmp(&b["slug"].as_str()))
+    });
+    Ok(records
+        .into_iter()
+        .map(|r| {
+            let mut out = Map::new();
+            out.insert("id".into(), r["slug"].clone());
+            if r["display_name"].is_string() {
+                out.insert("name".into(), r["display_name"].clone());
+            }
+            if r["description"].is_string() {
+                out.insert("description".into(), r["description"].clone());
+            }
+            if r["context_window"].is_number() {
+                out.insert("context_length".into(), r["context_window"].clone());
+            }
+            if r["visibility"] == "list" || r["visibility"] == "hide" {
+                out.insert("visibility".into(), r["visibility"].clone());
+            }
+            Value::Object(out)
+        })
+        .collect())
+}
+
+async fn list_muse_models(state: &AppState, account: Option<&str>) -> Result<Vec<Value>, String> {
+    let token = oauth_api_key(state, "meta", account).await?;
+    let response = reqwest::Client::new()
+        .get("https://api.meta.ai/v1/models")
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("x-api-version", "1.0.0")
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(fetch_error)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "Muse model list returned {} {}",
+            status.as_u16(),
+            crate::oauth_login::status_text(status)
+        ));
+    }
+    let body: Value = response.json().await.map_err(fetch_error)?;
+    let entries: Vec<Value> = if let Some(data) = body["data"].as_array() {
+        data.clone()
+    } else if let Some(models) = body["models"].as_array() {
+        models.iter().map(|m| if let Some(s) = m.as_str() { json!({"id": s}) } else { json!({"id": m.get("name").filter(|v| v.as_str().is_some_and(|s| !s.is_empty())).or_else(|| m.get("id")).or_else(|| m.get("model")).cloned().unwrap_or(Value::Null)}) }).collect()
+    } else if body.is_object() {
+        vec![body.clone()]
+    } else {
+        vec![]
+    };
+    let mut ids: Vec<String> = entries
+        .iter()
+        .filter_map(|m| {
+            m["id"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        })
+        .collect();
+    if ids.is_empty() {
+        return Err("Muse model list response had no model ids".into());
+    }
+    ids.sort();
+    Ok(ids
+        .into_iter()
+        .map(|id| json!({"id": id, "name": id}))
+        .collect())
+}
+
+async fn models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    if let Err(response) = require_admin(&state, &headers) {
+        return response;
+    }
+    let schema = {
+        use crate::zod::*;
+        object(vec![
+            ("providerId", string().min(1.0)),
+            ("accountId", string().optional()),
+        ])
+    };
+    let parsed = match schema.safe_parse(&query_value(raw)) {
+        Ok(parsed) => parsed,
+        Err(details) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Invalid query parameters", "details": details})),
+            )
+                .into_response()
+        }
+    };
+    let provider = parsed["providerId"].as_str().unwrap_or_default();
+    let account = parsed["accountId"].as_str().filter(|a| !a.is_empty());
+    let fallback_warning = |label: &str, reason: &str| {
+        format!("Could not reach the {label} model list ({reason}); showing the static catalog. Log in with OAuth to see your account's models.")
+    };
+    match provider {
+        "openai-codex" => match list_codex_models(&state, account).await {
+            Ok(models) => Json(json!({"data": with_codex_image_models(models), "source": "codex-backend"})).into_response(),
+            Err(reason) => Json(json!({"data": with_codex_image_models(catalog_models("openai-codex")), "source": "catalog", "warning": fallback_warning("Codex", &reason)})).into_response(),
+        },
+        "meta" => match list_muse_models(&state, account).await {
+            Ok(models) => Json(json!({"data": models, "source": "muse-backend"})).into_response(),
+            Err(reason) => {
+                let data: Vec<Value> = MUSE_STATIC_MODELS.iter().map(|id| json!({"id": id, "name": id})).collect();
+                Json(json!({"data": data, "source": "catalog", "warning": fallback_warning("Muse", &reason)})).into_response()
+            }
+        },
+        _ => Json(json!({"data": catalog_models(provider), "source": "catalog"})).into_response(),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::state::KeyConfig;
-    use axum::{body::Body, http::Request};
-    use http_body_util::BodyExt;
-    use std::collections::HashMap;
-    use tower::ServiceExt;
-
-    #[test]
-    fn pkce_verifier_is_persisted_but_not_serialized() {
-        let session = OAuthSession {
-            id: "session".into(),
-            provider_id: "anthropic".into(),
-            account_id: "default".into(),
-            status: "waiting".into(),
-            auth_info: None,
-            prompt: None,
-            progress: vec![],
-            error: None,
-            created_at: 1,
-            updated_at: 1,
-            expires_at: 2,
-            pkce_verifier: Some("deterministic-verifier".into()),
-        };
-        let json = serde_json::to_value(&session).unwrap();
-        assert_eq!(
-            session.pkce_verifier.as_deref(),
-            Some("deterministic-verifier")
-        );
-        assert!(json.get("pkceVerifier").is_none());
-    }
-
-    #[test]
-    fn openrouter_authorization_uses_callback_url_and_pkce_without_fake_client_id() {
-        let url = url::Url::parse(&openrouter_authorization_url("https://gateway.example/base?discard=yes", "session", "verifier").unwrap()).unwrap();
-        let query: HashMap<_,_> = url.query_pairs().into_owned().collect();
-        assert_eq!(query["callback_url"], "https://gateway.example/v0/management/oauth/sessions/session/callback?state=session");
-        assert_eq!(query["code_challenge_method"], "S256");
-        assert!(!query.contains_key("client_id"));
-        assert!(!query.contains_key("redirect_uri"));
-        assert!(openrouter_authorization_url("file:///private", "session", "verifier").is_none());
-    }
-
-    #[test]
-    fn exchange_claim_is_atomic_and_consumes_persisted_verifier() {
-        let state = fixture();
-        state.inner.oauth_sessions.write().unwrap().insert(
-            "claim".into(),
-            OAuthSession {
-                id: "claim".into(),
-                provider_id: "openrouter".into(),
-                account_id: "default".into(),
-                status: "waiting".into(),
-                auth_info: None,
-                prompt: None,
-                progress: vec![],
-                error: None,
-                created_at: now_ms(),
-                updated_at: now_ms(),
-                expires_at: now_ms() + 60000,
-                pkce_verifier: Some("verifier".into()),
-            },
-        );
-        let (session, verifier) = claim_exchange(&state, "claim").unwrap();
-        assert_eq!(verifier, "verifier");
-        assert_eq!(session.status, "exchanging");
-        assert!(session.pkce_verifier.is_none());
-        assert_eq!(
-            claim_exchange(&state, "claim").unwrap_err().status(),
-            StatusCode::CONFLICT
-        );
-    }
-
-    #[test]
-    fn callback_claim_removes_in_memory_verifier() {
-        let state = fixture();
-        state
-            .inner
-            .oauth_pkce_verifiers
-            .write()
-            .unwrap()
-            .insert("session".into(), "deterministic-verifier".into());
-        assert_eq!(
-            state
-                .inner
-                .oauth_pkce_verifiers
-                .write()
-                .unwrap()
-                .remove("session")
-                .as_deref(),
-            Some("deterministic-verifier")
-        );
-        assert!(state
-            .inner
-            .oauth_pkce_verifiers
-            .read()
-            .unwrap()
-            .get("session")
-            .is_none());
-    }
-
-    fn fixture() -> AppState {
-        let mut keys = HashMap::new();
-        keys.insert(
-            "limited".into(),
-            KeyConfig {
-                secret: "secret".into(),
-                ..Default::default()
-            },
-        );
-        AppState::new(Some("admin".into()), keys)
-    }
-
-    #[tokio::test]
-    async fn lists_pinned_oauth_provider_descriptors() {
-        let response = router()
-            .with_state(fixture())
-            .oneshot(
-                Request::get("/v0/management/oauth/providers")
-                    .header("x-admin-key", "admin")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body: serde_json::Value =
-            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        assert_eq!(body["total"], 6);
-        assert_eq!(body["data"][0]["id"], "anthropic");
-        assert_eq!(body["data"][3]["usesCallbackServer"], true);
-        assert!(body["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|provider| { provider.get("capabilities").is_none() }));
-        assert!(!body["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|p| p["id"] == "radius"));
-    }
-
-    #[tokio::test]
-    async fn oauth_provider_discovery_is_admin_only() {
-        for (credential, expected) in [
-            (Some("secret"), StatusCode::FORBIDDEN),
-            (None, StatusCode::UNAUTHORIZED),
-        ] {
-            let mut request = Request::get("/v0/management/oauth/providers");
-            if let Some(value) = credential {
-                request = request.header("x-admin-key", value);
-            }
-            let response = router()
-                .with_state(fixture())
-                .oneshot(request.body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(response.status(), expected);
-        }
-    }
-
-    #[tokio::test]
-    async fn credential_status_defaults_false_and_validates_queries() {
-        let response = router()
-            .with_state(fixture())
-            .oneshot(
-                Request::get("/v0/management/oauth/credentials/status?providerId=anthropic&accountId=default")
-                    .header("x-admin-key", "admin")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body: serde_json::Value =
-            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        assert_eq!(body, serde_json::json!({ "data": { "ready": false } }));
-
-        let invalid = router()
-            .with_state(fixture())
-            .oneshot(
-                Request::get("/v0/management/oauth/credentials/status")
-                    .header("x-admin-key", "admin")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
-        let body: serde_json::Value =
-            serde_json::from_slice(&invalid.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        assert_eq!(body["details"].as_array().unwrap().len(), 2);
-        assert_eq!(
-            body["details"][0]["path"],
-            serde_json::json!(["providerId"])
-        );
-    }
-
-    #[tokio::test]
-    async fn delete_credentials_validates_body_and_returns_not_found() {
-        let missing = router()
-            .with_state(fixture())
-            .oneshot(
-                Request::delete("/v0/management/oauth/credentials")
-                    .header("x-admin-key", "admin")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"providerId":"anthropic","accountId":"missing"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-
-        let invalid = router()
-            .with_state(fixture())
-            .oneshot(
-                Request::delete("/v0/management/oauth/credentials")
-                    .header("x-admin-key", "admin")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
-        let body: serde_json::Value =
-            serde_json::from_slice(&invalid.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        assert_eq!(body["details"].as_array().unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn cancelling_session_cleans_up_pkce_verifier_and_is_terminal() {
-        let state = fixture();
-        let session = OAuthSession {
-            id: "cancel-me".into(),
-            provider_id: "anthropic".into(),
-            account_id: "default".into(),
-            status: "waiting".into(),
-            auth_info: None,
-            prompt: None,
-            progress: vec![],
-            error: None,
-            created_at: now_ms(),
-            updated_at: now_ms(),
-            expires_at: now_ms() + 60_000,
-            pkce_verifier: Some("one-shot".into()),
-        };
-        state
-            .inner
-            .oauth_sessions
-            .write()
-            .unwrap()
-            .insert(session.id.clone(), session);
-        state
-            .inner
-            .oauth_pkce_verifiers
-            .write()
-            .unwrap()
-            .insert("cancel-me".into(), "one-shot".into());
-
-        let response = router()
-            .with_state(state.clone())
-            .oneshot(
-                Request::post("/v0/management/oauth/sessions/cancel-me/cancel")
-                    .header("x-admin-key", "admin")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            state
-                .inner
-                .oauth_sessions
-                .read()
-                .unwrap()
-                .get("cancel-me")
-                .unwrap()
-                .status,
-            "cancelled"
-        );
-        assert!(!state
-            .inner
-            .oauth_pkce_verifiers
-            .read()
-            .unwrap()
-            .contains_key("cancel-me"));
-
-        let callback = router()
-            .with_state(state.clone())
-            .oneshot(
-                Request::get(
-                    "/v0/management/oauth/sessions/cancel-me/callback?state=cancel-me&code=late-code",
-                )
-                .body(Body::empty())
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(callback.status(), StatusCode::CONFLICT);
-
-        let repeated = router()
-            .with_state(state)
-            .oneshot(
-                Request::post("/v0/management/oauth/sessions/cancel-me/cancel")
-                    .header("x-admin-key", "admin")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(repeated.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn callback_redirect_requires_safe_public_origin() {
-        std::env::set_var("TREFOIL_PUBLIC_URL", "https://trefoil.lan/base?secret=no");
-        assert_eq!(callback_redirect_uri("session"), Some("https://trefoil.lan/v0/management/oauth/sessions/session/callback".into()));
-        std::env::set_var("TREFOIL_PUBLIC_URL", "file:///tmp");
-        assert!(callback_redirect_uri("session").is_none());
-        std::env::remove_var("TREFOIL_PUBLIC_URL");
-    }
-}
+mod tests;

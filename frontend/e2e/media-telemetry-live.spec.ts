@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { mockHost } from './mock-host';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -27,7 +28,7 @@ test('speech bytes, broken upstream and client abort have truthful usage without
   });
   await new Promise<void>(done => server.listen(0, '0.0.0.0', done));
   try {
-    const origin = `http://192.168.96.1:${(server.address() as { port: number }).port}`;
+    const origin = `http://${mockHost}:${(server.address() as { port: number }).port}`;
     expect((await request.put(`/v0/management/providers/${provider}`, { headers, data: { api_base_url: origin, api_key: 'disposable', enabled: true } })).status()).toBe(200);
     const success = await request.post('/v1/audio/speech', { headers: { 'x-api-key': admin }, data: { model: `${provider}/sample`, input: 'hello' } });
     expect(success.status()).toBe(200);

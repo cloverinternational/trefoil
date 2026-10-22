@@ -22,9 +22,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::auth::{resolve_principal, Principal};
-use crate::state::{
-    AdapterEntry, AppState, ProviderConfig, QuotaCheckerConfig, RawPassthroughConfig,
-};
+use crate::state::{AppState, ProviderConfig};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -147,7 +145,9 @@ async fn probe_request(
     if !provider.models.is_empty() && !provider.models.contains_key(model) {
         return Err("Model is not in the provider's configured inventory".to_string());
     }
-    let upstream_model = provider.models.get(model)
+    let upstream_model = provider
+        .models
+        .get(model)
         .and_then(|entry| entry.upstream_id.as_deref())
         .filter(|id| !id.is_empty())
         .unwrap_or(model);
@@ -256,10 +256,17 @@ fn public_discovery_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ip) => {
             let [a, b, c, _] = ip.octets();
-            !(a == 0 || a == 10 || a == 127 || a >= 224 || a == 169 && b == 254
-                || a == 172 && (16..=31).contains(&b) || a == 192 && b == 168
-                || a == 100 && (64..=127).contains(&b) || a == 192 && b == 0 && c == 0
-                || a == 198 && (b == 18 || b == 19) || a == 198 && b == 51 && c == 100
+            !(a == 0
+                || a == 10
+                || a == 127
+                || a >= 224
+                || a == 169 && b == 254
+                || a == 172 && (16..=31).contains(&b)
+                || a == 192 && b == 168
+                || a == 100 && (64..=127).contains(&b)
+                || a == 192 && b == 0 && c == 0
+                || a == 198 && (b == 18 || b == 19)
+                || a == 198 && b == 51 && c == 100
                 || a == 203 && b == 0 && c == 113)
         }
         // Do not support IPv6 here until transition/tunnel address ranges are
@@ -282,17 +289,24 @@ async fn fetch_models(
     // Never forward a caller-supplied credential to a caller-supplied host.
     // Credentialed discovery needs a separately verified saved-provider flow.
     if body.get("apiKey").is_some() {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "Credentialed model discovery is unavailable".into()).into_response();
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Credentialed model discovery is unavailable".into(),
+        )
+        .into_response();
     }
     let Ok(parsed) = url::Url::parse(url) else {
         return ApiError::Simple(StatusCode::BAD_REQUEST, "Invalid URL".into()).into_response();
     };
     // Credential-free discovery is limited to a reviewed public catalog.
     // Saved-provider credential discovery requires a separate scoped design.
-    if parsed.scheme() != "https" || parsed.host_str().is_none()
-        || !parsed.username().is_empty() || parsed.password().is_some()
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
         || parsed.port().is_some_and(|port| port != 443)
-        || parsed.query().is_some() || parsed.fragment().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
         || parsed.host_str() != Some("openrouter.ai")
         || parsed.path() != "/api/v1/models"
     {
@@ -300,17 +314,43 @@ async fn fetch_models(
             .into_response();
     }
     let host = parsed.host_str().unwrap();
-    let Ok(Ok(addresses)) = tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::lookup_host((host, 443))).await else {
-        return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to resolve provider host".into()).into_response();
+    let Ok(Ok(addresses)) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::net::lookup_host((host, 443)),
+    )
+    .await
+    else {
+        return ApiError::Simple(
+            StatusCode::BAD_GATEWAY,
+            "Unable to resolve provider host".into(),
+        )
+        .into_response();
     };
     let addresses: Vec<_> = addresses.collect();
-    let approved = addresses.iter().find(|address| public_discovery_ip(address.ip()) && address.is_ipv4()).copied();
-    if approved.is_none() || addresses.iter().any(|address| address.is_ipv4() && !public_discovery_ip(address.ip())) {
-        return ApiError::Simple(StatusCode::BAD_REQUEST, "URL is not allowed".into()).into_response();
+    let approved = addresses
+        .iter()
+        .find(|address| public_discovery_ip(address.ip()) && address.is_ipv4())
+        .copied();
+    if approved.is_none()
+        || addresses
+            .iter()
+            .any(|address| address.is_ipv4() && !public_discovery_ip(address.ip()))
+    {
+        return ApiError::Simple(StatusCode::BAD_REQUEST, "URL is not allowed".into())
+            .into_response();
     }
-    let Ok(client) = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
-        .resolve(host, approved.unwrap()).timeout(std::time::Duration::from_secs(10)).build() else {
-        return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to configure provider request".into()).into_response();
+    let Ok(client) = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(host, approved.unwrap())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    else {
+        return ApiError::Simple(
+            StatusCode::BAD_GATEWAY,
+            "Unable to configure provider request".into(),
+        )
+        .into_response();
     };
     let request = client.get(url);
     match request
@@ -319,8 +359,15 @@ async fn fetch_models(
         .await
     {
         Ok(response) if response.status().is_success() => {
-            if response.content_length().is_some_and(|size| size > 2_000_000) {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Model catalog is too large".into()).into_response();
+            if response
+                .content_length()
+                .is_some_and(|size| size > 2_000_000)
+            {
+                return ApiError::Simple(
+                    StatusCode::BAD_GATEWAY,
+                    "Model catalog is too large".into(),
+                )
+                .into_response();
             }
             let mut response = response;
             let mut bytes = Vec::new();
@@ -328,26 +375,53 @@ async fn fetch_models(
                 let chunk = match response.chunk().await {
                     Ok(Some(chunk)) => chunk,
                     Ok(None) => break,
-                    Err(_) => return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to read model catalog".into()).into_response(),
+                    Err(_) => {
+                        return ApiError::Simple(
+                            StatusCode::BAD_GATEWAY,
+                            "Unable to read model catalog".into(),
+                        )
+                        .into_response()
+                    }
                 };
                 if bytes.len().saturating_add(chunk.len()) > 2_000_000 {
-                    return ApiError::Simple(StatusCode::BAD_GATEWAY, "Model catalog is too large".into()).into_response();
+                    return ApiError::Simple(
+                        StatusCode::BAD_GATEWAY,
+                        "Model catalog is too large".into(),
+                    )
+                    .into_response();
                 }
                 bytes.extend_from_slice(&chunk);
             }
             if bytes.is_empty() {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to read model catalog".into()).into_response();
+                return ApiError::Simple(
+                    StatusCode::BAD_GATEWAY,
+                    "Unable to read model catalog".into(),
+                )
+                .into_response();
             }
             let Ok(payload) = serde_json::from_slice::<Value>(&bytes) else {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into()).into_response();
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into())
+                    .into_response();
             };
             let Some(data) = payload.get("data").and_then(Value::as_array) else {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into()).into_response();
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into())
+                    .into_response();
             };
-            if data.len() > 20_000 || data.iter().any(|model| model.get("id").and_then(Value::as_str).is_none_or(|id| id.is_empty() || id.len() > 200)) {
-                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into()).into_response();
+            if data.len() > 20_000
+                || data.iter().any(|model| {
+                    model
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_none_or(|id| id.is_empty() || id.len() > 200)
+                })
+            {
+                return ApiError::Simple(StatusCode::BAD_GATEWAY, "Invalid model catalog".into())
+                    .into_response();
             }
-            let sanitized: Vec<Value> = data.iter().map(|model| serde_json::json!({"id":model["id"]})).collect();
+            let sanitized: Vec<Value> = data
+                .iter()
+                .map(|model| serde_json::json!({"id":model["id"]}))
+                .collect();
             Json(serde_json::json!({"data":sanitized})).into_response()
         }
         Ok(_) => ApiError::Simple(StatusCode::BAD_GATEWAY, "Provider request failed".into())
@@ -357,34 +431,17 @@ async fn fetch_models(
             "Request timed out after 10 seconds".into(),
         )
         .into_response(),
-        Err(_) => ApiError::Simple(StatusCode::BAD_GATEWAY, "Unable to fetch provider models".into()).into_response(),
+        Err(_) => ApiError::Simple(
+            StatusCode::BAD_GATEWAY,
+            "Unable to fetch provider models".into(),
+        )
+        .into_response(),
     }
 }
 
 enum ApiError {
     Auth(StatusCode, &'static str, &'static str),
     Simple(StatusCode, String),
-    Validation(Vec<ValidationIssue>),
-}
-
-struct ValidationIssue {
-    message: String,
-    path: Vec<String>,
-}
-
-impl ValidationIssue {
-    fn root(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            path: vec![],
-        }
-    }
-    fn at(path: &str, message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            path: vec![path.to_string()],
-        }
-    }
 }
 
 impl ApiError {
@@ -397,9 +454,6 @@ impl ApiError {
             "Admin privileges required",
             "forbidden",
         )
-    }
-    fn validation(issues: Vec<ValidationIssue>) -> Self {
-        Self::Validation(issues)
     }
 }
 
@@ -416,20 +470,6 @@ impl IntoResponse for ApiError {
                 let body = serde_json::json!({ "error": message });
                 (status, Json(body)).into_response()
             }
-            ApiError::Validation(issues) => {
-                let details: Vec<Value> = issues
-                    .iter()
-                    .map(|i| {
-                        serde_json::json!({
-                            "code": "custom",
-                            "path": i.path,
-                            "message": i.message,
-                        })
-                    })
-                    .collect();
-                let body = serde_json::json!({ "error": "Validation failed", "details": details });
-                (StatusCode::BAD_REQUEST, Json(body)).into_response()
-            }
         }
     }
 }
@@ -441,251 +481,6 @@ fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> 
         Some(Principal::Limited { .. }) => Err(ApiError::forbidden()),
         None => Err(ApiError::unauthorized()),
     }
-}
-
-/// Wire shape accepted by PUT/PATCH bodies. Mirrors the load-bearing subset
-/// of `ProviderConfigSchema`.
-#[derive(Debug, Deserialize, Default)]
-struct ProviderBody {
-    #[serde(rename = "expectedVersion")]
-    expected_version: Option<i64>,
-    display_name: Option<String>,
-    api_base_url: Option<String>,
-    #[serde(default)]
-    api_base_urls: Option<HashMap<String, String>>,
-    #[serde(default)]
-    models: Option<HashMap<String, crate::state::ProviderModel>>,
-    api_key: Option<String>,
-    oauth_provider: Option<String>,
-    oauth_account: Option<String>,
-    enabled: Option<bool>,
-    disable_cooldown: Option<bool>,
-    stall_cooldown: Option<bool>,
-    allow_100_percent_utilization: Option<bool>,
-    discount: Option<f64>,
-    #[serde(rename = "estimateTokens")]
-    estimate_tokens: Option<bool>,
-    #[serde(rename = "useClaudeMasking")]
-    use_claude_masking: Option<bool>,
-    #[serde(rename = "geminiThinkingEnabled")]
-    gemini_thinking_enabled: Option<bool>,
-    auto_compat: Option<bool>,
-    /// Accepts the legacy string/array-of-string form or the normalized
-    /// `AdapterEntry[]` form, matching `AdapterConfigSchema`'s preprocess step.
-    adapter: Option<AdapterInput>,
-    raw_passthrough: Option<RawPassthroughConfig>,
-    quota_checker: Option<QuotaCheckerConfig>,
-    #[serde(rename = "retryPolicy")]
-    retry_policy: Option<crate::state::RetryPolicy>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum AdapterInput {
-    Single(AdapterInputEntry),
-    Many(Vec<AdapterInputEntry>),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum AdapterInputEntry {
-    Name(String),
-    Entry {
-        name: String,
-        #[serde(default)]
-        options: serde_json::Map<String, Value>,
-        #[serde(default = "super_true")]
-        enabled: bool,
-    },
-}
-
-fn super_true() -> bool {
-    true
-}
-
-fn normalize_adapter(input: AdapterInput) -> Vec<AdapterEntry> {
-    let entries = match input {
-        AdapterInput::Single(e) => vec![e],
-        AdapterInput::Many(es) => es,
-    };
-    entries
-        .into_iter()
-        .map(|e| match e {
-            AdapterInputEntry::Name(name) => AdapterEntry {
-                name,
-                options: Default::default(),
-                enabled: true,
-            },
-            AdapterInputEntry::Entry {
-                name,
-                options,
-                enabled,
-            } => AdapterEntry {
-                name,
-                options,
-                enabled,
-            },
-        })
-        .collect()
-}
-
-/// Mirrors `isValidUrlOrOAuth`: an `oauth://` placeholder or a parseable URL.
-fn is_valid_url_or_oauth(value: &str) -> bool {
-    if ProviderConfig::is_oauth_placeholder_url(value) {
-        return true;
-    }
-    url::Url::parse(value).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some() && u.username().is_empty() && u.password().is_none())
-}
-
-/// Validates a `ProviderBody` against the load-bearing subset of
-/// `ProviderConfigSchema`'s refinements, and builds a `ProviderConfig` from
-/// it merged over `existing` (None for a from-scratch PUT).
-fn validate_and_build(
-    body: ProviderBody,
-    existing: Option<&ProviderConfig>,
-) -> Result<ProviderConfig, Vec<ValidationIssue>> {
-    let mut issues = Vec::new();
-
-    let api_base_urls = body.api_base_urls.clone().or_else(|| existing.map(|e| e.api_base_urls.clone())).unwrap_or_default();
-    for (kind, url) in &api_base_urls {
-        if !matches!(kind.as_str(), "chat" | "completions" | "messages" | "responses" | "gemini" | "embeddings" | "transcriptions" | "speech" | "openai-images" | "openrouter-images" | "codex-images" | "systemone" | "ollama") {
-            issues.push(ValidationIssue::at("api_base_urls", format!("Unsupported API type: {kind}")));
-        }
-        if !is_valid_url_or_oauth(url) || ProviderConfig::is_oauth_placeholder_url(url) {
-            issues.push(ValidationIssue::at("api_base_urls", format!("Invalid HTTP(S) URL for {kind}; credentials are not allowed")));
-        }
-    }
-    let models = body.models.clone().or_else(|| existing.map(|e| e.models.clone())).unwrap_or_default();
-    if models.keys().any(|model| model.trim().is_empty()) {
-        issues.push(ValidationIssue::at("models", "Model identifiers must not be empty"));
-    }
-    let api_base_url = body
-        .api_base_url
-        .clone()
-        .or_else(|| existing.map(|e| e.api_base_url.clone()));
-    let api_base_url = match api_base_url {
-        Some(url) if is_valid_url_or_oauth(&url) => url,
-        Some(_) => {
-            issues.push(ValidationIssue::at(
-                "api_base_url",
-                "api_base_url must be a valid URL or oauth://",
-            ));
-            String::new()
-        }
-        None => {
-            issues.push(ValidationIssue::at("api_base_url", "Required"));
-            String::new()
-        }
-    };
-
-    let is_oauth = ProviderConfig::is_oauth_placeholder_url(&api_base_url);
-    let api_key = body
-        .api_key
-        .clone()
-        .or_else(|| existing.and_then(|e| e.api_key.clone()));
-    let oauth_provider = body
-        .oauth_provider
-        .clone()
-        .or_else(|| existing.and_then(|e| e.oauth_provider.clone()));
-    let oauth_account = body
-        .oauth_account
-        .clone()
-        .or_else(|| existing.and_then(|e| e.oauth_account.clone()));
-
-    if api_key.is_none() && !is_oauth {
-        issues.push(ValidationIssue::root(
-            "'api_key' must be specified for provider",
-        ));
-    }
-    if is_oauth && oauth_provider.is_none() {
-        issues.push(ValidationIssue::root(
-            "'oauth_provider' must be specified when using oauth://",
-        ));
-    }
-    if let Some(provider) = oauth_provider.as_deref() {
-        if !crate::oauth::is_supported_provider(provider) {
-            issues.push(ValidationIssue::root(
-                "'oauth_provider' must be a supported OAuth provider",
-            ));
-        }
-    }
-    if is_oauth && oauth_account.is_none() {
-        issues.push(ValidationIssue::root(
-            "'oauth_account' must be specified when using oauth://",
-        ));
-    }
-
-    let raw_passthrough = body
-        .raw_passthrough
-        .or_else(|| existing.and_then(|e| e.raw_passthrough.clone()));
-    if let Some(rp) = &raw_passthrough {
-        if rp.enabled && is_oauth {
-            issues.push(ValidationIssue::root(
-                "raw_passthrough currently supports static API-key providers only",
-            ));
-        }
-    }
-
-    if !issues.is_empty() {
-        return Err(issues);
-    }
-
-    let adapter = match body.adapter {
-        Some(a) => normalize_adapter(a),
-        None => existing.map(|e| e.adapter.clone()).unwrap_or_default(),
-    };
-
-    Ok(ProviderConfig {
-        version: existing.map(|provider| provider.version).unwrap_or(1),
-        display_name: body
-            .display_name
-            .or_else(|| existing.and_then(|e| e.display_name.clone())),
-        api_base_url,
-        api_base_urls,
-        models,
-        api_key,
-        oauth_provider,
-        oauth_account,
-        enabled: body
-            .enabled
-            .unwrap_or_else(|| existing.map(|e| e.enabled).unwrap_or(true)),
-        disable_cooldown: body
-            .disable_cooldown
-            .unwrap_or_else(|| existing.map(|e| e.disable_cooldown).unwrap_or(false)),
-        stall_cooldown: body
-            .stall_cooldown
-            .unwrap_or_else(|| existing.map(|e| e.stall_cooldown).unwrap_or(false)),
-        allow_100_percent_utilization: body.allow_100_percent_utilization.unwrap_or_else(|| {
-            existing
-                .map(|e| e.allow_100_percent_utilization)
-                .unwrap_or(false)
-        }),
-        discount: body.discount.or_else(|| existing.and_then(|e| e.discount)),
-        estimate_tokens: body
-            .estimate_tokens
-            .unwrap_or_else(|| existing.map(|e| e.estimate_tokens).unwrap_or(false)),
-        use_claude_masking: body
-            .use_claude_masking
-            .unwrap_or_else(|| existing.map(|e| e.use_claude_masking).unwrap_or(false)),
-        gemini_thinking_enabled: body
-            .gemini_thinking_enabled
-            .unwrap_or_else(|| existing.map(|e| e.gemini_thinking_enabled).unwrap_or(false)),
-        auto_compat: body
-            .auto_compat
-            .unwrap_or_else(|| existing.map(|e| e.auto_compat).unwrap_or(false)),
-        adapter,
-        model_autosync: existing
-            .map(|e| e.model_autosync.clone())
-            .unwrap_or_default(),
-        raw_passthrough,
-        quota_checker: body
-            .quota_checker
-            .or_else(|| existing.and_then(|e| e.quota_checker.clone())),
-        retry_policy: body
-            .retry_policy
-            .or_else(|| existing.map(|e| e.retry_policy.clone()))
-            .unwrap_or_default(),
-    })
 }
 
 /// Mirrors `validateRawProviderSlug`: `/^[a-z0-9][a-z0-9._-]{0,62}$/`.
@@ -702,28 +497,119 @@ fn is_slug_safe(slug: &str) -> bool {
     rest_ok && slug.len() <= 63
 }
 
-fn check_raw_passthrough_slug(config: &ProviderConfig, slug: &str) -> Result<(), ApiError> {
-    if config.raw_passthrough.as_ref().is_some_and(|rp| rp.enabled) && !is_slug_safe(slug) {
-        return Err(ApiError::Simple(
-            StatusCode::BAD_REQUEST,
-            "Raw passthrough requires a single slug-safe provider ID".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 async fn list_providers(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
     }
     if let Some(pool) = &state.inner.database {
         let Ok(current) = crate::database::load_providers(pool).await else {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to read providers".into()).into_response();
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".into(),
+            )
+            .into_response();
         };
         *state.inner.providers.write().unwrap() = current;
     }
     let providers = state.inner.providers.read().unwrap();
-    Json(providers.clone()).into_response()
+    let mut public = serde_json::Map::new();
+    for (slug, config) in providers.iter() {
+        public.insert(slug.clone(), provider_public(&state, config));
+    }
+    Json(Value::Object(public)).into_response()
+}
+
+/// Served JSON: the repository view with the OAuth account resolved the way
+/// Plexus `resolveOAuthAccountId` does at read time.
+fn provider_public(state: &AppState, config: &ProviderConfig) -> Value {
+    let mut view = config.public_view();
+    if let Some(map) = view.as_object_mut() {
+        match config
+            .oauth_provider
+            .as_deref()
+            .and_then(|kind| resolve_oauth_account(state, kind, config.oauth_account.as_deref()))
+        {
+            Some(account) => {
+                map.insert("oauth_account".into(), Value::String(account));
+            }
+            None => {
+                map.shift_remove("oauth_account");
+            }
+        }
+    }
+    view
+}
+
+fn oauth_accounts(state: &AppState, kind: &str) -> Vec<String> {
+    state
+        .inner
+        .oauth_accounts
+        .read()
+        .unwrap()
+        .iter()
+        .filter(|(p, _)| p == kind)
+        .map(|(_, a)| a.clone())
+        .collect()
+}
+
+/// `resolveOAuthAccountId`: the linked credential, else the well-known
+/// `legacy` account, else the single account for this provider type.
+fn resolve_oauth_account(state: &AppState, kind: &str, linked: Option<&str>) -> Option<String> {
+    let accounts = oauth_accounts(state, kind);
+    if let Some(linked) = linked.filter(|l| accounts.iter().any(|a| a == l)) {
+        return Some(linked.to_owned());
+    }
+    if accounts.iter().any(|a| a == "legacy") {
+        return Some("legacy".into());
+    }
+    (accounts.len() == 1).then(|| accounts[0].clone())
+}
+
+/// `saveProvider`'s credential link: the slug-keyed account, else a
+/// grandfathered `oauth_account`, else the existing compatible link.
+fn link_oauth_account(
+    state: &AppState,
+    slug: &str,
+    parsed: &Value,
+    existing: Option<&ProviderConfig>,
+) -> Option<String> {
+    let kind = parsed
+        .get("oauth_provider")
+        .and_then(Value::as_str)
+        .filter(|k| !k.is_empty())?;
+    let accounts = oauth_accounts(state, kind);
+    if accounts.iter().any(|a| a == slug) {
+        return Some(slug.to_owned());
+    }
+    let legacy = parsed
+        .get("oauth_account")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|a| !a.is_empty());
+    if let Some(legacy) = legacy {
+        return (legacy != slug && accounts.iter().any(|a| a == legacy)).then(|| legacy.to_owned());
+    }
+    existing
+        .filter(|e| e.oauth_provider.as_deref() == Some(kind))
+        .and_then(|e| e.oauth_account.clone())
+        .filter(|a| accounts.iter().any(|x| x == a))
+}
+
+fn provider_etag(config: &ProviderConfig) -> String {
+    format!("\"{}\"", config.version)
+}
+
+async fn refresh_oauth_accounts(state: &AppState) {
+    if let Some(pool) = &state.inner.database {
+        if let Ok(rows) = sqlx::query_as::<_, (String, String)>(
+            "SELECT oauth_provider_type, account_id FROM oauth_credentials",
+        )
+        .fetch_all(pool)
+        .await
+        {
+            *state.inner.oauth_accounts.write().unwrap() = rows;
+        }
+    }
 }
 
 async fn get_provider(
@@ -735,22 +621,95 @@ async fn get_provider(
         return e.into_response();
     }
     if let Some(pool) = &state.inner.database {
-        let current = match crate::database::load_provider(pool, &slug).await {
-            Ok(Some(config)) => config,
-            Ok(None) => return ApiError::Simple(StatusCode::NOT_FOUND, "Provider not found".into()).into_response(),
-            Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to read provider".into()).into_response(),
-        };
-        state.inner.providers.write().unwrap().insert(slug.clone(), current);
+        match crate::database::load_provider(pool, &slug).await {
+            Ok(Some(config)) => {
+                state
+                    .inner
+                    .providers
+                    .write()
+                    .unwrap()
+                    .insert(slug.clone(), config);
+            }
+            Ok(None) => {
+                state.inner.providers.write().unwrap().remove(&slug);
+            }
+            Err(_) => {
+                return ApiError::Simple(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".into(),
+                )
+                .into_response()
+            }
+        }
+        refresh_oauth_accounts(&state).await;
     }
-    let providers = state.inner.providers.read().unwrap();
-    match providers.get(&slug) {
-        Some(config) => Json(config.clone()).into_response(),
+    let config = state.inner.providers.read().unwrap().get(&slug).cloned();
+    match config {
+        Some(config) => {
+            let mut response = Json(provider_public(&state, &config)).into_response();
+            response.headers_mut().insert(
+                axum::http::header::ETAG,
+                provider_etag(&config).parse().unwrap(),
+            );
+            response
+        }
         None => ApiError::Simple(
             StatusCode::NOT_FOUND,
             format!("Provider '{slug}' not found"),
         )
         .into_response(),
     }
+}
+
+/// Plexus `ProviderConfigSchema` + `validateProviderQuotaChecker` + raw slug
+/// check, then the repository round trip. `Err` is the finished 400.
+async fn validate_provider(
+    state: &AppState,
+    slug: &str,
+    body: &Value,
+    existing: Option<&ProviderConfig>,
+) -> Result<ProviderConfig, Response> {
+    let parsed = crate::provider_schema::provider_config()
+        .safe_parse(body)
+        .map_err(|details| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Validation failed", "details": details})),
+            )
+                .into_response()
+        })?;
+    let custom_types: Vec<String> = match &state.inner.database {
+        Some(pool) => sqlx::query_scalar::<_, String>(
+            "SELECT trim(id) FROM custom_checkers WHERE enabled = true",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default(),
+        None => vec![],
+    };
+    crate::provider_schema::validate_quota_checker(&parsed, &custom_types).map_err(|details| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Validation failed", "details": details})),
+        )
+            .into_response()
+    })?;
+    if parsed.pointer("/raw_passthrough/enabled") == Some(&Value::Bool(true)) && !is_slug_safe(slug)
+    {
+        return Err(ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "Raw passthrough requires a single slug-safe provider ID".to_string(),
+        )
+        .into_response());
+    }
+    refresh_oauth_accounts(state).await;
+    let account = link_oauth_account(state, slug, &parsed, existing);
+    let view = crate::provider_view::repository_view(&parsed, account.as_deref());
+    let mut config =
+        crate::provider_view::from_view(view, existing.map(|e| e.version).unwrap_or(1));
+    // The served view resolves the account at read time; keep the link.
+    config.oauth_account = account;
+    Ok(config)
 }
 
 async fn put_provider(
@@ -762,32 +721,42 @@ async fn put_provider(
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
     }
-    let body: ProviderBody = match serde_json::from_value(raw) {
-        Ok(b) => b,
-        Err(_) => return ApiError::validation(vec![]).into_response(),
+    let existing = match &state.inner.database {
+        Some(pool) => crate::database::load_provider(pool, &slug)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
     };
-    let config = match validate_and_build(body, None) {
-        Ok(c) => c,
-        Err(issues) => return ApiError::validation(issues).into_response(),
+    let config = match validate_provider(&state, &slug, &raw, existing.as_ref()).await {
+        Ok(config) => config,
+        Err(response) => return response,
     };
-    if let Err(e) = check_raw_passthrough_slug(&config, &slug) {
-        return e.into_response();
+    let Some(pool) = state.inner.database.clone() else {
+        return ApiError::Simple(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Database unavailable".into(),
+        )
+        .into_response();
+    };
+    if crate::database::upsert_provider(&pool, &slug, &config)
+        .await
+        .is_err()
+    {
+        return ApiError::Simple(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".into(),
+        )
+        .into_response();
     }
-
-    let Some(pool) = &state.inner.database else {
-        return ApiError::Simple(StatusCode::SERVICE_UNAVAILABLE, "Database unavailable".into()).into_response();
-    };
-    match crate::database::create_provider_if_absent(pool, &slug, &config).await {
-        Ok(true) => {},
-        Ok(false) => return ApiError::Simple(StatusCode::CONFLICT, "Provider already exists; edit it instead".into()).into_response(),
-        Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create provider".into()).into_response(),
+    if let Ok(Some(saved)) = crate::database::load_provider(&pool, &slug).await {
+        state
+            .inner
+            .providers
+            .write()
+            .unwrap()
+            .insert(slug.clone(), saved);
     }
-    state
-        .inner
-        .providers
-        .write()
-        .unwrap()
-        .insert(slug.clone(), config);
     Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
 }
 
@@ -800,52 +769,118 @@ async fn patch_provider(
     if let Err(e) = require_admin(&state, &headers) {
         return e.into_response();
     }
-    if !raw.is_object() {
+    let Some(body) = raw.as_object() else {
         return ApiError::Simple(
             StatusCode::BAD_REQUEST,
             "Object body is required".to_string(),
         )
         .into_response();
-    }
-
-    let Some(pool) = &state.inner.database else {
-        return ApiError::Simple(StatusCode::SERVICE_UNAVAILABLE, "Database unavailable".into()).into_response();
     };
-    let existing = match crate::database::load_provider(pool, &slug).await {
+    let Some(pool) = state.inner.database.clone() else {
+        return ApiError::Simple(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Database unavailable".into(),
+        )
+        .into_response();
+    };
+    let existing = match crate::database::load_provider(&pool, &slug).await {
         Ok(Some(provider)) => provider,
-        Ok(None) => return ApiError::Simple(StatusCode::NOT_FOUND, "Provider not found".into()).into_response(),
-        Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to read provider".into()).into_response(),
+        Ok(None) => {
+            return ApiError::Simple(
+                StatusCode::NOT_FOUND,
+                format!("Provider '{slug}' not found"),
+            )
+            .into_response()
+        }
+        Err(_) => {
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".into(),
+            )
+            .into_response()
+        }
     };
-
-    let body: ProviderBody = match serde_json::from_value(raw) {
-        Ok(b) => b,
-        Err(_) => return ApiError::validation(vec![]).into_response(),
+    // Trefoil extension: optimistic concurrency via If-Match / expectedVersion.
+    // Plexus strips unknown keys, so `expectedVersion` never reaches the schema.
+    let expected_version = body.get("expectedVersion").and_then(Value::as_i64);
+    let header_version = match headers.get(axum::http::header::IF_MATCH) {
+        None => None,
+        Some(value) => match value.to_str().ok().and_then(|s| {
+            s.strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .and_then(|n| n.parse::<i64>().ok())
+        }) {
+            Some(version) if version > 0 => Some(version),
+            _ => {
+                return ApiError::Simple(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid If-Match provider ETag".into(),
+                )
+                .into_response()
+            }
+        },
     };
-    let expected_version = body.expected_version;
-    let merged = match validate_and_build(body, Some(&existing)) {
-        Ok(c) => c,
-        Err(issues) => return ApiError::validation(issues).into_response(),
-    };
-    if let Err(e) = check_raw_passthrough_slug(&merged, &slug) {
-        return e.into_response();
+    if header_version.is_some() && expected_version.is_some() && header_version != expected_version
+    {
+        return ApiError::Simple(
+            StatusCode::BAD_REQUEST,
+            "If-Match conflicts with expectedVersion".into(),
+        )
+        .into_response();
     }
-
-    // Legacy callers can omit expectedVersion, but their read/merge/write is
-    // still conditional on the revision that was actually read. They may see
-    // a 409 and retry rather than silently clobbering a newer provider.
-    let next_version = match crate::database::update_provider_if_version(pool, &slug, &merged, expected_version.unwrap_or(existing.version)).await {
-        Ok(Some(version)) => version,
-        Ok(None) => return ApiError::Simple(StatusCode::CONFLICT, "Provider changed; reload before saving".into()).into_response(),
-        Err(_) => return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, "Unable to update provider".into()).into_response(),
+    refresh_oauth_accounts(&state).await;
+    let mut merged = provider_public(&state, &existing);
+    let map = merged.as_object_mut().expect("provider view is an object");
+    for (key, value) in body {
+        map.insert(key.clone(), value.clone());
+    }
+    // Explicit null clears these saved settings on PATCH; omission preserves them.
+    for key in ["pi_ai_provider", "pi_ai_quirks", "responses_extensions"] {
+        if body.get(key) == Some(&Value::Null) {
+            map.shift_remove(key);
+        }
+    }
+    let config = match validate_provider(&state, &slug, &merged, Some(&existing)).await {
+        Ok(config) => config,
+        Err(response) => return response,
     };
-    let merged = ProviderConfig { version: next_version, ..merged };
+    let revision = header_version
+        .or(expected_version)
+        .unwrap_or(existing.version);
+    let next_version =
+        match crate::database::update_provider_if_version(&pool, &slug, &config, revision).await {
+            Ok(Some(version)) => version,
+            Ok(None) => {
+                return ApiError::Simple(
+                    StatusCode::CONFLICT,
+                    "Provider changed; reload before saving".into(),
+                )
+                .into_response()
+            }
+            Err(_) => {
+                return ApiError::Simple(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".into(),
+                )
+                .into_response()
+            }
+        };
+    let config = ProviderConfig {
+        version: next_version,
+        ..config
+    };
+    let etag = provider_etag(&config);
     state
         .inner
         .providers
         .write()
         .unwrap()
-        .insert(slug.clone(), merged);
-    Json(serde_json::json!({ "success": true, "slug": slug })).into_response()
+        .insert(slug.clone(), config);
+    let mut response = Json(serde_json::json!({ "success": true, "slug": slug })).into_response();
+    response
+        .headers_mut()
+        .insert(axum::http::header::ETAG, etag.parse().unwrap());
+    response
 }
 
 async fn delete_provider(
@@ -940,6 +975,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "provider writes require PostgreSQL; covered by parity/provider-*-e2e.sh"]
     async fn put_accepts_valid_minimal_provider() {
         let state = admin_state();
         let (status, body) = call(
@@ -992,7 +1028,7 @@ mod tests {
             .map(|d| d["message"].as_str().unwrap())
             .collect();
         assert!(messages.contains(&"'oauth_provider' must be specified when using oauth://"));
-        assert!(messages.contains(&"'oauth_account' must be specified when using oauth://"));
+        assert!(!messages.contains(&"'oauth_account' must be specified when using oauth://"));
     }
 
     #[tokio::test]
@@ -1060,6 +1096,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "provider writes require PostgreSQL; covered by parity/provider-*-e2e.sh"]
     async fn put_raw_passthrough_roundtrips_with_default_auth() {
         let state = admin_state();
         let (status, _) = call(
@@ -1091,6 +1128,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "provider writes require PostgreSQL; covered by parity/provider-*-e2e.sh"]
     async fn patch_nonexistent_provider_returns_404() {
         let (status, body) = call(
             admin_state(),

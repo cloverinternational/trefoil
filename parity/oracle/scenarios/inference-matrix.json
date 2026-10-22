@@ -1,0 +1,4408 @@
+{
+ "setup": [
+  [
+   "PUT",
+   "/v0/management/providers/m-chat",
+   {
+    "api_base_url": {
+     "chat": "{{MOCK}}/v1"
+    },
+    "api_key": "sk-up-chat",
+    "models": {
+     "mock-model": {},
+     "mock-tool": {},
+     "mock-error500": {},
+     "mock-error400": {},
+     "mock-error429": {},
+     "mock-error401": {},
+     "mock-badjson": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/m-msg",
+   {
+    "api_base_url": {
+     "messages": "{{MOCK}}/v1"
+    },
+    "api_key": "sk-up-msg",
+    "models": {
+     "claude-mock": {},
+     "claude-tool": {},
+     "claude-error500": {},
+     "claude-error400": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/m-resp",
+   {
+    "api_base_url": {
+     "responses": "{{MOCK}}/v1"
+    },
+    "api_key": "sk-up-resp",
+    "models": {
+     "resp-mock": {},
+     "resp-tool": {},
+     "resp-error429": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/m-gem",
+   {
+    "api_base_url": {
+     "gemini": "{{MOCK}}/v1beta"
+    },
+    "api_key": "sk-up-gem",
+    "models": {
+     "gem-mock": {},
+     "gem-tool": {},
+     "gem-error500": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/m-comp",
+   {
+    "api_base_url": {
+     "completions": "{{MOCK}}/v1"
+    },
+    "api_key": "sk-up-comp",
+    "models": {
+     "comp-mock": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-chat",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-model"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-chat-tool",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-tool"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-msg",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-msg",
+        "model": "claude-mock"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-msg-tool",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-msg",
+        "model": "claude-tool"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-resp",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-resp",
+        "model": "resp-mock"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-resp-tool",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-resp",
+        "model": "resp-tool"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-gem",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-gem",
+        "model": "gem-mock"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-gem-tool",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-gem",
+        "model": "gem-tool"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-comp",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-comp",
+        "model": "comp-mock"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-e400",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-error400"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-e401",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-error401"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-e429",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-error429"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-e500",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-error500"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-badjson",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-badjson"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-fo-500",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-error500"
+       },
+       {
+        "provider": "m-chat",
+        "model": "mock-model"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-fo-429",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-error429"
+       },
+       {
+        "provider": "m-msg",
+        "model": "claude-mock"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-fo-400",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-error400"
+       },
+       {
+        "provider": "m-chat",
+        "model": "mock-model"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-fo-all",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-error500"
+       },
+       {
+        "provider": "m-msg",
+        "model": "claude-error500"
+       },
+       {
+        "provider": "m-gem",
+        "model": "gem-error500"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-fo-json",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-chat",
+        "model": "mock-badjson"
+       },
+       {
+        "provider": "m-chat",
+        "model": "mock-model"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-msg-e400",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-msg",
+        "model": "claude-error400"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/x-resp-e429",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "m-resp",
+        "model": "resp-error429"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ ],
+ "scenarios": [
+  {
+   "name": "chat->x-chat",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5
+   }
+  },
+  {
+   "name": "messages->x-chat",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-chat",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "responses->x-chat",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-chat",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40
+   }
+  },
+  {
+   "name": "gemini->x-chat",
+   "path": "/v1beta/models/x-chat:generateContent",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-chat",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-chat",
+    "prompt": "def f(",
+    "max_tokens": 20
+   }
+  },
+  {
+   "name": "chat->x-chat stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5,
+    "stream": true
+   }
+  },
+  {
+   "name": "messages->x-chat stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-chat",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "responses->x-chat stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-chat",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40,
+    "stream": true
+   }
+  },
+  {
+   "name": "gemini->x-chat stream",
+   "path": "/v1beta/models/x-chat:streamGenerateContent?alt=sse",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-chat stream",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-chat",
+    "prompt": "def f(",
+    "max_tokens": 20,
+    "stream": true
+   }
+  },
+  {
+   "name": "chat->x-msg",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5
+   }
+  },
+  {
+   "name": "messages->x-msg",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-msg",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "responses->x-msg",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-msg",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40
+   }
+  },
+  {
+   "name": "gemini->x-msg",
+   "path": "/v1beta/models/x-msg:generateContent",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-msg",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-msg",
+    "prompt": "def f(",
+    "max_tokens": 20
+   }
+  },
+  {
+   "name": "chat->x-msg stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5,
+    "stream": true
+   }
+  },
+  {
+   "name": "messages->x-msg stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-msg",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "responses->x-msg stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-msg",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40,
+    "stream": true
+   }
+  },
+  {
+   "name": "gemini->x-msg stream",
+   "path": "/v1beta/models/x-msg:streamGenerateContent?alt=sse",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-msg stream",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-msg",
+    "prompt": "def f(",
+    "max_tokens": 20,
+    "stream": true
+   }
+  },
+  {
+   "name": "chat->x-resp",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5
+   }
+  },
+  {
+   "name": "messages->x-resp",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-resp",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "responses->x-resp",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-resp",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40
+   }
+  },
+  {
+   "name": "gemini->x-resp",
+   "path": "/v1beta/models/x-resp:generateContent",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-resp",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-resp",
+    "prompt": "def f(",
+    "max_tokens": 20
+   }
+  },
+  {
+   "name": "chat->x-resp stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5,
+    "stream": true
+   }
+  },
+  {
+   "name": "messages->x-resp stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-resp",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "responses->x-resp stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-resp",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40,
+    "stream": true
+   }
+  },
+  {
+   "name": "gemini->x-resp stream",
+   "path": "/v1beta/models/x-resp:streamGenerateContent?alt=sse",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-resp stream",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-resp",
+    "prompt": "def f(",
+    "max_tokens": 20,
+    "stream": true
+   }
+  },
+  {
+   "name": "chat->x-gem",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5
+   }
+  },
+  {
+   "name": "messages->x-gem",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-gem",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "responses->x-gem",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-gem",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40
+   }
+  },
+  {
+   "name": "gemini->x-gem",
+   "path": "/v1beta/models/x-gem:generateContent",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-gem",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-gem",
+    "prompt": "def f(",
+    "max_tokens": 20
+   }
+  },
+  {
+   "name": "chat->x-gem stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5,
+    "stream": true
+   }
+  },
+  {
+   "name": "messages->x-gem stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-gem",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "responses->x-gem stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-gem",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40,
+    "stream": true
+   }
+  },
+  {
+   "name": "gemini->x-gem stream",
+   "path": "/v1beta/models/x-gem:streamGenerateContent?alt=sse",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-gem stream",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-gem",
+    "prompt": "def f(",
+    "max_tokens": 20,
+    "stream": true
+   }
+  },
+  {
+   "name": "chat->x-comp",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-comp",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5
+   }
+  },
+  {
+   "name": "messages->x-comp",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-comp",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "responses->x-comp",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-comp",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40
+   }
+  },
+  {
+   "name": "gemini->x-comp",
+   "path": "/v1beta/models/x-comp:generateContent",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-comp",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-comp",
+    "prompt": "def f(",
+    "max_tokens": 20
+   }
+  },
+  {
+   "name": "chat->x-comp stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-comp",
+    "messages": [
+     {
+      "role": "system",
+      "content": "sys"
+     },
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "temperature": 0.5,
+    "stream": true
+   }
+  },
+  {
+   "name": "messages->x-comp stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-comp",
+    "max_tokens": 40,
+    "system": "sys",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "responses->x-comp stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-comp",
+    "input": "hi",
+    "instructions": "sys",
+    "max_output_tokens": 40,
+    "stream": true
+   }
+  },
+  {
+   "name": "gemini->x-comp stream",
+   "path": "/v1beta/models/x-comp:streamGenerateContent?alt=sse",
+   "body": {
+    "systemInstruction": {
+     "parts": [
+      {
+       "text": "sys"
+      }
+     ]
+    },
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ],
+    "generationConfig": {
+     "maxOutputTokens": 40
+    }
+   }
+  },
+  {
+   "name": "completions->x-comp stream",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-comp",
+    "prompt": "def f(",
+    "max_tokens": 20,
+    "stream": true
+   }
+  },
+  {
+   "name": "tool chat->x-chat-tool",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat-tool",
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "w",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool messages->x-chat-tool",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-chat-tool",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "w",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool responses->x-chat-tool",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-chat-tool",
+    "input": "weather?",
+    "tools": [
+     {
+      "type": "function",
+      "name": "get_weather",
+      "description": "w",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool gemini->x-chat-tool",
+   "path": "/v1beta/models/x-chat-tool:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "weather?"
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "name": "get_weather",
+        "description": "w",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "city": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "city"
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool chat->x-chat-tool stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat-tool",
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "w",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool messages->x-chat-tool stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-chat-tool",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "w",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool responses->x-chat-tool stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-chat-tool",
+    "input": "weather?",
+    "tools": [
+     {
+      "type": "function",
+      "name": "get_weather",
+      "description": "w",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool gemini->x-chat-tool stream",
+   "path": "/v1beta/models/x-chat-tool:streamGenerateContent?alt=sse",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "weather?"
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "name": "get_weather",
+        "description": "w",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "city": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "city"
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool chat->x-msg-tool",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg-tool",
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "w",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool messages->x-msg-tool",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-msg-tool",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "w",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool responses->x-msg-tool",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-msg-tool",
+    "input": "weather?",
+    "tools": [
+     {
+      "type": "function",
+      "name": "get_weather",
+      "description": "w",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool gemini->x-msg-tool",
+   "path": "/v1beta/models/x-msg-tool:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "weather?"
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "name": "get_weather",
+        "description": "w",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "city": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "city"
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool chat->x-msg-tool stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg-tool",
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "w",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool messages->x-msg-tool stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-msg-tool",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "w",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool responses->x-msg-tool stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-msg-tool",
+    "input": "weather?",
+    "tools": [
+     {
+      "type": "function",
+      "name": "get_weather",
+      "description": "w",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool gemini->x-msg-tool stream",
+   "path": "/v1beta/models/x-msg-tool:streamGenerateContent?alt=sse",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "weather?"
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "name": "get_weather",
+        "description": "w",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "city": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "city"
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool chat->x-resp-tool",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp-tool",
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "w",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool messages->x-resp-tool",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-resp-tool",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "w",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool responses->x-resp-tool",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-resp-tool",
+    "input": "weather?",
+    "tools": [
+     {
+      "type": "function",
+      "name": "get_weather",
+      "description": "w",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool gemini->x-resp-tool",
+   "path": "/v1beta/models/x-resp-tool:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "weather?"
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "name": "get_weather",
+        "description": "w",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "city": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "city"
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool chat->x-resp-tool stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp-tool",
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "w",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool messages->x-resp-tool stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-resp-tool",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "w",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool responses->x-resp-tool stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-resp-tool",
+    "input": "weather?",
+    "tools": [
+     {
+      "type": "function",
+      "name": "get_weather",
+      "description": "w",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool gemini->x-resp-tool stream",
+   "path": "/v1beta/models/x-resp-tool:streamGenerateContent?alt=sse",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "weather?"
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "name": "get_weather",
+        "description": "w",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "city": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "city"
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool chat->x-gem-tool",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem-tool",
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "w",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool messages->x-gem-tool",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-gem-tool",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "w",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool responses->x-gem-tool",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-gem-tool",
+    "input": "weather?",
+    "tools": [
+     {
+      "type": "function",
+      "name": "get_weather",
+      "description": "w",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool gemini->x-gem-tool",
+   "path": "/v1beta/models/x-gem-tool:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "weather?"
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "name": "get_weather",
+        "description": "w",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "city": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "city"
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "tool chat->x-gem-tool stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem-tool",
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "w",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool messages->x-gem-tool stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-gem-tool",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     }
+    ],
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "w",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool responses->x-gem-tool stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-gem-tool",
+    "input": "weather?",
+    "tools": [
+     {
+      "type": "function",
+      "name": "get_weather",
+      "description": "w",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "city"
+       ]
+      }
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "tool gemini->x-gem-tool stream",
+   "path": "/v1beta/models/x-gem-tool:streamGenerateContent?alt=sse",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "weather?"
+       }
+      ]
+     }
+    ],
+    "tools": [
+     {
+      "functionDeclarations": [
+       {
+        "name": "get_weather",
+        "description": "w",
+        "parameters": {
+         "type": "object",
+         "properties": {
+          "city": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "city"
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-e400",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-e400",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-e400",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-e400",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-e400",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-e400",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-e400",
+   "path": "/v1beta/models/x-e400:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-e400",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-e400",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-e401",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-e401",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-e401",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-e401",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-e401",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-e401",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-e401",
+   "path": "/v1beta/models/x-e401:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-e401",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-e401",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-e429",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-e429",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-e429",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-e429",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-e429",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-e429",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-e429",
+   "path": "/v1beta/models/x-e429:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-e429",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-e429",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-e500",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-e500",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-e500",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-e500",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-e500",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-e500",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-e500",
+   "path": "/v1beta/models/x-e500:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-e500",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-e500",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-badjson",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-badjson",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-badjson",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-badjson",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-badjson",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-badjson",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-badjson",
+   "path": "/v1beta/models/x-badjson:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-badjson",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-badjson",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-fo-500",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-500",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-fo-500",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-fo-500",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-fo-500",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-fo-500",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-fo-500",
+   "path": "/v1beta/models/x-fo-500:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-fo-500",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-500",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-fo-429",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-429",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-fo-429",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-fo-429",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-fo-429",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-fo-429",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-fo-429",
+   "path": "/v1beta/models/x-fo-429:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-fo-429",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-429",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-fo-400",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-400",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-fo-400",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-fo-400",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-fo-400",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-fo-400",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-fo-400",
+   "path": "/v1beta/models/x-fo-400:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-fo-400",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-400",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-fo-all",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-all",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-fo-all",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-fo-all",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-fo-all",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-fo-all",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-fo-all",
+   "path": "/v1beta/models/x-fo-all:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-fo-all",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-all",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-fo-json",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-json",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-fo-json",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-fo-json",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-fo-json",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-fo-json",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-fo-json",
+   "path": "/v1beta/models/x-fo-json:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-fo-json",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-fo-json",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-msg-e400",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg-e400",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-msg-e400",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-msg-e400",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-msg-e400",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-msg-e400",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-msg-e400",
+   "path": "/v1beta/models/x-msg-e400:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-msg-e400",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg-e400",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat x-resp-e429",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp-e429",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages x-resp-e429",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-resp-e429",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses x-resp-e429",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-resp-e429",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini x-resp-e429",
+   "path": "/v1beta/models/x-resp-e429:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat x-resp-e429",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp-e429",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat nope",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "nope",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages nope",
+   "path": "/v1/messages",
+   "body": {
+    "model": "nope",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses nope",
+   "path": "/v1/responses",
+   "body": {
+    "model": "nope",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini nope",
+   "path": "/v1beta/models/nope:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat nope",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "nope",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat direct/m-chat/mock-model",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/m-chat/mock-model",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages direct/m-chat/mock-model",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/m-chat/mock-model",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses direct/m-chat/mock-model",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/m-chat/mock-model",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini direct/m-chat/mock-model",
+   "path": "/v1beta/models/direct/m-chat/mock-model:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat direct/m-chat/mock-model",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/m-chat/mock-model",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat m-chat/mock-model",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "m-chat/mock-model",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages m-chat/mock-model",
+   "path": "/v1/messages",
+   "body": {
+    "model": "m-chat/mock-model",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses m-chat/mock-model",
+   "path": "/v1/responses",
+   "body": {
+    "model": "m-chat/mock-model",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini m-chat/mock-model",
+   "path": "/v1beta/models/m-chat/mock-model:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat m-chat/mock-model",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "m-chat/mock-model",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat direct/m-msg/claude-mock",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/m-msg/claude-mock",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages direct/m-msg/claude-mock",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/m-msg/claude-mock",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses direct/m-msg/claude-mock",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/m-msg/claude-mock",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini direct/m-msg/claude-mock",
+   "path": "/v1beta/models/direct/m-msg/claude-mock:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat direct/m-msg/claude-mock",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/m-msg/claude-mock",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat direct/m-chat/unknown-model",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/m-chat/unknown-model",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages direct/m-chat/unknown-model",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/m-chat/unknown-model",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses direct/m-chat/unknown-model",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/m-chat/unknown-model",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini direct/m-chat/unknown-model",
+   "path": "/v1beta/models/direct/m-chat/unknown-model:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat direct/m-chat/unknown-model",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/m-chat/unknown-model",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err chat direct/nope/x",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/nope/x",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err messages direct/nope/x",
+   "path": "/v1/messages",
+   "body": {
+    "model": "direct/nope/x",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "err responses direct/nope/x",
+   "path": "/v1/responses",
+   "body": {
+    "model": "direct/nope/x",
+    "input": "hi"
+   }
+  },
+  {
+   "name": "err gemini direct/nope/x",
+   "path": "/v1beta/models/direct/nope/x:generateContent",
+   "body": {
+    "contents": [
+     {
+      "role": "user",
+      "parts": [
+       {
+        "text": "hi"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "err stream chat direct/nope/x",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "direct/nope/x",
+    "stream": true,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "auth none",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat",
+    "messages": []
+   },
+   "headers": {
+    "authorization": ""
+   }
+  },
+  {
+   "name": "auth bad",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat",
+    "messages": []
+   },
+   "headers": {
+    "authorization": "Bearer nope"
+   }
+  },
+  {
+   "name": "auth raw key",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-msg",
+    "max_tokens": 5,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   },
+   "headers": {
+    "authorization": "sk-k"
+   }
+  },
+  {
+   "name": "auth attribution",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   },
+   "headers": {
+    "authorization": "Bearer sk-k:Team-A"
+   }
+  },
+  {
+   "name": "responses prev missing",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-chat",
+    "input": "hi",
+    "previous_response_id": "resp_nope"
+   }
+  },
+  {
+   "name": "responses conv missing",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-chat",
+    "input": "hi",
+    "conversation": "conv_nope"
+   }
+  },
+  {
+   "name": "responses get missing",
+   "path": "/v1/responses/resp_nope",
+   "body": null,
+   "method": "GET"
+  },
+  {
+   "name": "responses delete missing",
+   "path": "/v1/responses/resp_nope",
+   "body": null,
+   "method": "DELETE"
+  },
+  {
+   "name": "conversation get missing",
+   "path": "/v1/conversations/conv_nope",
+   "body": null,
+   "method": "GET"
+  },
+  {
+   "name": "chat empty messages",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat",
+    "messages": []
+   }
+  },
+  {
+   "name": "chat reasoning",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "reasoning_effort": "high",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "messages thinking->chat",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-chat",
+    "max_tokens": 2000,
+    "thinking": {
+     "type": "enabled",
+     "budget_tokens": 1024
+    },
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ]
+   }
+  },
+  {
+   "name": "responses lite",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-resp",
+    "input": "hi",
+    "tools": [
+     {
+      "type": "tool_search"
+     }
+    ]
+   }
+  },
+  {
+   "name": "completions suffix",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-chat",
+    "prompt": "a = ",
+    "suffix": "\n"
+   }
+  },
+  {
+   "name": "completions echo",
+   "path": "/v1/completions",
+   "body": {
+    "model": "x-comp",
+    "prompt": "a",
+    "echo": true
+   }
+  },
+  {
+   "name": "bridge chat img-a",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "img-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ]
+   }
+  },
+  {
+   "name": "bridge messages img-a",
+   "path": "/v1/messages",
+   "body": {
+    "model": "img-a",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ]
+   }
+  },
+  {
+   "name": "bridge responses img-a",
+   "path": "/v1/responses",
+   "body": {
+    "model": "img-a",
+    "input": "draw a cat"
+   }
+  },
+  {
+   "name": "bridge chat img-a stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "img-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge messages img-a stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "img-a",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge responses img-a stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "img-a",
+    "input": "draw a cat",
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge chat img-or-a",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "img-or-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ]
+   }
+  },
+  {
+   "name": "bridge messages img-or-a",
+   "path": "/v1/messages",
+   "body": {
+    "model": "img-or-a",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ]
+   }
+  },
+  {
+   "name": "bridge responses img-or-a",
+   "path": "/v1/responses",
+   "body": {
+    "model": "img-or-a",
+    "input": "draw a cat"
+   }
+  },
+  {
+   "name": "bridge chat img-or-a stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "img-or-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge messages img-or-a stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "img-or-a",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge responses img-or-a stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "img-or-a",
+    "input": "draw a cat",
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge chat img-gem-a",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "img-gem-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ]
+   }
+  },
+  {
+   "name": "bridge messages img-gem-a",
+   "path": "/v1/messages",
+   "body": {
+    "model": "img-gem-a",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ]
+   }
+  },
+  {
+   "name": "bridge responses img-gem-a",
+   "path": "/v1/responses",
+   "body": {
+    "model": "img-gem-a",
+    "input": "draw a cat"
+   }
+  },
+  {
+   "name": "bridge chat img-gem-a stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "img-gem-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge messages img-gem-a stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "img-gem-a",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge responses img-gem-a stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "img-gem-a",
+    "input": "draw a cat",
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge chat img-fail-a",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "img-fail-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ]
+   }
+  },
+  {
+   "name": "bridge messages img-fail-a",
+   "path": "/v1/messages",
+   "body": {
+    "model": "img-fail-a",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ]
+   }
+  },
+  {
+   "name": "bridge responses img-fail-a",
+   "path": "/v1/responses",
+   "body": {
+    "model": "img-fail-a",
+    "input": "draw a cat"
+   }
+  },
+  {
+   "name": "bridge chat img-fail-a stream",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "img-fail-a",
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge messages img-fail-a stream",
+   "path": "/v1/messages",
+   "body": {
+    "model": "img-fail-a",
+    "max_tokens": 20,
+    "messages": [
+     {
+      "role": "user",
+      "content": "draw a cat"
+     }
+    ],
+    "stream": true
+   }
+  },
+  {
+   "name": "bridge responses img-fail-a stream",
+   "path": "/v1/responses",
+   "body": {
+    "model": "img-fail-a",
+    "input": "draw a cat",
+    "stream": true
+   }
+  },
+  {
+   "name": "rf chat->x-chat json_schema passthrough",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-chat",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "description": "an answer",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-msg json_schema strict",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-resp json_schema strict",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "description": "an answer",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-gem json_schema strict",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": true
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-msg json_schema strict false",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": false
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-gem json_schema strict false",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      },
+      "strict": false
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-resp json_schema strict unset",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-msg json_object",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_object"
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-resp json_object",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-resp",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_object"
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-gem json_object",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-gem",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_object"
+    }
+   }
+  },
+  {
+   "name": "rf chat->x-msg bare schema",
+   "path": "/v1/chat/completions",
+   "body": {
+    "model": "x-msg",
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "max_tokens": 40,
+    "response_format": {
+     "type": "json_schema",
+     "json_schema": {
+      "type": "object",
+      "properties": {
+       "answer": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "answer"
+      ],
+      "additionalProperties": false
+     }
+    }
+   }
+  },
+  {
+   "name": "rf messages->x-chat output_config.format",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-chat",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "output_config": {
+     "format": {
+      "type": "json_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf messages->x-msg output_config.format passthrough",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-msg",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "output_config": {
+     "format": {
+      "type": "json_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf messages->x-gem output_config.format",
+   "path": "/v1/messages",
+   "body": {
+    "model": "x-gem",
+    "max_tokens": 40,
+    "messages": [
+     {
+      "role": "user",
+      "content": "hi"
+     }
+    ],
+    "output_config": {
+     "format": {
+      "type": "json_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf responses->x-chat text.format no strict",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-chat",
+    "input": "hi",
+    "max_output_tokens": 40,
+    "text": {
+     "format": {
+      "type": "json_schema",
+      "name": "answer_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "rf responses->x-msg text.format strict",
+   "path": "/v1/responses",
+   "body": {
+    "model": "x-msg",
+    "input": "hi",
+    "max_output_tokens": 40,
+    "text": {
+     "format": {
+      "type": "json_schema",
+      "name": "answer_schema",
+      "strict": true,
+      "schema": {
+       "type": "object",
+       "properties": {
+        "answer": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "answer"
+       ],
+       "additionalProperties": false
+      }
+     }
+    }
+   }
+  }
+ ]
+}

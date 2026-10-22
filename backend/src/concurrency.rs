@@ -61,6 +61,69 @@ pub fn acquire(state: &AppState, provider: impl Into<String>, model: impl Into<S
     }
 }
 
+/// Plexus `ConcurrencyTracker.acquire`: refuse when the provider-wide or
+/// per-model `maxConcurrency` is already reached.
+pub fn try_acquire(
+    state: &AppState,
+    provider: &str,
+    model: &str,
+    provider_limit: Option<u64>,
+    model_limit: Option<u64>,
+) -> Option<Permit> {
+    let tracker = state.inner.concurrency.clone();
+    let key = (provider.to_owned(), model.to_owned());
+    {
+        let mut counts = tracker.counts.lock().expect("concurrency lock poisoned");
+        if let Some(limit) = provider_limit {
+            let current: usize = counts
+                .iter()
+                .filter(|((p, _), _)| p == provider)
+                .map(|(_, c)| *c)
+                .sum();
+            if current as u64 >= limit {
+                return None;
+            }
+        }
+        if let Some(limit) = model_limit {
+            if counts.get(&key).copied().unwrap_or(0) as u64 >= limit {
+                return None;
+            }
+        }
+        *counts.entry(key.clone()).or_default() += 1;
+    }
+    Some(Permit {
+        tracker,
+        key: Some(key),
+    })
+}
+
+/// `getProviderCount`.
+pub fn provider_count(state: &AppState, provider: &str) -> usize {
+    state
+        .inner
+        .concurrency
+        .counts
+        .lock()
+        .expect("concurrency lock poisoned")
+        .iter()
+        .filter(|((p, _), _)| p == provider)
+        .map(|(_, c)| *c)
+        .sum()
+}
+
+/// `getTargetCount`.
+pub fn target_count(state: &AppState, provider: &str, model: &str) -> usize {
+    state
+        .inner
+        .concurrency
+        .counts
+        .lock()
+        .expect("concurrency lock poisoned")
+        .get(&(provider.to_owned(), model.to_owned()))
+        .copied()
+        .unwrap_or(0)
+}
+
 pub fn snapshot(state: &AppState) -> ConcurrencySnapshot {
     state
         .inner
@@ -300,21 +363,32 @@ mod tests {
 #[cfg(test)]
 mod tracker_tests {
     use super::*;
+    use crate::state::KeyConfig;
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt;
-    use tower::ServiceExt;
-    use crate::state::KeyConfig;
     use std::collections::HashMap;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn active_snapshot_preserves_model_slashes_and_timestamp() {
-        let state=AppState::new(Some("admin".into()), Default::default());
-        let _permit=acquire(&state,"provider","family/model");
-        let response=router().with_state(state).oneshot(Request::get("/v0/management/concurrency").header("x-admin-key","admin").body(Body::empty()).unwrap()).await.unwrap();
-        let body:serde_json::Value=serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-        assert_eq!(body["data"][0]["model"],"family/model");
-        assert_eq!(body["data"][0]["count"],1);
-        assert!(body["data"][0]["timestamp"].as_i64().unwrap()>0);
+        let state = AppState::new(Some("admin".into()), Default::default());
+        let _permit = acquire(&state, "provider", "family/model");
+        let response = router()
+            .with_state(state)
+            .oneshot(
+                Request::get("/v0/management/concurrency")
+                    .header("x-admin-key", "admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["data"][0]["model"], "family/model");
+        assert_eq!(body["data"][0]["count"], 1);
+        assert!(body["data"][0]["timestamp"].as_i64().unwrap() > 0);
     }
 
     #[test]

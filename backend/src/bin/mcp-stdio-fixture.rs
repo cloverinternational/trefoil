@@ -19,8 +19,7 @@ fn main() {
                 if let Some(id) = message.get("id") {
                     writeln!(
                         stdout,
-                        r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":-32602,"message":"bad params","data":{{"field":"value"}}}}}}"#,
-                        id
+                        r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":-32602,"message":"bad params","data":{{"field":"value"}}}}}}"#
                     )
                     .unwrap();
                     stdout.flush().unwrap();
@@ -38,8 +37,7 @@ fn main() {
                 } else if let Some(id) = message.get("id") {
                     writeln!(
                         stdout,
-                        r#"{{"jsonrpc":"2.0","id":{},"result":{{"ok":true}}}}"#,
-                        id
+                        r#"{{"jsonrpc":"2.0","id":{id},"result":{{"ok":true}}}}"#
                     )
                     .unwrap();
                 }

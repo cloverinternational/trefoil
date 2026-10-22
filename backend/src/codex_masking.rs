@@ -8,10 +8,13 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::Value;
 
-pub const CODEX_VERSION: &str = "0.125.0";
+pub const CODEX_VERSION: &str = "0.155.1";
 
 pub fn user_agent() -> String {
-    format!("codex_cli_rs/{CODEX_VERSION} (Debian 13.0.0; x86_64) WindowsTerminal")
+    format!(
+        "codex_cli_rs/{} (Debian 13.0.0; x86_64) WindowsTerminal",
+        crate::cli_versions::codex_version()
+    )
 }
 
 /// Extract the ChatGPT account claim from a JWT access token, if present.
@@ -49,7 +52,7 @@ mod tests {
     fn uses_codex_cli_identity() {
         assert_eq!(
             user_agent(),
-            "codex_cli_rs/0.125.0 (Debian 13.0.0; x86_64) WindowsTerminal"
+            "codex_cli_rs/0.155.1 (Debian 13.0.0; x86_64) WindowsTerminal"
         );
     }
 }

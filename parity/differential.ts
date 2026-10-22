@@ -26,7 +26,7 @@ const TREFOIL_BASE_URL = process.env.TREFOIL_BASE_URL ?? 'http://127.0.0.1:8080'
 const ADMIN_KEY = 'correct-admin-key';
 const LIMITED_KEY_SECRET = 'sk-test-secret';
 const REQUEST_TIMEOUT_MS = 15_000;
-const EXPECTED_CASE_COUNT = 407;
+const EXPECTED_CASE_COUNT = 428;
 const REPORT_PATH = process.env.PARITY_REPORT ?? 'target/differential-report.json';
 
 type CaseStatus = 'pass' | 'fail' | 'error';
@@ -112,6 +112,7 @@ function registeredCaseGroups(): Case[][] {
   return [
     CASES,
     KEYS_CASES,
+    DECISIONS_CASES,
     PROVIDERS_CASES,
     ALIASES_CASES,
     USER_QUOTAS_CASES,
@@ -209,6 +210,85 @@ function normalize(body: unknown): unknown {
   return body;
 }
 
+// Usage/error rows written by the two runtimes' independent requests carry
+// fresh ids, wall-clock times and run durations. Validate and mask only those
+// fields; every other column (routing, statuses, messages, counts, order) is
+// compared exactly. Stack frames name runtime source files, so only the
+// "Error: <message>" header of a stack is compared.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function maskObservabilityField(key: string, value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  switch (key) {
+    case 'requestId':
+      if (typeof value !== 'string' || !UUID_RE.test(value)) throw new Error(`Invalid usage requestId ${String(value)}`);
+      return '<uuid>';
+    case 'date':
+      if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) throw new Error(`Invalid usage date ${String(value)}`);
+      return '<timestamp>';
+    case 'startTime':
+    case 'createdAt':
+      if (!Number.isFinite(Number(value))) throw new Error(`Invalid usage ${key} ${String(value)}`);
+      return '<timestamp-ms>';
+    case 'durationMs':
+      if (!Number.isFinite(Number(value)) || Number(value) < 0) throw new Error(`Invalid usage durationMs ${String(value)}`);
+      return '<duration-ms>';
+    case 'errorStack':
+      return typeof value === 'string' ? value.split('\n')[0] : value;
+    default:
+      return value;
+  }
+}
+function maskObservabilityRow(row: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, maskObservabilityField(key, value)]));
+}
+
+// Minimal RFC 4180 reader for backup CSVs (quoted fields may hold newlines).
+function parseCsvRecords(text: string): string[][] {
+  const records: string[][] = [];
+  let record: string[] = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else field += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { record.push(field); field = ''; }
+    else if (ch === '\n') { record.push(field); records.push(record); record = []; field = ''; }
+    else field += ch;
+  }
+  if (field !== '' || record.length) { record.push(field); records.push(record); }
+  return records;
+}
+// request_usage rows are upserted (pending insert, then final upsert): a
+// PostgreSQL sequence advances on every attempted insert while SQLite reuses
+// rowids, so its serial `id` is a storage-engine artifact there.
+function maskBackupCsv(text: string, maskSerialId: boolean): unknown {
+  const [header, ...rows] = parseCsvRecords(text);
+  if (!header) return text;
+  return {
+    header,
+    rows: rows.map((row) => header.map((key, i) => {
+      if (row[i] === '\\N') return null;
+      if (maskSerialId && key === 'id') return '<serial>';
+      return maskObservabilityField(key, row[i]);
+    })),
+  };
+}
+
+// Prometheus samples whose values are run durations rather than counts.
+const METRIC_TIMING_RE = /^(plexus_\w*(?:duration|active_time|ttft|tokens_per_sec)\w*(?:\{[^}]*\})?) (\S+)$/;
+function maskMetricsText(text: string): string {
+  return text.split('\n').map((line) => {
+    const m = METRIC_TIMING_RE.exec(line);
+    if (!m) return line;
+    if (!Number.isFinite(Number(m[2]))) throw new Error(`Invalid metric sample ${line}`);
+    return `${m[1]} <timing>`;
+  }).join('\n');
+}
+
 export function normalizeForCase(path: string, body: unknown): unknown {
   const normalized = normalize(body);
   if (path === '/mcp/plexus' && normalized && typeof normalized === 'object') {
@@ -222,6 +302,45 @@ export function normalizeForCase(path: string, body: unknown): unknown {
       }
       report.refreshedAt = '<timestamp>';
       report.durationMs = '<duration-ms>';
+      for (const item of envelope.result.content ?? []) if (item.type === 'text') item.text = JSON.stringify(structured);
+      return envelope;
+    }
+    if (structured?.operation === 'recent' && structured?.ok === true && Array.isArray(structured.data?.data)) {
+      // Two independently started runtimes log at different wall-clock
+      // seconds, on different ports, with different network timings. Validate
+      // and mask only those values (plus runtime-specific stack frames); messages,
+      // levels, modules, order and counts
+      // are still compared exactly.
+      for (const item of envelope.result.content ?? []) {
+        if (item.type === 'text' && !deepEqual(JSON.parse(item.text), (normalized as any).result.structuredContent)) throw new Error('MCP text disagrees with structured content');
+      }
+      // Plexus UsageStorage race: saveRequest's upsert can land before the
+      // queued pending insert, which then fails and logs this error (SQLite
+      // "UNIQUE constraint failed", PostgreSQL a failed-insert query). How many
+      // appear depends on scheduling, so drop exactly these entries.
+      const isUsageRace = (event: any) => String(event?.message ?? '').startsWith('Failed to insert pending usage record');
+      const raceCount = structured.data.data.filter(isUsageRace).length;
+      structured.data.data = structured.data.data.filter((event: any) => !isUsageRace(event));
+      if (typeof structured.data.total === 'number') structured.data.total -= raceCount;
+      for (const event of structured.data.data) {
+        if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(event.timestamp)) throw new Error('Invalid system log timestamp');
+        event.timestamp = '<timestamp>';
+        // Stack frames name runtime source files; the header ("Error: <message>") is compared.
+        if (typeof event.stack === 'string') event.stack = event.stack.split('\n')[0];
+        if (typeof event.message === 'string') {
+          event.message = event.message
+            .replace(/^Server listening on http:\/\/localhost:\d+$/, 'Server listening on http://localhost:<port>')
+            .replace(/^(Model metadata refresh \(\w+\) completed in )\d+ms$/, '$1<duration-ms>');
+        }
+      }
+      for (const item of envelope.result.content ?? []) if (item.type === 'text') item.text = JSON.stringify(structured);
+      return envelope;
+    }
+    if (structured?.operation === 'list' && structured?.ok === true && Array.isArray(structured.data?.data) && structured.data.data.some((row: any) => row && typeof row === 'object' && 'requestId' in row)) {
+      for (const item of envelope.result.content ?? []) {
+        if (item.type === 'text' && !deepEqual(JSON.parse(item.text), (normalized as any).result.structuredContent)) throw new Error('MCP text disagrees with structured content');
+      }
+      structured.data.data = structured.data.data.map((row: Record<string, unknown>) => maskObservabilityRow(row));
       for (const item of envelope.result.content ?? []) if (item.type === 'text') item.text = JSON.stringify(structured);
       return envelope;
     }
@@ -253,8 +372,17 @@ export function normalizeForCase(path: string, body: unknown): unknown {
     }
     return page;
   }
+  if (path.startsWith('/v0/management/errors') && normalized && typeof normalized === 'object' && Array.isArray((normalized as any).data)) {
+    const page = structuredClone(normalized) as any;
+    page.data = page.data.map((row: Record<string, unknown>) => maskObservabilityRow(row));
+    return page;
+  }
+  if (path === '/v0/management/metrics' && typeof normalized === 'string') return maskMetricsText(normalized);
   if (path.startsWith('/v0/management/backup') && normalized && typeof normalized === 'object' && !Array.isArray(normalized)) {
     const object = { ...(normalized as Record<string, unknown>) };
+    for (const [name, value] of Object.entries(object)) {
+      if (name.endsWith('.csv.gz') && typeof value === 'string') object[name] = maskBackupCsv(value, name === 'request_usage.csv.gz');
+    }
     delete object.created_at;
     // The reference may run against SQLite while Trefoil uses PostgreSQL;
     // the dialect identifies the storage engine, not the backup contract.
@@ -549,6 +677,62 @@ const INFERENCE_CASES: KeysCase[] = [
 // A fresh key name per run avoids collisions with state left over from a
 // previous run against the same live Plexus instance.
 const runId = Date.now();
+
+// Local System One upstream for /v1/decisions. Both gateways call the same
+// mock, so routing, payload shaping and response validation are compared
+// without any external provider. The model id selects the upstream behavior.
+const SYSTEMONE_SEEN: unknown[] = [];
+const systemOne = Bun.serve({
+  hostname: '127.0.0.1',
+  port: 0,
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname !== '/v1/systemone' || request.method !== 'POST') return new Response('not found', { status: 404 });
+    const body = (await request.json()) as any;
+    SYSTEMONE_SEEN.push({ body, authorization: request.headers.get('authorization') });
+    const sameShape = JSON.stringify(Object.keys(body).sort()) === JSON.stringify(['model', 'questions', 'state']);
+    if (!sameShape || request.headers.get('authorization') !== 'Bearer sk-systemone') return Response.json({ error: 'unexpected upstream request' }, { status: 418 });
+    if (body.model === 'jev-bad') return Response.json({ model: 'jev-bad', answers: {}, usage: { input_tokens: 1, output_tokens: 1 } });
+    if (body.model === 'jev-shape') return Response.json({ answers: { a: { type: 'noul', noul: 1 } } });
+    if (body.model === 'jev-reject') return Response.json({ error: { message: 'bad questions' } }, { status: 422 });
+    return Response.json({
+      id: 'gen-1', provider: 'TypeSafe', model: body.model, ignored: true,
+      answers: Object.fromEntries(Object.keys(body.questions).map((id) => [id, { type: 'choice', choice: 'yes', probabilities: { yes: 0.9, no: 0.1 }, confidence: 0.9, extra: 1 }])),
+      usage: { input_tokens: 12, output_tokens: 3, cost: 0.001, cached: 5 },
+    });
+  },
+});
+const SYSTEMONE_BASE = `http://127.0.0.1:${systemOne.port}/v1`;
+const DECISIONS_PROVIDER = `decisions-${runId}`;
+const DECISIONS_CHAT_PROVIDER = `decisions-chat-${runId}`;
+const INFERENCE_AUTH = { authorization: `Bearer ${LIMITED_KEY_SECRET}` };
+const DECISION_QUESTIONS = { approve: { type: 'choice', instructions: 'Approve?', criteria: { yes: 'Looks good', no: null } } };
+
+const DECISIONS_CASES: KeysCase[] = [
+  { name: 'PUT decisions provider fixture (systemone)', method: 'PUT', path: `/v0/management/providers/${DECISIONS_PROVIDER}`, adminHeader: ADMIN_KEY,
+    body: { api_base_url: { systemone: SYSTEMONE_BASE }, api_key: 'sk-systemone', models: { 'jev-ok': {}, 'jev-bad': {}, 'jev-shape': {}, 'jev-reject': {} } } },
+  { name: 'PUT chat-only provider fixture', method: 'PUT', path: `/v0/management/providers/${DECISIONS_CHAT_PROVIDER}`, adminHeader: ADMIN_KEY,
+    body: { api_base_url: { chat: 'http://127.0.0.1:9/v1' }, api_key: 'sk-chat', models: { 'chat-model': {} } } },
+  { name: 'decisions rejects missing credentials', method: 'POST', path: '/v1/decisions', body: { model: 'x', state: 's', questions: DECISION_QUESTIONS } },
+  { name: 'decisions rejects missing model', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { state: 's', questions: DECISION_QUESTIONS } },
+  { name: 'decisions rejects blank model', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: '  ', state: 's', questions: DECISION_QUESTIONS } },
+  { name: 'decisions rejects numeric state', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: 'm', state: 5, questions: DECISION_QUESTIONS } },
+  { name: 'decisions rejects empty questions', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: 'm', state: 's', questions: {} } },
+  { name: 'decisions rejects unknown question type', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: 'm', state: 's', questions: { a: { type: 'x', instructions: 'i' } } } },
+  { name: 'decisions rejects one-level score', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: 'm', state: 's', questions: { a: { type: 'score', instructions: 'i', criteria: ['a'] } } } },
+  { name: 'decisions rejects half noul criteria', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: 'm', state: 's', questions: { a: { type: 'noul', instructions: 'i', criteria: { true: 't' } } } } },
+  { name: 'decisions rejects stream flag', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: 'm', state: 's', questions: DECISION_QUESTIONS, stream: false } },
+  { name: 'decisions rejects non-object body', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: 'text' },
+  { name: 'decisions reports unknown model', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: `missing-${runId}`, state: 's', questions: DECISION_QUESTIONS } },
+  { name: 'decisions rejects chat-only target', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: `${DECISIONS_CHAT_PROVIDER}/chat-model`, state: 's', questions: DECISION_QUESTIONS } },
+  { name: 'decisions dispatches to systemone and strips unknown fields', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: `${DECISIONS_PROVIDER}/jev-ok`, state: { ticket: 1 }, questions: DECISION_QUESTIONS, user: 'dropped' } },
+  { name: 'systemone alias dispatches identically', method: 'POST', path: '/v1/systemone', headers: INFERENCE_AUTH, body: { model: `${DECISIONS_PROVIDER}/jev-ok`, state: 'plain', questions: { q: { type: 'score', instructions: 'Rate', criteria: ['low', 'high'] } } } },
+  { name: 'decisions rejects empty upstream answers', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: `${DECISIONS_PROVIDER}/jev-bad`, state: 's', questions: DECISION_QUESTIONS } },
+  { name: 'decisions rejects malformed upstream response', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: `${DECISIONS_PROVIDER}/jev-shape`, state: 's', questions: DECISION_QUESTIONS } },
+  { name: 'decisions surfaces upstream client error', method: 'POST', path: '/v1/decisions', headers: INFERENCE_AUTH, body: { model: `${DECISIONS_PROVIDER}/jev-reject`, state: 's', questions: DECISION_QUESTIONS } },
+  { name: 'DELETE decisions provider fixture', method: 'DELETE', path: `/v0/management/providers/${DECISIONS_PROVIDER}`, adminHeader: ADMIN_KEY },
+  { name: 'DELETE chat-only provider fixture', method: 'DELETE', path: `/v0/management/providers/${DECISIONS_CHAT_PROVIDER}`, adminHeader: ADMIN_KEY },
+];
 
 const KEYS_CASES: KeysCase[] = [
   {
@@ -1811,6 +1995,7 @@ async function main() {
   }
 
   failures += await runCases(KEYS_CASES);
+  failures += await runCases(DECISIONS_CASES);
   failures += await runCases(PROVIDERS_CASES);
   failures += await runCases(ALIASES_CASES);
   failures += await runCases(USER_QUOTAS_CASES);
@@ -1899,6 +2084,7 @@ async function main() {
   }
   await writeReport('complete');
   console.log(`\nAll ${total} cases match.`);
+  systemOne.stop(true);
   } catch (error) {
     await writeReport('incomplete', String(error));
     console.error(`\nDifferential run incomplete: ${String(error)}`);

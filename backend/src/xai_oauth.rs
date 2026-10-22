@@ -1,43 +1,288 @@
-//! xAI OAuth device-code grant with strict HTTPS verification URLs.
-use crate::copilot_oauth::DeviceCode;
-use serde_json::Value;
-use std::time::Duration;
-const CLIENT_ID:&str="b1a00492-073a-47ea-816f-4c329264a828";
-const SCOPE:&str="openid profile email offline_access grok-cli:access api:access";
-pub enum Poll{Pending,SlowDown(Duration),Complete{access:String,refresh:String,expires:i64}}
-fn client()->Result<reqwest::Client,String>{reqwest::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"Unable to initialize xAI OAuth client".into())}
-fn verification(value:&str)->Result<String,String>{let url=url::Url::parse(value).map_err(|_|"Untrusted xAI verification URI")?;if url.scheme()!="https"||url.host_str().is_none(){return Err("Untrusted xAI verification URI".into())}Ok(url.into())}
-fn tokens(value:&Value,old:Option<&str>)->Result<(String,String,i64),String>{
- let access=value["access_token"].as_str().filter(|v|!v.is_empty()).ok_or("Invalid xAI OAuth access token")?;
- let refresh=value["refresh_token"].as_str().filter(|v|!v.is_empty()).map(str::to_owned).or_else(||old.map(str::to_owned)).ok_or("Invalid xAI OAuth refresh token")?;
- let seconds=value["expires_in"].as_i64().unwrap_or(3600);if seconds<=0{return Err("Invalid xAI OAuth expiry".into())};
- Ok((access.into(),refresh,chrono::Utc::now().timestamp_millis().saturating_add(seconds.saturating_mul(1000)).saturating_sub(300_000)))
+//! xAI (Grok/X subscription) login — port of pinned pi-ai `auth/oauth/xai.js`
+//! (device-code grant, HTTPS-only verification URIs).
+use crate::oauth_login::{
+    now_ms, poll_device_code_flow, search_params, AuthEvent, DevicePoll, Interaction,
+    OAuthCredentials,
+};
+use serde_json::{Map, Value};
+
+const CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+const SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
+const REFRESH_SKEW_MS: i64 = 5 * 60 * 1000;
+const DEFAULT_TOKEN_LIFETIME_SECONDS: f64 = 3600.0;
+
+#[derive(Debug, Clone)]
+pub struct Endpoints {
+    pub device_code_url: String,
+    pub token_url: String,
 }
-pub async fn start()->Result<DeviceCode,String>{start_at("https://auth.x.ai/oauth2/device/code").await}
-async fn start_at(url:&str)->Result<DeviceCode,String>{let response=client()?.post(url).header("accept","application/json").form(&[("client_id",CLIENT_ID),("scope",SCOPE),("referrer","pi")]).send().await.map_err(|_|"xAI device request failed")?;if !response.status().is_success(){return Err("xAI device authorization rejected".into())};let value:Value=response.json().await.map_err(|_|"Invalid xAI device response")?;let field=|key|value[key].as_str().filter(|v|!v.is_empty()).map(str::to_owned).ok_or_else(||format!("Missing xAI device field {key}"));let uri=verification(&value["verification_uri_complete"].as_str().unwrap_or(value["verification_uri"].as_str().unwrap_or("")))?;Ok(DeviceCode{secret:field("device_code")?,user_code:field("user_code")?,verification_uri:uri,interval:Duration::from_secs(value["interval"].as_u64().filter(|v|*v>0).unwrap_or(5).min(3600)),expires_in:Duration::from_secs(value["expires_in"].as_u64().filter(|v|*v>0).ok_or("Invalid xAI device expiry")?.min(86400))})}
-pub async fn poll(secret:&str,interval:Duration)->Result<Poll,String>{poll_at("https://auth.x.ai/oauth2/token",secret,interval).await}
-async fn poll_at(url:&str,secret:&str,interval:Duration)->Result<Poll,String>{
-    let response=client()?.post(url).header("accept","application/json").form(&[("grant_type","urn:ietf:params:oauth:grant-type:device_code"),("client_id",CLIENT_ID),("device_code",secret)]).send().await.map_err(|_|"xAI polling failed")?;
-    let ok=response.status().is_success();
-    let value:Value=response.json().await.map_err(|_|"Invalid xAI token response")?;
-    if ok {let(a,r,e)=tokens(&value,None)?;return Ok(Poll::Complete{access:a,refresh:r,expires:e});}
-    match value["error"].as_str(){
-        Some("authorization_pending")=>Ok(Poll::Pending),
-        Some("slow_down")=>{
-            let seconds=value["interval"].as_u64().filter(|v|*v>0).unwrap_or(interval.as_secs().saturating_add(5)).min(3600);
-            Ok(Poll::SlowDown(Duration::from_secs(seconds)))
+
+impl Default for Endpoints {
+    fn default() -> Self {
+        Self {
+            device_code_url: "https://auth.x.ai/oauth2/device/code".into(),
+            token_url: "https://auth.x.ai/oauth2/token".into(),
         }
-        Some("access_denied")|Some("authorization_denied")=>Err("xAI device authorization denied".into()),
-        Some("expired_token")=>Err("xAI device code expired".into()),
-        _=>Err("xAI device token rejected".into())
     }
 }
-pub async fn refresh(token:&str)->Result<(String,String,i64),String>{refresh_at("https://auth.x.ai/oauth2/token",token).await}
-async fn refresh_at(url:&str,token:&str)->Result<(String,String,i64),String>{let response=client()?.post(url).header("accept","application/json").form(&[("grant_type","refresh_token"),("client_id",CLIENT_ID),("refresh_token",token)]).send().await.map_err(|_|"xAI refresh failed")?;if !response.status().is_success(){return Err("xAI refresh rejected".into())};tokens(&response.json::<Value>().await.map_err(|_|"Invalid xAI refresh response")?,Some(token))}
+
+fn required_string(body: &Map<String, Value>, field: &str) -> Result<String, String> {
+    body.get(field)
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("Invalid xAI OAuth response field: {field}"))
+}
+
+fn positive_number(body: &Map<String, Value>, field: &str) -> Result<f64, String> {
+    body.get(field)
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .ok_or_else(|| format!("Invalid xAI OAuth response field: {field}"))
+}
+
+fn validate_verification_uri(raw: &str) -> Result<String, String> {
+    let url = url::Url::parse(raw)
+        .map_err(|_| "Untrusted verification URI in xAI OAuth response".to_string())?;
+    if url.scheme() != "https" {
+        return Err("Untrusted verification URI in xAI OAuth response".into());
+    }
+    Ok(url.to_string())
+}
+
+struct FormResponse {
+    ok: bool,
+    status: u16,
+    body: Map<String, Value>,
+}
+
+async fn post_form(url: &str, fields: &[(&str, &str)]) -> Result<FormResponse, String> {
+    let response = reqwest::Client::new()
+        .post(url)
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(search_params(fields))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = response.status();
+    let body = match response.json::<Value>().await {
+        Ok(Value::Object(map)) => map,
+        Ok(_) => Map::new(),
+        Err(_) => {
+            return Err(format!(
+                "xAI OAuth returned invalid JSON (HTTP {})",
+                status.as_u16()
+            ))
+        }
+    };
+    Ok(FormResponse {
+        ok: status.is_success(),
+        status: status.as_u16(),
+        body,
+    })
+}
+
+fn request_failure(action: &str, response: &FormResponse) -> String {
+    let detail = [
+        response.body.get("error").and_then(Value::as_str),
+        response
+            .body
+            .get("error_description")
+            .and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|v| !v.is_empty())
+    .collect::<Vec<_>>()
+    .join(": ");
+    format!(
+        "xAI OAuth {action} failed (HTTP {}){}",
+        response.status,
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        }
+    )
+}
+
+struct Device {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: Option<String>,
+    interval: Option<f64>,
+    expires_in: f64,
+}
+
+fn parse_device_code(body: &Map<String, Value>) -> Result<Device, String> {
+    let interval = body
+        .get("interval")
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite() && *v > 0.0);
+    let complete = match body
+        .get("verification_uri_complete")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+    {
+        Some(raw) => Some(validate_verification_uri(raw)?),
+        None => None,
+    };
+    let device_code = required_string(body, "device_code")?;
+    let user_code = required_string(body, "user_code")?;
+    let verification_uri = validate_verification_uri(&required_string(body, "verification_uri")?)?;
+    let expires_in = positive_number(body, "expires_in")?;
+    Ok(Device {
+        device_code,
+        user_code,
+        verification_uri,
+        verification_uri_complete: complete,
+        interval,
+        expires_in,
+    })
+}
+
+/// pi-ai `credentialsFromTokenResponse`.
+fn credentials_from_token_response(
+    body: &Map<String, Value>,
+    previous_refresh: Option<&str>,
+) -> Result<OAuthCredentials, String> {
+    let access = required_string(body, "access_token")?;
+    let refresh = match (
+        body.get("refresh_token"),
+        previous_refresh.filter(|v| !v.is_empty()),
+    ) {
+        (None, Some(previous)) => previous.to_string(),
+        _ => required_string(body, "refresh_token")?,
+    };
+    let expires_in = if body.contains_key("expires_in") {
+        positive_number(body, "expires_in")?
+    } else {
+        DEFAULT_TOKEN_LIFETIME_SECONDS
+    };
+    Ok(OAuthCredentials::new(
+        access,
+        refresh,
+        now_ms() + (expires_in * 1000.0) as i64 - REFRESH_SKEW_MS,
+    ))
+}
+
+pub async fn login(
+    interaction: Interaction,
+    endpoints: Endpoints,
+) -> Result<OAuthCredentials, String> {
+    let response = post_form(
+        &endpoints.device_code_url,
+        &[
+            ("client_id", CLIENT_ID),
+            ("scope", SCOPE),
+            ("referrer", "pi"),
+        ],
+    )
+    .await?;
+    if !response.ok {
+        return Err(request_failure("device authorization", &response));
+    }
+    let device = parse_device_code(&response.body)?;
+    interaction.notify(AuthEvent::DeviceCode {
+        user_code: device.user_code.clone(),
+        verification_uri: device
+            .verification_uri_complete
+            .clone()
+            .unwrap_or_else(|| device.verification_uri.clone()),
+    });
+    let token_url = endpoints.token_url.clone();
+    poll_device_code_flow(device.interval, Some(device.expires_in), true, || async {
+        let response = post_form(
+            &token_url,
+            &[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("client_id", CLIENT_ID),
+                ("device_code", &device.device_code),
+            ],
+        )
+        .await?;
+        if response.ok {
+            return credentials_from_token_response(&response.body, None).map(DevicePoll::Complete);
+        }
+        Ok(match response.body.get("error").and_then(Value::as_str) {
+            Some("authorization_pending") => DevicePoll::Pending,
+            Some("slow_down") => {
+                DevicePoll::SlowDown(response.body.get("interval").and_then(Value::as_f64))
+            }
+            Some("access_denied") | Some("authorization_denied") => {
+                DevicePoll::Failed("xAI device authorization was denied".into())
+            }
+            Some("expired_token") => DevicePoll::Failed("xAI device code expired".into()),
+            _ => DevicePoll::Failed(request_failure("device token polling", &response)),
+        })
+    })
+    .await
+}
+
+/// pi-ai `refreshXaiToken`: (access, refresh, expires).
+pub async fn refresh(token: &str) -> Result<(String, String, i64), String> {
+    refresh_at(&Endpoints::default().token_url, token).await
+}
+
+async fn refresh_at(url: &str, token: &str) -> Result<(String, String, i64), String> {
+    let response = post_form(
+        url,
+        &[
+            ("grant_type", "refresh_token"),
+            ("client_id", CLIENT_ID),
+            ("refresh_token", token),
+        ],
+    )
+    .await?;
+    if !response.ok {
+        return Err(request_failure("token refresh", &response));
+    }
+    let credentials = credentials_from_token_response(&response.body, Some(token))?;
+    Ok((credentials.access, credentials.refresh, credentials.expires))
+}
 
 #[cfg(test)]
 mod tests {
- use super::*;use axum::{routing::post,Json,Router,http::{StatusCode,HeaderMap},body::Bytes};
- #[test] fn rejects_non_https_and_retains_refresh_when_omitted(){assert!(verification("http://x.ai").is_err());let(a,r,_)=tokens(&serde_json::json!({"access_token":"a"}),Some("old")).unwrap();assert_eq!((a,r),("a".into(),"old".into()));}
- #[tokio::test] async fn xai_device_and_refresh_forms_follow_contract(){let app=Router::new().route("/device",post(|body:Bytes|async move{let f:std::collections::HashMap<_,_>=url::form_urlencoded::parse(&body).into_owned().collect();assert_eq!(f["scope"],SCOPE);Json(serde_json::json!({"device_code":"secret","user_code":"ABC","verification_uri":"https://auth.x.ai/device","expires_in":600}))})).route("/poll",post(|_:HeaderMap|async{(StatusCode::BAD_REQUEST,Json(serde_json::json!({"error":"slow_down","interval":11})))})).route("/refresh",post(|body:Bytes|async move{let f:std::collections::HashMap<_,_>=url::form_urlencoded::parse(&body).into_owned().collect();assert_eq!(f["grant_type"],"refresh_token");assert_eq!(f["refresh_token"],"old");Json(serde_json::json!({"access_token":"new","expires_in":3600}))}));let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let addr=listener.local_addr().unwrap();let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});assert_eq!(start_at(&format!("http://{addr}/device")).await.unwrap().user_code,"ABC");assert!(matches!(poll_at(&format!("http://{addr}/poll"),"secret",Duration::from_secs(5)).await.unwrap(),Poll::SlowDown(d) if d==Duration::from_secs(11)));let(a,r,_)=refresh_at(&format!("http://{addr}/refresh"),"old").await.unwrap();assert_eq!((a,r),("new".into(),"old".into()));server.abort();}
+    use super::*;
+    use axum::{body::Bytes, routing::post, Json, Router};
+
+    #[test]
+    fn rejects_non_https_and_retains_refresh_when_omitted() {
+        assert!(validate_verification_uri("http://x.ai").is_err());
+        let body = serde_json::json!({"access_token":"a"});
+        let credentials =
+            credentials_from_token_response(body.as_object().unwrap(), Some("old")).unwrap();
+        assert_eq!(
+            (credentials.access.as_str(), credentials.refresh.as_str()),
+            ("a", "old")
+        );
+        assert_eq!(
+            credentials_from_token_response(body.as_object().unwrap(), None).unwrap_err(),
+            "Invalid xAI OAuth response field: refresh_token"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_form_follows_contract() {
+        let app = Router::new().route(
+            "/refresh",
+            post(|body: Bytes| async move {
+                let f: std::collections::HashMap<_, _> =
+                    url::form_urlencoded::parse(&body).into_owned().collect();
+                assert_eq!(f["grant_type"], "refresh_token");
+                assert_eq!(f["refresh_token"], "old");
+                Json(serde_json::json!({"access_token":"new","expires_in":3600}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (a, r, _) = refresh_at(&format!("http://{addr}/refresh"), "old")
+            .await
+            .unwrap();
+        assert_eq!((a.as_str(), r.as_str()), ("new", "old"));
+        server.abort();
+    }
 }

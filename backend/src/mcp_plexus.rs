@@ -53,6 +53,22 @@ fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     }
 }
 
+/// JavaScript `encodeURIComponent`, used (like Plexus) for ids interpolated
+/// into internal management paths so arbitrary client-supplied ids always form
+/// a valid request URI.
+fn encode_uri_component(value: &str) -> String {
+    crate::pi_catalog::encode_uri_component(value)
+}
+
+/// Plexus `encodePathPreservingSlashes`: `encodeURIComponent` per `/` segment.
+fn encode_path_preserving_slashes(value: &str) -> String {
+    value
+        .split('/')
+        .map(encode_uri_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn enabled(state: &AppState) -> bool {
     state
         .inner
@@ -78,7 +94,10 @@ fn rpc_error(id: Value, code: i32, message: &str) -> Response {
 
 fn tool_error(id: Value, operation: &str, message: &str, kind: &str, code: i32) -> Response {
     let result = json!({"ok":false,"operation":operation,"error":{"message":message,"type":kind,"code":code}});
-    rpc_result(id, json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":true}))
+    rpc_result(
+        id,
+        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":true}),
+    )
 }
 
 fn rpc_result(id: Value, result: Value) -> Response {
@@ -143,7 +162,23 @@ async fn dispatch(state: &AppState, request: Value) -> Response {
 }
 
 fn is_destructive(operation: &str) -> bool {
-    matches!(operation, "delete" | "delete_all" | "clear" | "clear_for_key" | "quota_clear" | "delete_log" | "delete_all_logs" | "disable" | "restore" | "restart" | "rotate" | "truncate" | "import" | "overwrite")
+    matches!(
+        operation,
+        "delete"
+            | "delete_all"
+            | "clear"
+            | "clear_for_key"
+            | "quota_clear"
+            | "delete_log"
+            | "delete_all_logs"
+            | "disable"
+            | "restore"
+            | "restart"
+            | "rotate"
+            | "truncate"
+            | "import"
+            | "overwrite"
+    )
 }
 
 async fn call_tool(
@@ -160,38 +195,113 @@ async fn call_tool(
         .and_then(Value::as_str)
         .unwrap_or("");
     if is_destructive(operation)
-        && args.and_then(|v| v.get("destructive")).and_then(Value::as_str) != Some("acknowledged")
+        && args
+            .and_then(|v| v.get("destructive"))
+            .and_then(Value::as_str)
+            != Some("acknowledged")
     {
-        return tool_error(id, operation, "This destructive operation requires destructive: \"acknowledged\".", "confirmation_required", 400);
+        return tool_error(
+            id,
+            operation,
+            "This destructive operation requires destructive: \"acknowledged\".",
+            "confirmation_required",
+            400,
+        );
     }
     let allowed: &[&str] = match name {
         "plexus_config" => &["get", "export", "status"],
-        "plexus_provider" => &["list", "get", "put", "create", "update", "delete", "fetch_models"],
-        "plexus_model_alias" => &["list", "get", "put", "create", "update", "delete", "delete_all"],
-        "plexus_key" => &["list", "get", "put", "create", "update", "delete", "disable"],
-        "plexus_quota" => &["list", "get", "put", "create", "update", "delete", "status", "clear", "recompute"],
+        "plexus_provider" => &[
+            "list",
+            "get",
+            "put",
+            "create",
+            "update",
+            "delete",
+            "fetch_models",
+        ],
+        "plexus_model_alias" => &[
+            "list",
+            "get",
+            "put",
+            "create",
+            "update",
+            "delete",
+            "delete_all",
+        ],
+        "plexus_key" => &[
+            "list", "get", "put", "create", "update", "delete", "disable",
+        ],
+        "plexus_quota" => &[
+            "list",
+            "get",
+            "put",
+            "create",
+            "update",
+            "delete",
+            "status",
+            "clear",
+            "recompute",
+        ],
         "plexus_quota_checker" => &["types", "list", "get"],
         "plexus_system_logs" => &["recent", "level", "set_level", "reset_level"],
-        "plexus_mcp_gateway" => &["servers_list", "list", "get", "put", "create", "update", "delete", "status", "start", "stop", "restart", "logs"],
+        "plexus_mcp_gateway" => &[
+            "servers_list",
+            "list",
+            "get",
+            "put",
+            "create",
+            "update",
+            "delete",
+            "status",
+            "start",
+            "stop",
+            "restart",
+            "logs",
+        ],
         _ => &[],
     };
     if !allowed.is_empty() && !allowed.contains(&operation) {
-        return tool_error(id, operation, &format!("Unsupported operation '{operation}'. Allowed operations: {}.", allowed.join(", ")), "invalid_request", 400);
+        return tool_error(
+            id,
+            operation,
+            &format!(
+                "Unsupported operation '{operation}'. Allowed operations: {}.",
+                allowed.join(", ")
+            ),
+            "invalid_request",
+            400,
+        );
     }
     let resource = match (name, operation) {
         ("plexus_provider", "get" | "put" | "create" | "update" | "delete") => Some("provider"),
-        ("plexus_model_alias", "get" | "put" | "create" | "update" | "delete") => Some("model_alias"),
+        ("plexus_model_alias", "get" | "put" | "create" | "update" | "delete") => {
+            Some("model_alias")
+        }
         ("plexus_key", "get" | "put" | "create" | "update" | "delete" | "disable") => Some("key"),
         ("plexus_quota", "get" | "put" | "create" | "update" | "delete") => Some("quota"),
         ("plexus_quota", "status") => Some("key"),
         ("plexus_quota_checker", "get") => Some("quota checker"),
         ("plexus_debug", "get_log") => Some("debug get_log"),
-        ("plexus_mcp_gateway", "get" | "put" | "create" | "update" | "delete" | "status" | "start" | "stop" | "restart" | "logs") => Some("mcp_gateway"),
+        (
+            "plexus_mcp_gateway",
+            "get" | "put" | "create" | "update" | "delete" | "status" | "start" | "stop"
+            | "restart" | "logs",
+        ) => Some("mcp_gateway"),
         _ => None,
     };
     if let Some(resource) = resource {
-        if args.and_then(|args| args.get("id")).and_then(Value::as_str).is_none_or(str::is_empty) {
-            return tool_error(id, operation, &format!("Missing id for {resource} operation."), "invalid_request", 400);
+        if args
+            .and_then(|args| args.get("id"))
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return tool_error(
+                id,
+                operation,
+                &format!("Missing id for {resource} operation."),
+                "invalid_request",
+                400,
+            );
         }
     }
     let result = match (name, operation) {
@@ -214,11 +324,16 @@ async fn call_tool(
             let providers = state.inner.providers.read().unwrap();
             let mut entries = providers.iter().collect::<Vec<_>>();
             entries.sort_by_key(|(id, _)| *id);
-            let data = entries.into_iter().map(|(id, provider)| {
-                let mut value = redact_provider(provider);
-                if let Value::Object(ref mut object) = value { object.insert("id".into(), json!(id)); }
-                value
-            }).collect::<Vec<_>>();
+            let data = entries
+                .into_iter()
+                .map(|(id, provider)| {
+                    let mut value = redact_provider(provider);
+                    if let Value::Object(ref mut object) = value {
+                        object.insert("id".into(), json!(id));
+                    }
+                    value
+                })
+                .collect::<Vec<_>>();
             json!({"ok":true,"operation":operation,"data":data})
         }
         ("plexus_provider", "get") => {
@@ -228,13 +343,11 @@ async fn call_tool(
             let providers = state.inner.providers.read().unwrap();
             match providers.get(provider_id) {
                 Some(provider) => {
-                    {
-                        let mut data = redact_provider(provider);
-                        if let Value::Object(ref mut object) = data {
-                            object.insert("id".into(), json!(provider_id));
-                        }
-                        json!({"ok":true,"operation":operation,"data":data})
+                    let mut data = redact_provider(provider);
+                    if let Value::Object(ref mut object) = data {
+                        object.insert("id".into(), json!(provider_id));
                     }
+                    json!({"ok":true,"operation":operation,"data":data})
                 }
                 None => {
                     json!({"ok":false,"operation":operation,"error":{"message":format!("Provider '{provider_id}' not found"),"type":"not_found","code":404}})
@@ -242,14 +355,24 @@ async fn call_tool(
             }
         }
         ("plexus_provider", "fetch_models") => {
-            let body = args.and_then(|v| v.get("body")).cloned().unwrap_or_else(|| json!({}));
-            return forwarded_operation(state, id, operation, "POST", "/v0/management/providers/fetch-models", Some(body)).await;
+            let body = args
+                .and_then(|v| v.get("body"))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            return forwarded_operation(
+                state,
+                id,
+                operation,
+                "POST",
+                "/v0/management/providers/fetch-models",
+                Some(body),
+            )
+            .await;
         }
         ("plexus_provider", "put")
         | ("plexus_provider", "create")
         | ("plexus_provider", "update")
-        | ("plexus_provider", "delete")
-        => {
+        | ("plexus_provider", "delete") => {
             return provider_operation(state, id, operation, args).await;
         }
         ("plexus_model_alias", "list")
@@ -418,20 +541,48 @@ async fn forwarded_request(
     } else {
         json!({"encoding":"base64","contentType":content_type,"data":base64::engine::general_purpose::STANDARD.encode(&bytes)})
     };
-    let payload = if status.is_success() && (path == "/v0/management/config" || path == "/v0/management/config/export") {
+    let payload = if status.is_success()
+        && (path == "/v0/management/config" || path == "/v0/management/config/export")
+    {
         redact_key_secrets(payload)
-    } else { payload };
-    let payload = if status.is_success() && path == "/v0/management/user-quotas" && operation == "list" { record_list(payload) } else { payload };
+    } else {
+        payload
+    };
+    let payload =
+        if status.is_success() && path == "/v0/management/user-quotas" && operation == "list" {
+            record_list(payload)
+        } else {
+            payload
+        };
     let payload = if status.is_success() && operation == "backup" {
-        if content_type.contains("json") { json!({"full":false,"backup":payload}) }
-        else { json!({"full":true,"bytes":bytes.len(),"contentType":content_type,"encoding":"base64","archive":base64::engine::general_purpose::STANDARD.encode(&bytes)}) }
-    } else { payload };
+        if content_type.contains("json") {
+            json!({"full":false,"backup":payload})
+        } else {
+            json!({"full":true,"bytes":bytes.len(),"contentType":content_type,"encoding":"base64","archive":base64::engine::general_purpose::STANDARD.encode(&bytes)})
+        }
+    } else {
+        payload
+    };
     let result = if status.is_success() {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
         let raw = payload.get("error").unwrap_or(&payload);
-        let message = raw.get("message").cloned().unwrap_or_else(|| if raw.is_string() { raw.clone() } else { json!("Management request failed") });
-        let kind = raw.get("type").cloned().unwrap_or_else(|| json!(if status == StatusCode::BAD_REQUEST {"invalid_request"} else if status == StatusCode::NOT_FOUND {"not_found"} else {"server_error"}));
+        let message = raw.get("message").cloned().unwrap_or_else(|| {
+            if raw.is_string() {
+                raw.clone()
+            } else {
+                json!("Management request failed")
+            }
+        });
+        let kind = raw.get("type").cloned().unwrap_or_else(|| {
+            json!(if status == StatusCode::BAD_REQUEST {
+                "invalid_request"
+            } else if status == StatusCode::NOT_FOUND {
+                "not_found"
+            } else {
+                "server_error"
+            })
+        });
         json!({"ok":false,"operation":operation,"error":{"message":message,"type":kind,"code":raw.get("code").cloned().unwrap_or(json!(status.as_u16()))}})
     };
     rpc_result(
@@ -455,7 +606,11 @@ async fn quota_checker_operation(
         ),
         "list" => ("GET", "/v0/management/quota-checkers".to_string(), None),
         "get" => match args.get("id").and_then(Value::as_str) {
-            Some(id) => ("GET", format!("/v0/management/quota-checkers/{id}"), None),
+            Some(id) => (
+                "GET",
+                format!("/v0/management/quota-checkers/{}", encode_uri_component(id)),
+                None,
+            ),
             None => return rpc_error(id, -32602, "id is required"),
         },
         "put" | "update" | "delete" => {
@@ -468,7 +623,10 @@ async fn quota_checker_operation(
                 }
                 (
                     "DELETE",
-                    format!("/v0/management/custom-checkers/{checker_id}"),
+                    format!(
+                        "/v0/management/custom-checkers/{}",
+                        encode_uri_component(checker_id)
+                    ),
                     None,
                 )
             } else {
@@ -481,7 +639,10 @@ async fn quota_checker_operation(
                     } else {
                         "PATCH"
                     },
-                    format!("/v0/management/custom-checkers/{checker_id}"),
+                    format!(
+                        "/v0/management/custom-checkers/{}",
+                        encode_uri_component(checker_id)
+                    ),
                     Some(body.clone()),
                 )
             }
@@ -498,16 +659,18 @@ async fn operations_operation(
     args: Option<&Value>,
 ) -> Response {
     let args = args.cloned().unwrap_or_else(|| json!({}));
-    if matches!(
-        operation,
-        "restore" | "restart"
-    ) && args.get("destructive").and_then(Value::as_str) != Some("acknowledged")
+    if matches!(operation, "restore" | "restart")
+        && args.get("destructive").and_then(Value::as_str) != Some("acknowledged")
     {
         return rpc_error(id, -32602, "destructive: \"acknowledged\" is required");
     }
     match operation {
         "backup" => {
-            let path = if args.get("query").and_then(|q|q.get("full")).is_some_and(|v|v == true || v == "true") {
+            let path = if args
+                .get("query")
+                .and_then(|q| q.get("full"))
+                .is_some_and(|v| v == true || v == "true")
+            {
                 "/v0/management/backup?full=true"
             } else {
                 "/v0/management/backup"
@@ -690,7 +853,13 @@ async fn system_logs_operation(
                 .or_else(|| args.get("body").and_then(|body| body.get("level")))
                 .and_then(Value::as_str)
             else {
-                return tool_error(id, operation, "Missing level for set_level operation. Provide body.level or query.level.", "invalid_request", 400);
+                return tool_error(
+                    id,
+                    operation,
+                    "Missing level for set_level operation. Provide body.level or query.level.",
+                    "invalid_request",
+                    400,
+                );
             };
             (
                 "PUT",
@@ -759,7 +928,7 @@ async fn system_logs_operation(
     };
     rpc_result(
         id,
-        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
+        json!({"structuredContent":result,"content":[{"type":"text","text":serde_json::to_string_pretty(&result).unwrap_or_default()}],"isError":!ok}),
     )
 }
 
@@ -851,7 +1020,10 @@ async fn debug_logs_operation(
                 } else {
                     "DELETE"
                 },
-                format!("/v0/management/debug/logs/{log_id}"),
+                format!(
+                    "/v0/management/debug/logs/{}",
+                    encode_path_preserving_slashes(log_id)
+                ),
             )
         }
         "delete_all_logs" => {
@@ -881,7 +1053,11 @@ async fn quota_operation(
             let Some(key) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("GET", format!("/v0/management/quota/status/{key}"), None)
+            (
+                "GET",
+                format!("/v0/management/quota/status/{}", encode_uri_component(key)),
+                None,
+            )
         }
         "clear" | "recompute" => {
             if operation == "clear"
@@ -926,7 +1102,9 @@ async fn quota_operation(
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
         let mut error = payload.get("error").cloned().unwrap_or(payload);
-        if let Some(object) = error.as_object_mut() { object.entry("code").or_insert(json!(status.as_u16())); }
+        if let Some(object) = error.as_object_mut() {
+            object.entry("code").or_insert(json!(status.as_u16()));
+        }
         json!({"ok":false,"operation":operation,"error":error})
     };
     rpc_result(
@@ -968,7 +1146,11 @@ async fn user_quota_operation(
                 "delete" => "DELETE",
                 _ => unreachable!(),
             };
-            (method, format!("/v0/management/user-quotas/{name}"), body)
+            (
+                method,
+                format!("/v0/management/user-quotas/{}", encode_uri_component(name)),
+                body,
+            )
         }
         _ => unreachable!(),
     };
@@ -992,7 +1174,14 @@ async fn model_alias_operation(
             let Some(slug) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("GET", format!("/v0/management/aliases/{slug}"), None)
+            (
+                "GET",
+                format!(
+                    "/v0/management/aliases/{}",
+                    encode_path_preserving_slashes(slug)
+                ),
+                None,
+            )
         }
         "put" | "create" | "update" => {
             let Some(slug) = args.get("id").and_then(Value::as_str) else {
@@ -1007,7 +1196,10 @@ async fn model_alias_operation(
                 } else {
                     "PATCH"
                 },
-                format!("/v0/management/aliases/{slug}"),
+                format!(
+                    "/v0/management/aliases/{}",
+                    encode_path_preserving_slashes(slug)
+                ),
                 Some(body.clone()),
             )
         }
@@ -1018,7 +1210,14 @@ async fn model_alias_operation(
             let Some(slug) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("DELETE", format!("/v0/management/models/{slug}"), None)
+            (
+                "DELETE",
+                format!(
+                    "/v0/management/models/{}",
+                    encode_path_preserving_slashes(slug)
+                ),
+                None,
+            )
         }
         "delete_all" => {
             if args.get("destructive").and_then(Value::as_str) != Some("acknowledged") {
@@ -1048,7 +1247,11 @@ async fn model_alias_operation(
     let payload: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
             .unwrap_or_else(|_| json!({"error":"Invalid alias response"}));
-    let payload = if ok && operation == "list" { record_list(payload) } else { payload };
+    let payload = if ok && operation == "list" {
+        record_list(payload)
+    } else {
+        payload
+    };
     let result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -1062,11 +1265,19 @@ async fn model_alias_operation(
 
 fn record_list(payload: Value) -> Value {
     match payload {
-        Value::Object(records) => Value::Array(records.into_iter().map(|(id, value)| {
-            let mut object = value.as_object().cloned().unwrap_or_else(|| serde_json::Map::from_iter([("value".into(), value)]));
-            object.insert("id".into(), Value::String(id));
-            Value::Object(object)
-        }).collect()),
+        Value::Object(records) => Value::Array(
+            records
+                .into_iter()
+                .map(|(id, value)| {
+                    let mut object = value
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::Map::from_iter([("value".into(), value)]));
+                    object.insert("id".into(), Value::String(id));
+                    Value::Object(object)
+                })
+                .collect(),
+        ),
         other => other,
     }
 }
@@ -1093,7 +1304,11 @@ async fn key_operation(
             let Some(name) = name else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("GET", format!("/v0/management/keys/{name}"), None)
+            (
+                "GET",
+                format!("/v0/management/keys/{}", encode_uri_component(name)),
+                None,
+            )
         }
         "put" | "create" | "update" => {
             let Some(name) = name else {
@@ -1106,7 +1321,7 @@ async fn key_operation(
             };
             (
                 method,
-                format!("/v0/management/keys/{name}"),
+                format!("/v0/management/keys/{}", encode_uri_component(name)),
                 Some(args.get("body").cloned().unwrap_or_else(|| json!({}))),
             )
         }
@@ -1118,9 +1333,9 @@ async fn key_operation(
                 return rpc_error(id, -32602, "id is required");
             };
             let path = if operation == "delete" {
-                format!("/v0/management/keys/{name}")
+                format!("/v0/management/keys/{}", encode_uri_component(name))
             } else {
-                format!("/v0/management/keys/{name}/disable")
+                format!("/v0/management/keys/{}/disable", encode_uri_component(name))
             };
             (
                 if operation == "delete" {
@@ -1159,7 +1374,11 @@ async fn key_operation(
     } else {
         payload
     };
-    let payload = if ok && operation == "list" { record_list(payload) } else { payload };
+    let payload = if ok && operation == "list" {
+        record_list(payload)
+    } else {
+        payload
+    };
     let result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -1214,7 +1433,11 @@ async fn mcp_gateway_operation(
             let Some(name) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("GET", format!("/v0/management/mcp-servers/{name}"), None)
+            (
+                "GET",
+                format!("/v0/management/mcp-servers/{}", encode_uri_component(name)),
+                None,
+            )
         }
         "put" | "create" | "update" => {
             let Some(name) = args.get("id").and_then(Value::as_str) else {
@@ -1229,7 +1452,7 @@ async fn mcp_gateway_operation(
                 } else {
                     "PATCH"
                 },
-                format!("/v0/management/mcp-servers/{name}"),
+                format!("/v0/management/mcp-servers/{}", encode_uri_component(name)),
                 Some(body.clone()),
             )
         }
@@ -1240,7 +1463,8 @@ async fn mcp_gateway_operation(
             (
                 "GET",
                 format!(
-                    "/v0/management/mcp-servers/{name}/{}",
+                    "/v0/management/mcp-servers/{}/{}",
+                    encode_uri_component(name),
                     if operation == "status" {
                         "status"
                     } else {
@@ -1256,7 +1480,10 @@ async fn mcp_gateway_operation(
             };
             (
                 "POST",
-                format!("/v0/management/mcp-servers/{name}/{}", operation),
+                format!(
+                    "/v0/management/mcp-servers/{}/{operation}",
+                    encode_uri_component(name)
+                ),
                 None,
             )
         }
@@ -1267,7 +1494,11 @@ async fn mcp_gateway_operation(
             let Some(name) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            ("DELETE", format!("/v0/management/mcp-servers/{name}"), None)
+            (
+                "DELETE",
+                format!("/v0/management/mcp-servers/{}", encode_uri_component(name)),
+                None,
+            )
         }
         _ => unreachable!(),
     };
@@ -1291,7 +1522,11 @@ async fn mcp_gateway_operation(
     let payload: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
             .unwrap_or_else(|_| json!({"error": "Invalid MCP gateway response"}));
-    let payload = if ok && matches!(operation, "list" | "servers_list") { record_list(payload) } else { payload };
+    let payload = if ok && matches!(operation, "list" | "servers_list") {
+        record_list(payload)
+    } else {
+        payload
+    };
     let result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
@@ -1332,7 +1567,7 @@ async fn usage_operation(
             let Some(request_id) = args.get("id").and_then(Value::as_str) else {
                 return rpc_error(id, -32602, "id is required");
             };
-            format!("/v0/management/usage/{}", request_id.replace('/', "%2F"))
+            format!("/v0/management/usage/{}", encode_uri_component(request_id))
         }
         _ => unreachable!(),
     };
@@ -1384,14 +1619,25 @@ async fn usage_operation(
     let payload: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
             .unwrap_or_else(|_| json!({"error":"Invalid usage response"}));
-    let result = if ok {
+    let mut result = if ok {
         json!({"ok":true,"operation":operation,"data":payload})
     } else {
         json!({"ok":false,"operation":operation,"error":payload})
     };
+    // The management API retains sample counts for analytics clients, while
+    // Plexus's MCP usage summary omits them from its narrower tool contract.
+    if operation == "summary" && ok {
+        if let Some(stats) = result
+            .pointer_mut("/data/stats")
+            .and_then(Value::as_object_mut)
+        {
+            stats.remove("ttftSamples");
+            stats.remove("tpsSamples");
+        }
+    }
     rpc_result(
         id,
-        json!({"structuredContent":result,"content":[{"type":"text","text":result.to_string()}],"isError":!ok}),
+        json!({"structuredContent":result,"content":[{"type":"text","text":serde_json::to_string_pretty(&result).unwrap_or_default()}],"isError":!ok}),
     )
 }
 
@@ -1420,7 +1666,10 @@ async fn provider_operation(
                 } else {
                     "PATCH"
                 },
-                format!("/v0/management/providers/{provider_id}"),
+                format!(
+                    "/v0/management/providers/{}",
+                    encode_path_preserving_slashes(provider_id)
+                ),
                 Some(body.clone()),
             )
         }
@@ -1430,7 +1679,10 @@ async fn provider_operation(
             }
             (
                 "DELETE",
-                format!("/v0/management/providers/{provider_id}"),
+                format!(
+                    "/v0/management/providers/{}",
+                    encode_path_preserving_slashes(provider_id)
+                ),
                 None,
             )
         }
@@ -1477,7 +1729,12 @@ async fn provider_operation(
     )
 }
 
-async fn post(State(state): State<AppState>, peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>, headers: HeaderMap, body: Bytes) -> Response {
+async fn post(
+    State(state): State<AppState>,
+    peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if !enabled(&state) {
         return disabled();
     }
@@ -1492,8 +1749,14 @@ async fn post(State(state): State<AppState>, peer: Option<axum::extract::Connect
         return rpc_error(Value::Null, -32600, "Invalid Request");
     }
     let started = chrono::Utc::now().timestamp_millis();
-    let method = request.get("method").and_then(Value::as_str).map(str::to_owned);
-    let tool = request.pointer("/params/name").and_then(Value::as_str).map(str::to_owned);
+    let method = request
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let tool = request
+        .pointer("/params/name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let response = dispatch(&state, request).await;
     if let Some(pool) = &state.inner.database {
         let bytes = rand::random::<[u8; 16]>();
@@ -1501,8 +1764,17 @@ async fn post(State(state): State<AppState>, peer: Option<axum::extract::Connect
         uuid[6] = (uuid[6] & 0x0f) | 0x40;
         uuid[8] = (uuid[8] & 0x3f) | 0x80;
         let hex = hex::encode(uuid);
-        let id = format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]);
-        let duration = chrono::Utc::now().timestamp_millis().saturating_sub(started);
+        let id = format!(
+            "{}-{}-{}-{}-{}",
+            &hex[..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+            &hex[20..]
+        );
+        let duration = chrono::Utc::now()
+            .timestamp_millis()
+            .saturating_sub(started);
         if let Err(error) = sqlx::query("INSERT INTO mcp_request_usage (request_id,start_time,duration_ms,server_name,upstream_url,method,jsonrpc_method,tool_name,api_key,response_status,source_ip) VALUES ($1,$2,$3,'plexus','/mcp/plexus','POST',$4,$5,'admin',$6,$7)")
             .bind(id).bind(started).bind(duration).bind(method).bind(tool).bind(response.status().as_u16() as i32).bind(peer.map(|peer| peer.0.ip().to_string())).execute(pool).await {
             crate::system_logs::event(&state, "error", "Unable to persist management MCP audit", [("error".into(), json!(error.to_string()))]);
@@ -1645,8 +1917,6 @@ mod tests {
         assert_eq!(unknown["id"], 8);
     }
 
-
-
     #[tokio::test]
     async fn config_operations_forward_to_management_routes() {
         for (operation, expected_field) in [("status", "providerCount"), ("get", "providers")] {
@@ -1703,7 +1973,10 @@ mod tests {
         )
         .await;
         assert_eq!(missing["result"]["structuredContent"]["error"]["code"], 400);
-        assert_eq!(missing["result"]["structuredContent"]["error"]["message"], "Missing level for set_level operation. Provide body.level or query.level.");
+        assert_eq!(
+            missing["result"]["structuredContent"]["error"]["message"],
+            "Missing level for set_level operation. Provide body.level or query.level."
+        );
     }
 
     #[tokio::test]
@@ -1805,8 +2078,14 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(missing_id["result"]["structuredContent"]["error"]["code"], 400);
-        assert_eq!(missing_id["result"]["structuredContent"]["error"]["message"], "Missing id for mcp_gateway operation.");
+        assert_eq!(
+            missing_id["result"]["structuredContent"]["error"]["code"],
+            400
+        );
+        assert_eq!(
+            missing_id["result"]["structuredContent"]["error"]["message"],
+            "Missing id for mcp_gateway operation."
+        );
 
         let unknown = body(
             dispatch(
@@ -1858,11 +2137,15 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(response["result"]["structuredContent"]["error"]["code"], 400);
-        assert_eq!(response["result"]["structuredContent"]["error"]["message"], "Missing id for mcp_gateway operation.");
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["code"],
+            400
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["message"],
+            "Missing id for mcp_gateway operation."
+        );
     }
-
-
 
     #[tokio::test]
     async fn operations_reset_logs_uses_usage_reset_endpoint() {
@@ -1930,8 +2213,6 @@ mod tests {
         assert_eq!(unknown["result"]["isError"], true);
     }
 
-
-
     #[tokio::test]
     async fn disabled_mcp_rejects_all_http_methods_before_dispatch() {
         let state = state();
@@ -1949,14 +2230,23 @@ mod tests {
     }
     #[tokio::test]
     async fn reference_rejects_unsupported_config_operation_as_tool_result() {
-        let response = body(dispatch(&state(), json!({
-            "jsonrpc":"2.0", "id": 99, "method":"tools/call",
-            "params":{"name":"plexus_config","arguments":{"operation":"timeout"}}
-        })).await).await;
+        let response = body(
+            dispatch(
+                &state(),
+                json!({
+                    "jsonrpc":"2.0", "id": 99, "method":"tools/call",
+                    "params":{"name":"plexus_config","arguments":{"operation":"timeout"}}
+                }),
+            )
+            .await,
+        )
+        .await;
         assert_eq!(response["result"]["structuredContent"]["ok"], false);
-        assert_eq!(response["result"]["structuredContent"]["error"]["type"], "invalid_request");
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["type"],
+            "invalid_request"
+        );
     }
-
 }
 
 #[cfg(test)]
@@ -1989,6 +2279,9 @@ mod collection_contract_tests {
     #[test]
     fn record_collections_become_id_bearing_arrays() {
         assert_eq!(record_list(json!({})), json!([]));
-        assert_eq!(record_list(json!({"alpha":{"enabled":true}})), json!([{"id":"alpha","enabled":true}]));
+        assert_eq!(
+            record_list(json!({"alpha":{"enabled":true}})),
+            json!([{"id":"alpha","enabled":true}])
+        );
     }
 }

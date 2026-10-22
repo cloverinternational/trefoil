@@ -13,7 +13,7 @@ use sqlx::PgPool;
 /// Field set also covers what `KeyConfigSchema`
 /// (`packages/backend/src/config.ts`) accepts/persists for
 /// `/v0/management/keys/:name` CRUD (see `backend/src/keys.rs`).
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct KeyConfig {
     pub secret: String,
     #[serde(rename = "permissionGroup", skip_serializing_if = "Option::is_none")]
@@ -41,6 +41,52 @@ pub struct KeyConfig {
     pub expires_at: Option<i64>,
     #[serde(rename = "disabledAt", skip_serializing_if = "Option::is_none")]
     pub disabled_at: Option<i64>,
+    /// Plexus distinguishes an explicit `quotas: []` from no quotas at all.
+    #[serde(skip)]
+    pub quotas_defined: bool,
+    #[serde(rename = "defaultServiceTier", default)]
+    pub default_service_tier: Option<String>,
+}
+
+/// Plexus `KeyRepository.getAllKeys` shape.
+impl serde::Serialize for KeyConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut out = serde_json::Map::new();
+        out.insert("secret".into(), Value::String(self.secret.clone()));
+        if let Some(comment) = self.comment.as_ref().filter(|c| !c.is_empty()) {
+            out.insert("comment".into(), Value::String(comment.clone()));
+        }
+        if let Some(v) = self.expires_at {
+            out.insert("expiresAt".into(), v.into());
+        }
+        if let Some(v) = self.disabled_at {
+            out.insert("disabledAt".into(), v.into());
+        }
+        if self.quotas_defined || !self.quota_names.is_empty() {
+            out.insert("quotas".into(), serde_json::json!(self.quota_names));
+        }
+        for (key, list) in [
+            ("allowedModels", &self.allowed_models),
+            ("allowedProviders", &self.allowed_providers),
+            ("excludedModels", &self.excluded_models),
+            ("excludedProviders", &self.excluded_providers),
+        ] {
+            if !list.is_empty() {
+                out.insert(key.into(), serde_json::json!(list));
+            }
+        }
+        out.insert(
+            "allowRawPassthrough".into(),
+            Value::Bool(self.allow_raw_passthrough),
+        );
+        if !self.allowed_ips.is_empty() {
+            out.insert("allowedIps".into(), serde_json::json!(self.allowed_ips));
+        }
+        if let Some(tier) = &self.default_service_tier {
+            out.insert("defaultServiceTier".into(), Value::String(tier.clone()));
+        }
+        Value::Object(out).serialize(serializer)
+    }
 }
 
 impl KeyConfig {
@@ -112,7 +158,7 @@ fn default_auth() -> String {
 /// Plexus's `ProviderConfigSchema` (`packages/backend/src/config.ts`).
 /// OAuth-provider-config, quota_checker, model_autosync, and compaction
 /// fields are intentionally deferred to a later parity slice.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ProviderConfig {
     /// Monotonic per-provider revision for conditional management edits.
     #[serde(default)]
@@ -152,12 +198,11 @@ pub struct ProviderConfig {
     pub raw_passthrough: Option<RawPassthroughConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_checker: Option<QuotaCheckerConfig>,
-    #[serde(
-        default,
-        skip_serializing_if = "is_default_retry_policy",
-        rename = "retryPolicy"
-    )]
+    #[serde(default, rename = "retryPolicy")]
     pub retry_policy: RetryPolicy,
+    /// Plexus repository view (`provider_view`); the served JSON shape.
+    #[serde(skip)]
+    pub view: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -170,11 +215,6 @@ pub struct ProviderModel {
     pub upstream_id: Option<String>,
 }
 
-
-fn is_default_retry_policy(policy: &RetryPolicy) -> bool {
-    *policy == RetryPolicy::default()
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct QuotaCheckerConfig {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
@@ -183,7 +223,11 @@ pub struct QuotaCheckerConfig {
     pub id: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_quota_interval", rename = "intervalMinutes", alias = "interval")]
+    #[serde(
+        default = "default_quota_interval",
+        rename = "intervalMinutes",
+        alias = "interval"
+    )]
     pub interval: u64,
     #[serde(default)]
     pub options: Value,
@@ -212,7 +256,10 @@ impl Default for ModelAutosync {
 impl ProviderConfig {
     /// Resolve an endpoint override, retaining the legacy scalar fallback.
     pub fn api_url_for(&self, api_type: &str) -> &str {
-        self.api_base_urls.get(api_type).map(String::as_str).unwrap_or(&self.api_base_url)
+        self.api_base_urls
+            .get(api_type)
+            .map(String::as_str)
+            .unwrap_or(&self.api_base_url)
     }
 
     /// Mirrors `isOAuthProviderConfig`: `api_base_url` is an `oauth://`
@@ -241,17 +288,20 @@ pub struct AppState {
 pub struct AppStateInner {
     pub concurrency: Arc<crate::concurrency::ConcurrencyTracker>,
     pub vision_descriptor_cache: std::sync::Mutex<crate::vision::VisionDescriptorCache>,
-    /// In-flight provider OAuth onboarding sessions. These are ephemeral;
-    /// completed credentials are persisted separately.
-    pub oauth_sessions: RwLock<HashMap<String, crate::oauth::OAuthSession>>,
-    /// PKCE verifiers are kept server-side and are never sent to the browser.
-    pub oauth_pkce_verifiers: RwLock<HashMap<String, String>>,
+    /// In-flight provider OAuth login sessions (Plexus
+    /// `OAuthLoginSessionManager`): in-memory only, 20-minute TTL; completed
+    /// credentials are persisted separately.
+    pub oauth_sessions: crate::oauth_login::OAuthLoginSessionManager,
+    /// Snapshot of persisted `(provider_type, account_id)` OAuth credentials,
+    /// refreshed before provider reads/writes resolve account links.
+    pub oauth_accounts: RwLock<Vec<(String, String)>>,
     /// Per-account refresh gates. The network request is made outside the
     /// database transaction, while this gate prevents duplicate refreshes.
     pub oauth_refresh_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub usage_events: Option<tokio::sync::broadcast::Sender<crate::usage::UsageEvent>>,
     /// Bounded recent logs, newest entries at the back.
-    pub recent_system_logs: std::sync::Mutex<std::collections::VecDeque<crate::system_logs::SystemLog>>,
+    pub recent_system_logs:
+        std::sync::Mutex<std::collections::VecDeque<crate::system_logs::SystemLog>>,
     /// Subscribers for the admin-only live system log stream.
     pub system_logs: Option<tokio::sync::broadcast::Sender<crate::system_logs::SystemLog>>,
     /// Production state is being migrated to PostgreSQL repository by
@@ -265,10 +315,8 @@ pub struct AppStateInner {
     pub settings: RwLock<HashMap<String, Value>>,
     pub cooldowns: RwLock<HashMap<(String, String), CooldownEntry>>,
     pub mcp_key_round_robin: RwLock<HashMap<i32, i32>>,
-    pub mcp_processes:
-        Arc<tokio::sync::Mutex<HashMap<String, crate::mcp_stdio::LocalMcpTransport>>>,
-    pub mcp_process_logs: Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>>,
-    pub mcp_process_status: Arc<tokio::sync::Mutex<HashMap<String, (String, Option<String>)>>>,
+    /// Local `local_http` MCP processes (Plexus `mcpProcessManager`).
+    pub mcp_manager: Arc<crate::mcp_local::McpProcessManager>,
     /// Per-key trace/debug capture toggle, mirroring `DebugManager`'s
     /// `enabledKeys` set. Trefoil does not implement actual trace capture —
     /// only the on/off bookkeeping the `self/debug/toggle` and
@@ -280,6 +328,18 @@ pub struct AppStateInner {
     pub debug_enabled_aliases: RwLock<std::collections::HashSet<String>>,
     /// Mirrors `DebugManager.enabledProviders` (the "provider filter").
     pub debug_enabled_providers: RwLock<std::collections::HashSet<String>>,
+    /// Engine `UsageStorageService` (created on first inference request).
+    pub engine_usage: EngineUsage,
+}
+
+/// Process-wide engine usage storage (created on first inference request).
+#[derive(Default)]
+pub struct EngineUsage(pub std::sync::OnceLock<Arc<crate::engine::observability::UsageStorage>>);
+
+impl std::fmt::Debug for EngineUsage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EngineUsage")
+    }
 }
 
 impl AppState {
@@ -290,8 +350,8 @@ impl AppState {
                 vision_descriptor_cache: std::sync::Mutex::new(
                     crate::vision::VisionDescriptorCache::default(),
                 ),
-                oauth_sessions: RwLock::new(HashMap::new()),
-                oauth_pkce_verifiers: RwLock::new(HashMap::new()),
+                oauth_sessions: Default::default(),
+                oauth_accounts: RwLock::new(Vec::new()),
                 oauth_refresh_locks: std::sync::Mutex::new(HashMap::new()),
                 usage_events: Some(tokio::sync::broadcast::channel(256).0),
                 system_logs: Some(tokio::sync::broadcast::channel(256).0),
@@ -305,13 +365,12 @@ impl AppState {
                 settings: RwLock::new(HashMap::new()),
                 cooldowns: RwLock::new(HashMap::new()),
                 mcp_key_round_robin: RwLock::new(HashMap::new()),
-                mcp_processes: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-                mcp_process_logs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-                mcp_process_status: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                mcp_manager: Arc::new(crate::mcp_local::McpProcessManager::default()),
                 debug_enabled_keys: RwLock::new(std::collections::HashSet::new()),
                 debug_enabled_global: RwLock::new(false),
                 debug_enabled_aliases: RwLock::new(std::collections::HashSet::new()),
                 debug_enabled_providers: RwLock::new(std::collections::HashSet::new()),
+                engine_usage: EngineUsage::default(),
             }),
         }
     }
@@ -350,6 +409,7 @@ pub struct QuotaDefinition {
     pub quota_type: String,
     #[serde(rename = "limitType")]
     pub limit_type: String,
+    #[serde(serialize_with = "js_number")]
     pub limit: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<String>,
@@ -363,8 +423,30 @@ pub struct QuotaDefinition {
     pub excluded_models: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shared: Option<bool>,
-    #[serde(rename = "warnAt", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "warnAt",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js_number_opt"
+    )]
     pub warn_at: Option<f64>,
+}
+
+/// Serialize like a JavaScript number: integral values without `.0`.
+pub fn js_number<S: serde::Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
+        serializer.serialize_i64(*value as i64)
+    } else {
+        serializer.serialize_f64(*value)
+    }
+}
+pub fn js_number_opt<S: serde::Serializer>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(v) => js_number(v, serializer),
+        None => serializer.serialize_none(),
+    }
 }
 
 /// A single dispatch target within a `ModelTargetGroup`.
@@ -408,7 +490,7 @@ pub struct ModelTargetGroup {
 /// parity — they round-trip as opaque JSON (`serde_json::Value`) so a
 /// client that sets them still gets them back verbatim on GET, without
 /// this port re-implementing their full validation/normalization.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ModelConfig {
     pub priority: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -418,6 +500,8 @@ pub struct ModelConfig {
     pub use_image_fallthrough: bool,
     pub enforce_limits: bool,
     pub sticky_session: bool,
+    #[serde(default)]
+    pub synthetic_safeguard_approval: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preferred_api: Option<Vec<String>>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
@@ -432,6 +516,9 @@ pub struct ModelConfig {
     pub extra_body: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction: Option<Value>,
+    /// Plexus repository view (`alias_view`); the served JSON shape.
+    #[serde(skip)]
+    pub view: Option<Value>,
 }
 
 impl Default for ModelConfig {
@@ -443,6 +530,7 @@ impl Default for ModelConfig {
             use_image_fallthrough: false,
             enforce_limits: false,
             sticky_session: true,
+            synthetic_safeguard_approval: false,
             preferred_api: None,
             model_type: None,
             advanced: None,
@@ -450,6 +538,21 @@ impl Default for ModelConfig {
             pi_model: None,
             extra_body: None,
             compaction: None,
+            view: None,
         }
+    }
+}
+
+impl serde::Serialize for ModelConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.public_view().serialize(serializer)
+    }
+}
+
+/// Every serialized provider (management API, backups, config export) uses
+/// the Plexus repository shape; see `provider_view`.
+impl serde::Serialize for ProviderConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.public_view().serialize(serializer)
     }
 }

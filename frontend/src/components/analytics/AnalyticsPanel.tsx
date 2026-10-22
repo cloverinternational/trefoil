@@ -50,21 +50,21 @@ export function AnalyticsPanelView({ panel, range, filters, editable, onChange, 
   const metricLabel = METRICS.find(metric => metric.value === panel.metric)?.label ?? panel.metric;
   return <Card className="min-w-0 overflow-hidden">
     <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 pb-2">
-      <CardTitle className="flex min-w-0 items-center gap-2 text-base"><Activity size={16} className="shrink-0 text-primary"/><span className="truncate">{editable ? <input aria-label="Panel title" value={panel.title} onChange={event => onChange({ ...panel, title: event.target.value })} className="w-full min-w-24 bg-transparent outline-none"/> : panel.title}</span></CardTitle>
+      <CardTitle className="flex min-w-0 items-center gap-2 text-xs"><Activity size={13} className="shrink-0 text-primary"/><span className="truncate">{editable ? <input aria-label="Panel title" value={panel.title} onChange={event => onChange({ ...panel, title: event.target.value })} className="w-full min-w-24 bg-transparent outline-none"/> : panel.title}</span></CardTitle>
       <div className="flex flex-wrap items-center gap-1">
         {editable && <>
-          <Select value={panel.metric} onValueChange={metric => onChange({ ...panel, metric })}><SelectTrigger className="h-8 w-36" aria-label="Metric"><SelectValue/></SelectTrigger><SelectContent>{METRICS.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select>
-          <Select value={panel.dimension} onValueChange={dimension => onChange({ ...panel, dimension })}><SelectTrigger className="h-8 w-36" aria-label="Dimension"><SelectValue/></SelectTrigger><SelectContent>{DIMENSIONS.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select>
-          <label className="sr-only" htmlFor={`formula-${panel.id}`}>Metric formula</label><input id={`formula-${panel.id}`} aria-label="Metric formula" title={formulaHelp} placeholder="Formula (optional)" value={panel.formula ?? ''} onChange={event => onChange({ ...panel, formula: event.target.value })} className="h-8 w-48 rounded-md border border-input bg-transparent px-2 text-xs" />
+          <Select value={panel.metric} onValueChange={metric => onChange({ ...panel, metric })}><SelectTrigger className="h-7 w-32" aria-label="Metric"><SelectValue/></SelectTrigger><SelectContent>{METRICS.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select>
+          <Select value={panel.dimension} onValueChange={dimension => onChange({ ...panel, dimension })}><SelectTrigger className="h-7 w-32" aria-label="Dimension"><SelectValue/></SelectTrigger><SelectContent>{DIMENSIONS.map(item => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select>
+          <label className="sr-only" htmlFor={`formula-${panel.id}`}>Metric formula</label><input id={`formula-${panel.id}`} aria-label="Metric formula" title={formulaHelp} placeholder="Formula (optional)" value={panel.formula ?? ''} onChange={event => onChange({ ...panel, formula: event.target.value })} className="h-8 w-48  border border-input bg-transparent px-2 text-xs" />
           <Button size="icon" variant="ghost" aria-label="Move panel up" onClick={() => onMove(-1)}><ArrowUp/></Button><Button size="icon" variant="ghost" aria-label="Move panel down" onClick={() => onMove(1)}><ArrowDown/></Button><Button size="icon" variant="ghost" aria-label="Remove panel" onClick={onRemove}><Trash2/></Button>
         </>}
       </div>
     </CardHeader>
     <CardContent className="min-w-0">
-      {loading ? <div role="status" className="flex h-64 items-center justify-center text-sm text-muted-foreground">Loading {panel.title}…</div>
-        : error ? <div role="alert" className="flex h-64 items-center justify-center px-5 text-center text-sm text-destructive">{error}</div>
-          : !data?.length ? <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">No {metricLabel.toLowerCase()} data for this selection.</div>
-            : <><ReactECharts style={{ height: 256, width: '100%' }} option={{
+      {loading ? <div role="status" className="flex h-44 items-center justify-center text-xs text-muted-foreground">Loading {panel.title}…</div>
+        : error ? <div role="alert" className="flex h-44 items-center justify-center px-5 text-center text-xs text-destructive">{error}</div>
+          : !data?.length ? <div className="flex h-44 items-center justify-center text-xs text-muted-foreground">No {metricLabel.toLowerCase()} data for this selection.</div>
+            : <><ReactECharts style={{ height: 176, width: '100%' }} option={{
               backgroundColor: 'transparent', animation: false,
               tooltip: { trigger: 'axis', valueFormatter: (value: unknown) => value == null ? 'Unknown' : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 3 })}${unit ? ` ${unit}` : ''}` },
               grid: { left: 52, right: 20, top: 22, bottom: 45, containLabel: true },

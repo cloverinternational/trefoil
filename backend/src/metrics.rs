@@ -103,6 +103,13 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Some(Principal::Limited { .. }) => return json_charset(forbidden()),
         None => return json_charset(unauthorized()),
     }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let owner = std::sync::Arc::as_ptr(&state.inner) as usize;
+    if let Some((cached_owner, expires, body)) = metrics_cache().lock().unwrap().clone() {
+        if cached_owner == owner && now_ms < expires {
+            return exposition_response(body, "HIT");
+        }
+    }
 
     let mut body = String::new();
     let mut total = 0i64;
@@ -135,11 +142,11 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
         if let Ok(row) = sqlx::query("SELECT count(*)::bigint AS requests, count(*) FILTER (WHERE response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint AS input, coalesce(sum(tokens_output),0)::bigint AS output, coalesce(sum(tokens_reasoning),0)::bigint AS reasoning, coalesce(sum(tokens_cached),0)::bigint AS cached, coalesce(sum(tokens_cache_write),0)::bigint AS cache_write, coalesce(sum(cost_total),0)::double precision AS cost, coalesce(sum(duration_ms),0)::bigint AS duration FROM request_usage WHERE start_time >= $1").bind(midnight).fetch_one(pool).await {
             today = (row.try_get("requests").unwrap_or(0), row.try_get("errors").unwrap_or(0), row.try_get("input").unwrap_or(0), row.try_get("output").unwrap_or(0), row.try_get("reasoning").unwrap_or(0), row.try_get("cached").unwrap_or(0), row.try_get("cache_write").unwrap_or(0), row.try_get("duration").unwrap_or(0)); today_cost = row.try_get("cost").unwrap_or(0.0);
         }
-        if let Ok(rows) = sqlx::query("SELECT start_time, coalesce(duration_ms,0)::bigint AS duration FROM request_usage WHERE duration_ms IS NOT NULL ORDER BY start_time").fetch_all(pool).await {
+        if let Ok(rows) = sqlx::query("SELECT start_time, coalesce(duration_ms,0)::bigint AS duration FROM request_usage ORDER BY start_time").fetch_all(pool).await {
             let windows: Vec<_> = rows.into_iter().filter_map(|r| Some((r.try_get("start_time").ok()?, r.try_get("duration").ok()?))).collect();
             active_time = compute_active_time_ms(&windows, 15 * 60 * 1000);
         }
-        body.push_str(&performance_metrics(pool).await);
+        body.push_str(&performance_metrics(&state).await);
     }
     body.push_str(&cooldown_metrics(&state));
 
@@ -240,21 +247,112 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
             count,
         ));
     }
-    body.push_str("\n");
+    body.push('\n');
+    let rendered = render_exposition(&body);
+    *metrics_cache().lock().unwrap() = Some((
+        owner,
+        chrono::Utc::now().timestamp_millis() + metrics_cache_ttl_ms(),
+        rendered.clone(),
+    ));
+    exposition_response(rendered, "MISS")
+}
+
+/// Scrape cache (`PLEXUS_METRICS_CACHE_TTL_MS`, default 15s), keyed by app state.
+type MetricsCache = std::sync::Mutex<Option<(usize, i64, String)>>;
+fn metrics_cache() -> &'static MetricsCache {
+    static CACHE: std::sync::OnceLock<MetricsCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+fn metrics_cache_ttl_ms() -> i64 {
+    std::env::var("PLEXUS_METRICS_CACHE_TTL_MS")
+        .ok()
+        .and_then(|v| crate::usage::parse_int(&v))
+        .filter(|n| *n > 0)
+        .unwrap_or(15_000)
+}
+
+fn exposition_response(body: String, cache: &'static str) -> Response {
     (
         StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8",
-        )],
-        render_exposition(&body),
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            ),
+            (
+                axum::http::HeaderName::from_static("x-metrics-cache"),
+                cache,
+            ),
+        ],
+        body,
     )
         .into_response()
 }
 
-async fn performance_metrics(pool: &sqlx::PgPool) -> String {
+/// Provider performance gauges from `usageStorage.getProviderPerformance()`,
+/// merged per (provider, model) label pair with sample-weighted averages.
+async fn performance_metrics(state: &AppState) -> String {
     let mut body = String::new();
-    let Ok(rows) = sqlx::query("SELECT provider, coalesce(canonical_model_name, model) AS model, avg(time_to_first_token_ms)::double precision AS avg_ttft, min(time_to_first_token_ms)::double precision AS min_ttft, max(time_to_first_token_ms)::double precision AS max_ttft, avg(tokens_per_sec)::double precision AS avg_tps, min(tokens_per_sec)::double precision AS min_tps, max(tokens_per_sec)::double precision AS max_tps, count(*)::bigint AS samples, coalesce(sum(success_count),0)::bigint AS successes, coalesce(sum(failure_count),0)::bigint AS failures FROM provider_performance GROUP BY provider, coalesce(canonical_model_name, model)").fetch_all(pool).await else { return body };
+    let Some(storage) = crate::usage::usage_storage(state) else {
+        return body;
+    };
+    struct Perf {
+        provider: String,
+        model: String,
+        avg_ttft: f64,
+        min_ttft: f64,
+        max_ttft: f64,
+        avg_tps: f64,
+        min_tps: f64,
+        max_tps: f64,
+        samples: f64,
+        successes: f64,
+        failures: f64,
+    }
+    let mut rows: Vec<Perf> = Vec::new();
+    for r in storage.get_provider_performance(None, None).await {
+        let provider = r.provider.clone().unwrap_or_else(|| "unknown".into());
+        let model = if r.model.is_empty() {
+            "unknown".to_string()
+        } else {
+            r.model.clone()
+        };
+        if let Some(e) = rows
+            .iter_mut()
+            .find(|e| e.provider == provider && e.model == model)
+        {
+            let total = e.samples + r.sample_count;
+            let (w1, w2) = if total > 0.0 {
+                (e.samples / total, r.sample_count / total)
+            } else {
+                (0.5, 0.5)
+            };
+            e.avg_ttft = e.avg_ttft * w1 + r.avg_ttft_ms * w2;
+            e.min_ttft = e.min_ttft.min(r.min_ttft_ms);
+            e.max_ttft = e.max_ttft.max(r.max_ttft_ms);
+            e.avg_tps = e.avg_tps * w1 + r.avg_tokens_per_sec * w2;
+            e.min_tps = e.min_tps.min(r.min_tokens_per_sec);
+            e.max_tps = e.max_tps.max(r.max_tokens_per_sec);
+            e.samples = total;
+            e.successes += r.success_count;
+            e.failures += r.failure_count;
+        } else {
+            rows.push(Perf {
+                provider,
+                model,
+                avg_ttft: r.avg_ttft_ms,
+                min_ttft: r.min_ttft_ms,
+                max_ttft: r.max_ttft_ms,
+                avg_tps: r.avg_tokens_per_sec,
+                min_tps: r.min_tokens_per_sec,
+                max_tps: r.max_tokens_per_sec,
+                samples: r.sample_count,
+                successes: r.success_count,
+                failures: r.failure_count,
+            });
+        }
+    }
     for (name, help) in [
         ("plexus_perf_avg_ttft_ms", "Average time to first token."),
         ("plexus_perf_min_ttft_ms", "Minimum time to first token."),
@@ -277,33 +375,26 @@ async fn performance_metrics(pool: &sqlx::PgPool) -> String {
     ] {
         body.push_str(&block(name, "gauge", help));
     }
-    for row in rows {
-        let provider: String = row.try_get("provider").unwrap_or_else(|_| "unknown".into());
-        let model: String = row.try_get("model").unwrap_or_else(|_| "unknown".into());
-        let labels = [("provider", provider.as_str()), ("model", model.as_str())];
-        for (name, col) in [
-            ("plexus_perf_avg_ttft_ms", "avg_ttft"),
-            ("plexus_perf_min_ttft_ms", "min_ttft"),
-            ("plexus_perf_max_ttft_ms", "max_ttft"),
-            ("plexus_perf_avg_tokens_per_sec", "avg_tps"),
-            ("plexus_perf_min_tokens_per_sec", "min_tps"),
-            ("plexus_perf_max_tokens_per_sec", "max_tps"),
+    for r in rows {
+        let labels = [
+            ("provider", r.provider.as_str()),
+            ("model", r.model.as_str()),
+        ];
+        for (name, value) in [
+            ("plexus_perf_avg_ttft_ms", r.avg_ttft),
+            ("plexus_perf_min_ttft_ms", r.min_ttft),
+            ("plexus_perf_max_ttft_ms", r.max_ttft),
+            ("plexus_perf_avg_tokens_per_sec", r.avg_tps),
+            ("plexus_perf_min_tokens_per_sec", r.min_tps),
+            ("plexus_perf_max_tokens_per_sec", r.max_tps),
+            ("plexus_perf_sample_count", r.samples),
+            ("plexus_perf_success_count", r.successes),
+            ("plexus_perf_failure_count", r.failures),
         ] {
             body.push_str(&line(
                 name,
                 &labels,
-                row.try_get::<f64, _>(col).unwrap_or(0.0),
-            ));
-        }
-        for (name, col) in [
-            ("plexus_perf_sample_count", "samples"),
-            ("plexus_perf_success_count", "successes"),
-            ("plexus_perf_failure_count", "failures"),
-        ] {
-            body.push_str(&line(
-                name,
-                &labels,
-                row.try_get::<i64, _>(col).unwrap_or(0),
+                crate::engine::js::js_number_text(value),
             ));
         }
     }
@@ -364,7 +455,7 @@ fn cooldown_metrics(state: &AppState) -> String {
 
 async fn dimension_metrics(pool: &sqlx::PgPool) -> String {
     let mut body = String::new();
-    let Ok(rows) = sqlx::query("SELECT coalesce(provider,'unknown') AS provider, count(*)::bigint AS requests, count(*) FILTER (WHERE response_status IS NULL OR response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint + coalesce(sum(tokens_output),0)::bigint + coalesce(sum(tokens_cached),0)::bigint + coalesce(sum(tokens_cache_write),0)::bigint AS tokens, coalesce(sum(cost_total),0)::double precision AS cost, coalesce(avg(duration_ms),0)::double precision AS avg_latency, coalesce(avg(ttft_ms),0)::double precision AS avg_ttft, coalesce(avg(tokens_per_sec),0)::double precision AS avg_tps, coalesce(sum(duration_ms),0)::bigint AS duration FROM request_usage GROUP BY provider ORDER BY provider").fetch_all(pool).await else { return body };
+    let Ok(rows) = sqlx::query("SELECT coalesce(provider,'unknown') AS provider, count(*)::bigint AS requests, count(*) FILTER (WHERE response_status != 'success')::bigint AS errors, coalesce(sum(tokens_input),0)::bigint + coalesce(sum(tokens_output),0)::bigint + coalesce(sum(tokens_cached),0)::bigint + coalesce(sum(tokens_cache_write),0)::bigint AS tokens, coalesce(sum(cost_total),0)::double precision AS cost, coalesce(avg(duration_ms),0)::double precision AS avg_latency, coalesce(avg(ttft_ms),0)::double precision AS avg_ttft, coalesce(avg(tokens_per_sec),0)::double precision AS avg_tps, coalesce(sum(duration_ms),0)::bigint AS duration FROM request_usage WHERE provider IS NOT NULL GROUP BY provider ORDER BY provider").fetch_all(pool).await else { return body };
     body.push_str(&block(
         "plexus_provider_requests_total",
         "counter",

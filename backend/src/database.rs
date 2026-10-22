@@ -11,7 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 
-use crate::oauth::OAuthSession;
 use crate::state::{
     AdapterEntry, CooldownEntry, KeyConfig, ModelConfig, ModelTargetGroup, ProviderConfig,
     QuotaCheckerConfig, QuotaDefinition, RawPassthroughConfig,
@@ -19,63 +18,57 @@ use crate::state::{
 
 pub const DEFAULT_MAX_CONNECTIONS: u32 = 16;
 
-pub async fn load_oauth_sessions(pool: &PgPool) -> Result<Vec<OAuthSession>, sqlx::Error> {
-    let rows = sqlx::query("SELECT id, provider_id, account_id, status, auth_info, prompt, progress, error, created_at, updated_at, expires_at, pkce_verifier FROM oauth_login_sessions")
-        .fetch_all(pool).await?;
+/// Credential lifecycle timestamps `(created_at, updated_at, expires_at)`
+/// without reading any token (Plexus `getOAuthCredentialTimestamps`).
+pub async fn oauth_credential_timestamps(
+    pool: &PgPool,
+    provider: &str,
+    account: &str,
+) -> Result<Option<(i64, i64, i64)>, sqlx::Error> {
+    let row = sqlx::query("SELECT created_at, updated_at, expires_at FROM oauth_credentials WHERE oauth_provider_type = $1 AND account_id = $2 LIMIT 1")
+        .bind(provider).bind(account).fetch_optional(pool).await?;
+    row.map(|row| {
+        Ok((
+            row.try_get("created_at")?,
+            row.try_get("updated_at")?,
+            row.try_get("expires_at")?,
+        ))
+    })
+    .transpose()
+}
+
+/// Delete one persisted OAuth credential; true when a row was removed.
+pub async fn delete_oauth_credential(
+    pool: &PgPool,
+    provider: &str,
+    account: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query("DELETE FROM oauth_credentials WHERE oauth_provider_type = $1 AND account_id = $2")
+        .bind(provider)
+        .bind(account)
+        .execute(pool)
+        .await
+        .map(|result| result.rows_affected() > 0)
+}
+
+/// `(provider, account, expires_at)` for every persisted credential, without
+/// decrypting tokens.
+pub async fn list_oauth_credential_accounts(
+    pool: &PgPool,
+) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
+    let rows =
+        sqlx::query("SELECT oauth_provider_type, account_id, expires_at FROM oauth_credentials")
+            .fetch_all(pool)
+            .await?;
     rows.into_iter()
         .map(|row| {
-            Ok(OAuthSession {
-                id: row.try_get("id")?,
-                provider_id: row.try_get("provider_id")?,
-                account_id: row.try_get("account_id")?,
-                status: row.try_get("status")?,
-                auth_info: row.try_get("auth_info")?,
-                prompt: row.try_get("prompt")?,
-                progress: serde_json::from_value(row.try_get::<Value, _>("progress")?).unwrap_or_default(),
-                error: row.try_get("error")?,
-                created_at: row.try_get("created_at")?,
-                updated_at: row.try_get("updated_at")?,
-                expires_at: row.try_get("expires_at")?,
-                pkce_verifier: row.try_get("pkce_verifier")?,
-            })
+            Ok((
+                row.try_get("oauth_provider_type")?,
+                row.try_get("account_id")?,
+                row.try_get("expires_at")?,
+            ))
         })
         .collect()
-}
-
-pub async fn upsert_oauth_session(
-    pool: &PgPool,
-    session: &OAuthSession,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO oauth_login_sessions (id,provider_id,account_id,status,auth_info,prompt,progress,error,created_at,updated_at,expires_at,pkce_verifier) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status,auth_info=EXCLUDED.auth_info,prompt=EXCLUDED.prompt,progress=EXCLUDED.progress,error=EXCLUDED.error,updated_at=EXCLUDED.updated_at,expires_at=EXCLUDED.expires_at,pkce_verifier=EXCLUDED.pkce_verifier WHERE oauth_login_sessions.status NOT IN ('complete','cancelled','failed','expired')")
-        .bind(&session.id).bind(&session.provider_id).bind(&session.account_id).bind(&session.status).bind(&session.auth_info)
-        .bind(&session.prompt).bind(serde_json::to_value(&session.progress).unwrap_or_else(|_| serde_json::json!([]))).bind(&session.error).bind(session.created_at).bind(session.updated_at).bind(session.expires_at).bind(&session.pkce_verifier)
-        .execute(pool).await.map(|_| ())
-}
-
-pub async fn claim_oauth_exchange(pool: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("UPDATE oauth_login_sessions SET status='exchanging',pkce_verifier=NULL,updated_at=$2 WHERE id=$1 AND status='waiting' AND expires_at>$2")
-        .bind(id).bind(chrono::Utc::now().timestamp_millis()).execute(pool).await?;
-    Ok(result.rows_affected() == 1)
-}
-
-/// Complete a claimed exchange atomically with credential persistence. A
-/// cancellation or expired session wins before any token is inserted.
-pub async fn complete_oauth_exchange(
-    pool: &PgPool, session_id: &str, provider: &str, account: &str,
-    access: &str, refresh: &str, expires: i64,
-) -> Result<bool, sqlx::Error> {
-    let key = crate::credential_crypto::CredentialKey::from_env().map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
-    let access = crate::credential_crypto::encrypt(&key, provider, account, "access_token", access).map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
-    let refresh = crate::credential_crypto::encrypt(&key, provider, account, "refresh_token", refresh).map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
-    let now = chrono::Utc::now().timestamp_millis();
-    let mut tx = pool.begin().await?;
-    let claimed = sqlx::query("UPDATE oauth_login_sessions SET status='complete',pkce_verifier=NULL,auth_info=NULL,prompt=NULL,progress=progress || '[{\"status\":\"complete\"}]'::jsonb,updated_at=$2 WHERE id=$1 AND status='exchanging' AND expires_at>$2 AND provider_id=$3 AND account_id=$4")
-        .bind(session_id).bind(now).bind(provider).bind(account).execute(&mut *tx).await?;
-    if claimed.rows_affected() != 1 { tx.rollback().await?; return Ok(false); }
-    sqlx::query("INSERT INTO oauth_credentials (oauth_provider_type,account_id,access_token,refresh_token,expires_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$6) ON CONFLICT (oauth_provider_type,account_id) DO UPDATE SET access_token=EXCLUDED.access_token,refresh_token=EXCLUDED.refresh_token,expires_at=EXCLUDED.expires_at,updated_at=EXCLUDED.updated_at")
-        .bind(provider).bind(account).bind(access).bind(refresh).bind(expires).bind(now).execute(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(true)
 }
 
 pub async fn upsert_oauth_credential(
@@ -167,9 +160,18 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
     sqlx::migrate!().run(pool).await
 }
 
+/// `parseStringArray`: string entries, trimmed, empties dropped.
 fn json_string_list(value: Option<String>) -> Vec<String> {
     value
-        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .and_then(|raw| serde_json::from_str::<Vec<Value>>(&raw).ok())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -180,7 +182,7 @@ pub async fn load_keys(pool: &PgPool) -> Result<HashMap<String, KeyConfig>, sqlx
     let rows = sqlx::query(
         "SELECT name, secret, comment, quota_names, quota_name, allowed_models,
                 allowed_providers, excluded_models, excluded_providers,
-                allow_raw_passthrough, allowed_ips, expires_at, disabled_at, permission_group
+                allow_raw_passthrough, allowed_ips, expires_at, disabled_at, permission_group, generation
            FROM api_keys",
     )
     .fetch_all(pool)
@@ -188,8 +190,17 @@ pub async fn load_keys(pool: &PgPool) -> Result<HashMap<String, KeyConfig>, sqlx
 
     let mut keys = HashMap::new();
     for row in rows {
-        let quotas = json_string_list(row.try_get("quota_names")?);
-        let quotas = if quotas.is_empty() {
+        let quota_names_raw: Option<String> = row.try_get("quota_names")?;
+        let quotas_defined = quota_names_raw.is_some();
+        let quotas = json_string_list(quota_names_raw);
+        let legacy_quota = quotas.is_empty() && !quotas_defined;
+        let legacy_defined = legacy_quota
+            && row
+                .try_get::<Option<String>, _>("quota_name")
+                .ok()
+                .flatten()
+                .is_some_and(|q| !q.is_empty());
+        let quotas = if legacy_quota {
             row.try_get::<Option<String>, _>("quota_name")
                 .ok()
                 .flatten()
@@ -202,7 +213,8 @@ pub async fn load_keys(pool: &PgPool) -> Result<HashMap<String, KeyConfig>, sqlx
         keys.insert(
             row.try_get("name")?,
             KeyConfig {
-                secret: row.try_get("secret")?,
+                secret: crate::secret_crypto::decrypt(&row.try_get::<String, _>("secret")?)
+                    .map_err(sqlx::Error::Protocol)?,
                 permission_group: row.try_get("permission_group")?,
                 comment: row.try_get("comment")?,
                 quota_names: quotas,
@@ -214,14 +226,40 @@ pub async fn load_keys(pool: &PgPool) -> Result<HashMap<String, KeyConfig>, sqlx
                 allowed_ips: json_string_list(row.try_get("allowed_ips")?),
                 expires_at: row.try_get("expires_at")?,
                 disabled_at: row.try_get("disabled_at")?,
+                quotas_defined: quotas_defined || legacy_defined,
+                default_service_tier: row
+                    .try_get::<Option<Value>, _>("generation")?
+                    .and_then(|g| {
+                        g.get("serviceTier")
+                            .and_then(Value::as_str)
+                            .map(|t| t.trim().to_lowercase())
+                    })
+                    .filter(|t| {
+                        [
+                            "auto",
+                            "default",
+                            "standard",
+                            "flex",
+                            "priority",
+                            "fast",
+                            "ultrafast",
+                        ]
+                        .contains(&t.as_str())
+                    }),
             },
         );
     }
     Ok(keys)
 }
 
+/// `stringifyStringArray`-style: trimmed, empties dropped.
 fn json_list(values: &[String]) -> String {
-    serde_json::to_string(values).expect("string lists are serializable")
+    let normalized: Vec<&str> = values
+        .iter()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .collect();
+    serde_json::to_string(&normalized).expect("string lists are serializable")
 }
 
 pub async fn upsert_key(pool: &PgPool, name: &str, config: &KeyConfig) -> Result<(), sqlx::Error> {
@@ -233,8 +271,8 @@ pub async fn upsert_key(pool: &PgPool, name: &str, config: &KeyConfig) -> Result
         "INSERT INTO api_keys
           (name, secret, comment, quota_names, allowed_models, allowed_providers,
            excluded_models, excluded_providers, allow_raw_passthrough, allowed_ips,
-           expires_at, disabled_at, created_at, updated_at, permission_group)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14)
+           expires_at, disabled_at, created_at, updated_at, permission_group, generation)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15)
          ON CONFLICT (name) DO UPDATE SET
            secret=EXCLUDED.secret, comment=EXCLUDED.comment,
            quota_names=EXCLUDED.quota_names, allowed_models=EXCLUDED.allowed_models,
@@ -244,12 +282,15 @@ pub async fn upsert_key(pool: &PgPool, name: &str, config: &KeyConfig) -> Result
            allow_raw_passthrough=EXCLUDED.allow_raw_passthrough,
            allowed_ips=EXCLUDED.allowed_ips, expires_at=EXCLUDED.expires_at,
            disabled_at=EXCLUDED.disabled_at, updated_at=EXCLUDED.updated_at,
-           permission_group=EXCLUDED.permission_group",
+           permission_group=EXCLUDED.permission_group, generation=EXCLUDED.generation",
     )
     .bind(name)
-    .bind(&config.secret)
+    .bind(crate::secret_crypto::encrypt(&config.secret))
     .bind(&config.comment)
-    .bind(json_list(&config.quota_names))
+    .bind(
+        (config.quotas_defined || !config.quota_names.is_empty())
+            .then(|| json_list(&config.quota_names)),
+    )
     .bind(json_list(&config.allowed_models))
     .bind(json_list(&config.allowed_providers))
     .bind(json_list(&config.excluded_models))
@@ -260,6 +301,12 @@ pub async fn upsert_key(pool: &PgPool, name: &str, config: &KeyConfig) -> Result
     .bind(config.disabled_at)
     .bind(now)
     .bind(&config.permission_group)
+    .bind(
+        config
+            .default_service_tier
+            .as_ref()
+            .map(|tier| serde_json::json!({"serviceTier": tier})),
+    )
     .execute(pool)
     .await
     .map(|_| ())
@@ -281,10 +328,23 @@ pub async fn delete_all_keys(pool: &PgPool) -> Result<(), sqlx::Error> {
 }
 
 pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderConfig>, sqlx::Error> {
-    let rows = sqlx::query("SELECT slug, version, display_name, api_base_url, api_base_urls, models, api_key, oauth_provider_type, oauth_account, enabled, disable_cooldown, stall_cooldown, allow_100_percent_utilization, discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled, auto_compat, adapter, model_autosync_enabled, model_autosync_interval, raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled, quota_checker_interval, quota_checker_options, retry_policy FROM providers")
+    let rows = sqlx::query("SELECT slug, version, display_name, api_base_url, api_base_urls, models, api_key, oauth_provider_type, oauth_account, enabled, disable_cooldown, stall_cooldown, allow_100_percent_utilization, discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled, auto_compat, adapter, model_autosync_enabled, model_autosync_interval, raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled, quota_checker_interval, quota_checker_options, retry_policy, config FROM providers")
         .fetch_all(pool).await?;
     let mut result = HashMap::new();
     for row in rows {
+        if let Some(stored) = row.try_get::<Option<Value>, _>("config")? {
+            let api_key = row
+                .try_get::<Option<String>, _>("api_key")?
+                .map(|v| crate::secret_crypto::decrypt(&v))
+                .transpose()
+                .map_err(sqlx::Error::Protocol)?;
+            let view = loaded_provider_view(stored, api_key).map_err(sqlx::Error::Protocol)?;
+            result.insert(
+                row.try_get("slug")?,
+                crate::provider_view::from_view(view, row.try_get("version")?),
+            );
+            continue;
+        }
         let base: serde_json::Value = row.try_get("api_base_url")?;
         let adapter: Option<serde_json::Value> = row.try_get("adapter")?;
         let raw: Option<serde_json::Value> = row.try_get("raw_passthrough")?;
@@ -294,9 +354,19 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
                 version: row.try_get("version")?,
                 display_name: row.try_get("display_name")?,
                 api_base_url: base.as_str().unwrap_or_default().to_string(),
-                api_base_urls: row.try_get::<Option<Value>, _>("api_base_urls")?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
-                models: row.try_get::<Option<Value>, _>("models")?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
-                api_key: row.try_get("api_key")?,
+                api_base_urls: row
+                    .try_get::<Option<Value>, _>("api_base_urls")?
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default(),
+                models: row
+                    .try_get::<Option<Value>, _>("models")?
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default(),
+                api_key: row
+                    .try_get::<Option<String>, _>("api_key")?
+                    .map(|v| crate::secret_crypto::decrypt(&v))
+                    .transpose()
+                    .map_err(sqlx::Error::Protocol)?,
                 oauth_provider: row.try_get("oauth_provider_type")?,
                 oauth_account: row.try_get("oauth_account")?,
                 enabled: row.try_get("enabled")?,
@@ -327,11 +397,13 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
                             interval: row.try_get::<i32, _>("quota_checker_interval")? as u64,
                             options: row
                                 .try_get::<Option<String>, _>("quota_checker_options")?
-                                .map(|text| serde_json::from_str::<Value>(&text).map_err(|e| {
-                                    sqlx::Error::Protocol(format!(
+                                .map(|text| {
+                                    serde_json::from_str::<Value>(&text).map_err(|e| {
+                                        sqlx::Error::Protocol(format!(
                                         "providers.quota_checker_options is not valid JSON: {e}"
                                     ))
-                                }))
+                                    })
+                                })
                                 .transpose()?
                                 .unwrap_or(Value::Null),
                         })
@@ -341,6 +413,7 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
                     .try_get::<Option<serde_json::Value>, _>("retry_policy")?
                     .and_then(|v| serde_json::from_value(v).ok())
                     .unwrap_or_default(),
+                view: None,
             },
         );
     }
@@ -349,8 +422,59 @@ pub async fn load_providers(pool: &PgPool) -> Result<HashMap<String, ProviderCon
 
 /// Read one persisted provider through the existing JSONB/text decoder.
 /// This avoids serving a stale process-local config after another instance edits it.
-pub async fn load_provider(pool: &PgPool, slug: &str) -> Result<Option<ProviderConfig>, sqlx::Error> {
+pub async fn load_provider(
+    pool: &PgPool,
+    slug: &str,
+) -> Result<Option<ProviderConfig>, sqlx::Error> {
     Ok(load_providers(pool).await?.remove(slug))
+}
+
+/// The repository view persisted in `providers.config`. The API key lives in
+/// its own encrypted column; headers and quota-checker options are encrypted
+/// like Plexus's `encryptJsonField` when `ENCRYPTION_KEY` is set.
+fn stored_provider_config(config: &ProviderConfig) -> Value {
+    let mut view = config.public_view();
+    if let Some(map) = view.as_object_mut() {
+        map.shift_remove("api_key");
+        if crate::secret_crypto::enabled() {
+            if let Some(headers) = map.get_mut("headers") {
+                *headers = Value::String(crate::secret_crypto::encrypt(&headers.to_string()));
+            }
+            if let Some(options) = map
+                .get_mut("quota_checker")
+                .and_then(|q| q.get_mut("options"))
+            {
+                *options = Value::String(crate::secret_crypto::encrypt(&options.to_string()));
+            }
+        }
+    }
+    view
+}
+
+fn loaded_provider_view(mut view: Value, api_key: Option<String>) -> Result<Value, String> {
+    let decrypt_json = |value: &mut Value| -> Result<(), String> {
+        if let Value::String(text) = value {
+            *value = serde_json::from_str(&crate::secret_crypto::decrypt(text)?)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    };
+    if let Some(map) = view.as_object_mut() {
+        if let Some(headers) = map.get_mut("headers") {
+            decrypt_json(headers)?;
+        }
+        if let Some(options) = map
+            .get_mut("quota_checker")
+            .and_then(|q| q.get_mut("options"))
+        {
+            decrypt_json(options)?;
+        }
+        // Key order mirrors rowToProviderConfig (api_key follows display_name).
+        if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+            map.insert("api_key".into(), Value::String(key));
+        }
+    }
+    Ok(view)
 }
 
 pub async fn upsert_provider(
@@ -369,8 +493,8 @@ pub async fn upsert_provider(
            discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled,
            auto_compat, adapter, model_autosync_enabled, model_autosync_interval,
            raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled,
-           quota_checker_interval, quota_checker_options, retry_policy, created_at, updated_at, oauth_account)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+           quota_checker_interval, quota_checker_options, retry_policy, created_at, updated_at, oauth_account, config)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30::text::json)
          ON CONFLICT (slug) DO UPDATE SET
            display_name=EXCLUDED.display_name, api_base_url=EXCLUDED.api_base_url,
            api_base_urls=EXCLUDED.api_base_urls, models=EXCLUDED.models,
@@ -390,7 +514,7 @@ pub async fn upsert_provider(
            quota_checker_enabled=EXCLUDED.quota_checker_enabled,
            quota_checker_interval=EXCLUDED.quota_checker_interval,
            quota_checker_options=EXCLUDED.quota_checker_options,
-           retry_policy=EXCLUDED.retry_policy,
+           retry_policy=EXCLUDED.retry_policy, config=EXCLUDED.config,
            version=providers.version+1,
            updated_at=EXCLUDED.updated_at",
     )
@@ -399,7 +523,7 @@ pub async fn upsert_provider(
     .bind(serde_json::Value::String(config.api_base_url.clone()))
     .bind(serde_json::to_value(&config.api_base_urls).unwrap())
     .bind(serde_json::to_value(&config.models).unwrap())
-    .bind(&config.api_key)
+    .bind(crate::secret_crypto::encrypt_opt(&config.api_key))
     .bind(&config.oauth_provider)
     .bind(config.enabled)
     .bind(config.disable_cooldown)
@@ -423,6 +547,7 @@ pub async fn upsert_provider(
     .bind(now)
     .bind(now)
     .bind(&config.oauth_account)
+    .bind(crate::engine::js::stringify(&stored_provider_config(config)))
     .execute(pool)
     .await
     .map(|_| ())
@@ -444,8 +569,8 @@ pub async fn create_provider_if_absent(
            discount, estimate_tokens, use_claude_masking, gemini_thinking_enabled,
            auto_compat, adapter, model_autosync_enabled, model_autosync_interval,
            raw_passthrough, quota_checker_type, quota_checker_id, quota_checker_enabled,
-           quota_checker_interval, quota_checker_options, retry_policy, created_at, updated_at, oauth_account)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+           quota_checker_interval, quota_checker_options, retry_policy, created_at, updated_at, oauth_account, config)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30::text::json)
          ON CONFLICT (slug) DO NOTHING",
     )
     .bind(slug)
@@ -453,7 +578,7 @@ pub async fn create_provider_if_absent(
     .bind(serde_json::Value::String(config.api_base_url.clone()))
     .bind(serde_json::to_value(&config.api_base_urls).unwrap())
     .bind(serde_json::to_value(&config.models).unwrap())
-    .bind(&config.api_key)
+    .bind(crate::secret_crypto::encrypt_opt(&config.api_key))
     .bind(&config.oauth_provider)
     .bind(config.enabled)
     .bind(config.disable_cooldown)
@@ -477,6 +602,7 @@ pub async fn create_provider_if_absent(
     .bind(now)
     .bind(now)
     .bind(&config.oauth_account)
+    .bind(crate::engine::js::stringify(&stored_provider_config(config)))
     .execute(pool)
     .await
     .map(|result| result.rows_affected() == 1)
@@ -485,14 +611,17 @@ pub async fn create_provider_if_absent(
 /// Conditional full-record update; one SQL statement wins or returns a conflict.
 /// All editable fields and the revision change atomically in PostgreSQL.
 pub async fn update_provider_if_version(
-    pool: &PgPool, slug: &str, config: &ProviderConfig, expected_version: i64,
+    pool: &PgPool,
+    slug: &str,
+    config: &ProviderConfig,
+    expected_version: i64,
 ) -> Result<Option<i64>, sqlx::Error> {
-    let row = sqlx::query("UPDATE providers SET display_name=$2,api_base_url=$3,api_base_urls=$4,models=$5,api_key=$6,oauth_provider_type=$7,oauth_account=$8,enabled=$9,disable_cooldown=$10,stall_cooldown=$11,allow_100_percent_utilization=$12,discount=$13,estimate_tokens=$14,use_claude_masking=$15,gemini_thinking_enabled=$16,auto_compat=$17,adapter=$18,model_autosync_enabled=$19,model_autosync_interval=$20,raw_passthrough=$21,quota_checker_type=$22,quota_checker_id=$23,quota_checker_enabled=$24,quota_checker_interval=$25,quota_checker_options=$26,retry_policy=$27,updated_at=$28,version=version+1 WHERE slug=$1 AND version=$29 RETURNING version")
+    let row = sqlx::query("UPDATE providers SET display_name=$2,api_base_url=$3,api_base_urls=$4,models=$5,api_key=$6,oauth_provider_type=$7,oauth_account=$8,enabled=$9,disable_cooldown=$10,stall_cooldown=$11,allow_100_percent_utilization=$12,discount=$13,estimate_tokens=$14,use_claude_masking=$15,gemini_thinking_enabled=$16,auto_compat=$17,adapter=$18,model_autosync_enabled=$19,model_autosync_interval=$20,raw_passthrough=$21,quota_checker_type=$22,quota_checker_id=$23,quota_checker_enabled=$24,quota_checker_interval=$25,quota_checker_options=$26,retry_policy=$27,updated_at=$28,config=$30::text::json,version=version+1 WHERE slug=$1 AND version=$29 RETURNING version")
         .bind(slug).bind(&config.display_name)
         .bind(serde_json::Value::String(config.api_base_url.clone()))
         .bind(serde_json::to_value(&config.api_base_urls).unwrap())
         .bind(serde_json::to_value(&config.models).unwrap())
-        .bind(&config.api_key).bind(&config.oauth_provider).bind(&config.oauth_account)
+        .bind(crate::secret_crypto::encrypt_opt(&config.api_key)).bind(&config.oauth_provider).bind(&config.oauth_account)
         .bind(config.enabled).bind(config.disable_cooldown).bind(config.stall_cooldown)
         .bind(config.allow_100_percent_utilization).bind(config.discount)
         .bind(config.estimate_tokens).bind(config.use_claude_masking)
@@ -506,9 +635,9 @@ pub async fn update_provider_if_version(
         .bind(config.quota_checker.as_ref().map(|q| q.interval as i32).unwrap_or(30))
         .bind(config.quota_checker.as_ref().map(|q| q.options.to_string()))
         .bind(serde_json::to_value(&config.retry_policy).unwrap())
-        .bind(chrono::Utc::now().timestamp_millis()).bind(expected_version)
+        .bind(chrono::Utc::now().timestamp_millis()).bind(expected_version).bind(crate::engine::js::stringify(&stored_provider_config(config)))
         .fetch_optional(pool).await?;
-    Ok(row.map(|row| sqlx::Row::get::<i64,_>(&row, "version")))
+    Ok(row.map(|row| sqlx::Row::get::<i64, _>(&row, "version")))
 }
 
 pub async fn delete_provider(pool: &PgPool, slug: &str) -> Result<(), sqlx::Error> {
@@ -540,8 +669,9 @@ fn parse_json_list_opt(value: Option<String>) -> Option<Vec<String>> {
 pub async fn load_aliases(pool: &PgPool) -> Result<HashMap<String, ModelConfig>, sqlx::Error> {
     let rows = sqlx::query(
         "SELECT id, slug, priority::text, additional_aliases, use_image_fallthrough, enforce_limits,
+                synthetic_safeguard_approval,
                 sticky_session, preferred_api, target_groups, advanced, pi_model,
-                extra_body, compaction, model_type
+                extra_body, compaction, model_type, config
            FROM model_aliases",
     )
     .fetch_all(pool)
@@ -549,6 +679,10 @@ pub async fn load_aliases(pool: &PgPool) -> Result<HashMap<String, ModelConfig>,
 
     let mut result = HashMap::new();
     for row in rows {
+        if let Some(view) = row.try_get::<Option<Value>, _>("config")? {
+            result.insert(row.try_get("slug")?, crate::alias_view::from_view(view));
+            continue;
+        }
         let additional_aliases: Option<serde_json::Value> = row.try_get("additional_aliases")?;
         let preferred_api: Option<serde_json::Value> = row.try_get("preferred_api")?;
         let target_groups: Option<serde_json::Value> = row.try_get("target_groups")?;
@@ -572,6 +706,7 @@ pub async fn load_aliases(pool: &PgPool) -> Result<HashMap<String, ModelConfig>,
                 use_image_fallthrough: row.try_get("use_image_fallthrough")?,
                 enforce_limits: row.try_get("enforce_limits")?,
                 sticky_session: row.try_get("sticky_session")?,
+                synthetic_safeguard_approval: row.try_get("synthetic_safeguard_approval")?,
                 preferred_api: preferred_api
                     .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok()),
                 model_type: row.try_get("model_type")?,
@@ -580,6 +715,7 @@ pub async fn load_aliases(pool: &PgPool) -> Result<HashMap<String, ModelConfig>,
                 pi_model,
                 extra_body,
                 compaction,
+                view: None,
             },
         );
     }
@@ -612,18 +748,19 @@ pub async fn upsert_alias(
 
     let row = sqlx::query(
         "INSERT INTO model_aliases
-          (slug, priority, additional_aliases, use_image_fallthrough, enforce_limits,
+          (slug, priority, additional_aliases, use_image_fallthrough, enforce_limits, synthetic_safeguard_approval,
            sticky_session, preferred_api, target_groups, advanced, pi_model, extra_body,
-           compaction, model_type, created_at, updated_at)
-         VALUES ($1,$2::alias_priority,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)
+           compaction, model_type, created_at, updated_at, config)
+         VALUES ($1,$2::alias_priority,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16::text::json)
          ON CONFLICT (slug) DO UPDATE SET
            priority=EXCLUDED.priority, additional_aliases=EXCLUDED.additional_aliases,
            use_image_fallthrough=EXCLUDED.use_image_fallthrough,
            enforce_limits=EXCLUDED.enforce_limits, sticky_session=EXCLUDED.sticky_session,
+           synthetic_safeguard_approval=EXCLUDED.synthetic_safeguard_approval,
            preferred_api=EXCLUDED.preferred_api, target_groups=EXCLUDED.target_groups,
            advanced=EXCLUDED.advanced, pi_model=EXCLUDED.pi_model,
            extra_body=EXCLUDED.extra_body, compaction=EXCLUDED.compaction,
-           model_type=EXCLUDED.model_type, updated_at=EXCLUDED.updated_at
+           model_type=EXCLUDED.model_type, updated_at=EXCLUDED.updated_at, config=EXCLUDED.config
          RETURNING id",
     )
     .bind(slug)
@@ -631,6 +768,7 @@ pub async fn upsert_alias(
     .bind(additional_aliases_json)
     .bind(config.use_image_fallthrough)
     .bind(config.enforce_limits)
+    .bind(config.synthetic_safeguard_approval)
     .bind(config.sticky_session)
     .bind(preferred_api_json)
     .bind(target_groups_json)
@@ -640,6 +778,8 @@ pub async fn upsert_alias(
     .bind(&config.compaction)
     .bind(&config.model_type)
     .bind(timestamp)
+    // Bound as text: a serde_json bind is JSONB and would reorder keys.
+    .bind(crate::engine::js::stringify(&config.public_view()))
     .fetch_one(pool)
     .await?;
 
@@ -649,13 +789,18 @@ pub async fn upsert_alias(
         .execute(pool)
         .await?;
 
+    // One running sort index across groups, as Plexus `saveAlias` does.
+    let mut idx = 0usize;
     for group in &config.target_groups {
-        for (idx, target) in group.targets.iter().enumerate() {
+        for target in group.targets.iter() {
+            idx += 1;
+            let idx = idx - 1;
             sqlx::query(
                 "INSERT INTO model_alias_targets
                   (alias_id, provider_slug, model_name, target_alias_slug, enabled,
                    group_name, sort_order)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                 VALUES ($1,$2,$3,$4,$5,$6,$7)
+                 ON CONFLICT DO NOTHING",
             )
             .bind(alias_id)
             .bind(&target.provider)
@@ -705,14 +850,14 @@ pub async fn load_user_quotas(
             QuotaDefinition {
                 quota_type: row.try_get("quota_type")?,
                 limit_type: row.try_get("limit_type")?,
-                limit: row.try_get::<i32, _>("limit_value")? as f64,
+                limit: row.try_get::<f64, _>("limit_value")?,
                 duration: row.try_get("duration")?,
                 allowed_providers: parse_json_list_opt(row.try_get("allowed_providers")?),
                 excluded_providers: parse_json_list_opt(row.try_get("excluded_providers")?),
                 allowed_models: parse_json_list_opt(row.try_get("allowed_models")?),
                 excluded_models: parse_json_list_opt(row.try_get("excluded_models")?),
                 shared: row.try_get::<Option<bool>, _>("shared")?,
-                warn_at: row.try_get::<Option<f32>, _>("warn_at")?.map(|v| v as f64),
+                warn_at: row.try_get::<Option<f64>, _>("warn_at")?,
             },
         );
     }
@@ -744,14 +889,14 @@ pub async fn upsert_user_quota(
     .bind(name)
     .bind(&quota.quota_type)
     .bind(&quota.limit_type)
-    .bind(quota.limit as i32)
+    .bind(quota.limit)
     .bind(&quota.duration)
     .bind(json_list_opt(&quota.allowed_models))
     .bind(json_list_opt(&quota.allowed_providers))
     .bind(json_list_opt(&quota.excluded_models))
     .bind(json_list_opt(&quota.excluded_providers))
     .bind(quota.shared.unwrap_or(false))
-    .bind(quota.warn_at.map(|v| v as f32))
+    .bind(quota.warn_at)
     .bind(timestamp)
     .execute(pool)
     .await
@@ -957,7 +1102,16 @@ pub async fn update_request_usage_metrics(
         .execute(pool).await.map(|_| ())
 }
 
-pub async fn record_provider_performance(pool: &PgPool, provider: &str, model: &str, request_id: &str, ttft_ms: Option<i64>, tokens_per_sec: Option<f32>, e2e_tokens_per_sec: Option<f32>, duration_ms: i64) -> Result<(), sqlx::Error> {
+pub async fn record_provider_performance(
+    pool: &PgPool,
+    provider: &str,
+    model: &str,
+    request_id: &str,
+    ttft_ms: Option<i64>,
+    tokens_per_sec: Option<f32>,
+    e2e_tokens_per_sec: Option<f32>,
+    duration_ms: i64,
+) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT INTO provider_performance (provider,model,request_id,time_to_first_token_ms,tokens_per_sec,e2e_tokens_per_sec,duration_ms,total_tokens,created_at,success_count,failure_count) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,1,0)")
         .bind(provider).bind(model).bind(request_id).bind(ttft_ms.map(|v| v as f32)).bind(tokens_per_sec).bind(e2e_tokens_per_sec).bind(duration_ms as f32).bind(Option::<i32>::None).bind(chrono::Utc::now().timestamp_millis())
         .execute(pool).await.map(|_| ())
@@ -1230,7 +1384,7 @@ pub async fn request_quota_windows(
             continue;
         }
         let kind: String = row.try_get("quota_type")?;
-        let limit: i32 = row.try_get("limit_value")?;
+        let limit: f64 = row.try_get("limit_value")?;
         let duration: Option<String> = row.try_get("duration")?;
         let (start, end, rolling_duration) = match kind.as_str() {
             "rolling" => {
@@ -1246,7 +1400,7 @@ pub async fn request_quota_windows(
             },
             _ => continue,
         };
-        windows.push((name.clone(), limit, start, end, rolling_duration));
+        windows.push((name.clone(), limit as i32, start, end, rolling_duration));
     }
     Ok(windows)
 }
@@ -1345,4 +1499,28 @@ mod tests {
         let after_cleanup = load_keys(&pool).await.expect("key reload must succeed");
         assert!(!after_cleanup.contains_key(&name));
     }
+}
+
+/// Pinned Plexus `encrypt-migration.ts`: with `ENCRYPTION_KEY` set, encrypt
+/// legacy plaintext provider API keys and key secrets in place at startup.
+pub async fn encrypt_plaintext_secrets(pool: &PgPool) -> Result<(), sqlx::Error> {
+    if !crate::secret_crypto::enabled() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    for (table, id, column) in [
+        ("providers", "slug", "api_key"),
+        ("api_keys", "name", "secret"),
+    ] {
+        let rows: Vec<(String, String)> = sqlx::query_as(&format!("SELECT {id}, {column} FROM {table} WHERE {column} IS NOT NULL AND {column} NOT LIKE 'enc:v1:%' FOR UPDATE"))
+            .fetch_all(&mut *tx).await?;
+        for (key, value) in rows {
+            sqlx::query(&format!("UPDATE {table} SET {column}=$2 WHERE {id}=$1"))
+                .bind(key)
+                .bind(crate::secret_crypto::encrypt(&value))
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    tx.commit().await
 }

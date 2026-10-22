@@ -1,0 +1,33 @@
+{"setup": [
+  ["PUT","/v0/management/providers/up-chat",{"api_base_url":{"chat":"{{MOCK}}/v1"},"api_key":"sk-up-chat","models":{"mock-model":{},"mock-tool":{},"mock-error500":{},"mock-error400":{}}}],
+  ["PUT","/v0/management/providers/up-msg",{"api_base_url":{"messages":"{{MOCK}}/v1"},"api_key":"sk-up-msg","models":{"claude-mock":{},"claude-tool":{}}}],
+  ["PUT","/v0/management/providers/up-resp",{"api_base_url":{"responses":"{{MOCK}}/v1"},"api_key":"sk-up-resp","models":{"resp-mock":{}}}],
+  ["PUT","/v0/management/providers/up-gem",{"api_base_url":{"gemini":"{{MOCK}}/v1beta"},"api_key":"sk-up-gem","models":{"gem-mock":{}}}],
+  ["PUT","/v0/management/aliases/chat-a",{"target_groups":[{"name":"g","selector":"in_order","targets":[{"provider":"up-chat","model":"mock-model"}]}]}],
+  ["PUT","/v0/management/aliases/tool-a",{"target_groups":[{"name":"g","selector":"in_order","targets":[{"provider":"up-chat","model":"mock-tool"}]}]}],
+  ["PUT","/v0/management/aliases/msg-a",{"target_groups":[{"name":"g","selector":"in_order","targets":[{"provider":"up-msg","model":"claude-mock"}]}]}],
+  ["PUT","/v0/management/aliases/resp-a",{"target_groups":[{"name":"g","selector":"in_order","targets":[{"provider":"up-resp","model":"resp-mock"}]}]}],
+  ["PUT","/v0/management/aliases/gem-a",{"target_groups":[{"name":"g","selector":"in_order","targets":[{"provider":"up-gem","model":"gem-mock"}]}]}],
+  ["PUT","/v0/management/aliases/fail-a",{"target_groups":[{"name":"g","selector":"in_order","targets":[{"provider":"up-chat","model":"mock-error500"},{"provider":"up-chat","model":"mock-model"}]}]}]
+],
+"scenarios": [
+  {"name":"chat basic","path":"/v1/chat/completions","body":{"model":"chat-a","messages":[{"role":"user","content":"hi"}]}},
+  {"name":"chat stream","path":"/v1/chat/completions","body":{"model":"chat-a","stream":true,"messages":[{"role":"user","content":"hi"}]}},
+  {"name":"chat tool","path":"/v1/chat/completions","body":{"model":"tool-a","messages":[{"role":"user","content":"weather?"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}},
+  {"name":"chat direct","path":"/v1/chat/completions","body":{"model":"direct/up-chat/mock-model","messages":[{"role":"user","content":"hi"}]}},
+  {"name":"chat provider/model","path":"/v1/chat/completions","body":{"model":"up-chat/mock-model","messages":[{"role":"user","content":"hi"}]}},
+  {"name":"chat unknown","path":"/v1/chat/completions","body":{"model":"nope","messages":[{"role":"user","content":"hi"}]}},
+  {"name":"chat failover","path":"/v1/chat/completions","body":{"model":"fail-a","messages":[{"role":"user","content":"hi"}]}},
+  {"name":"chat->messages provider","path":"/v1/chat/completions","body":{"model":"msg-a","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}],"max_tokens":50}},
+  {"name":"chat->messages stream","path":"/v1/chat/completions","body":{"model":"msg-a","stream":true,"messages":[{"role":"user","content":"hi"}],"max_tokens":50}},
+  {"name":"messages basic","path":"/v1/messages","body":{"model":"msg-a","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}},
+  {"name":"messages stream","path":"/v1/messages","body":{"model":"msg-a","max_tokens":50,"stream":true,"messages":[{"role":"user","content":"hi"}]}},
+  {"name":"messages->chat provider","path":"/v1/messages","body":{"model":"chat-a","max_tokens":50,"system":"sys","messages":[{"role":"user","content":"hi"}]}},
+  {"name":"messages->chat stream","path":"/v1/messages","body":{"model":"chat-a","max_tokens":50,"stream":true,"messages":[{"role":"user","content":"hi"}]}},
+  {"name":"responses basic","path":"/v1/responses","body":{"model":"resp-a","input":"hi"}},
+  {"name":"responses->chat provider","path":"/v1/responses","body":{"model":"chat-a","input":"hi","instructions":"sys"}},
+  {"name":"responses->chat stream","path":"/v1/responses","body":{"model":"chat-a","input":"hi","stream":true}},
+  {"name":"gemini basic","path":"/v1beta/models/gem-a:generateContent","body":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}},
+  {"name":"gemini->chat provider","path":"/v1beta/models/chat-a:generateContent","body":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}},
+  {"name":"models list","method":"GET","path":"/v1/models"}
+]}

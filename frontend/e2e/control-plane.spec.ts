@@ -21,17 +21,29 @@ async function fixture(page: Page, options: { auth?: boolean; failModels?: boole
     }
     if (path.endsWith('/usage/summary')) return route.fulfill({ json: { stats: { totalRequests: 1, totalErrors: 0, inputTokens: 3, outputTokens: 5, totalCost: 0.12 }, today: { requests: 1, totalCost: 0.12 }, series: [] } });
     if (path.endsWith('/usage')) return route.fulfill({ json: usage });
+    if (path.endsWith('/analytics/query') && method === 'POST') return route.fulfill({ json: { data: [], summary: {} } });
     if (path.endsWith('/concurrency')) return route.fulfill({ json: { data: [] } });
     if (path.endsWith('/cooldowns')) return route.fulfill({ json: [] });
     if (path.endsWith('/metrics')) return route.fulfill({ contentType: 'text/plain', body: 'plexus_requests_total 1\n' });
     if (path.endsWith('/config/status')) return route.fulfill({ json: { providerCount: Object.keys(providers).length, modelAliasCount: 1, keyCount: 0, quotaCount: 0, mcpServerCount: 0 } });
     if (path.endsWith('/providers') && method === 'GET') return route.fulfill({ json: providers });
+    if (path.endsWith('/providers/fixture') && method === 'GET') return route.fulfill({ headers: { ETag: '"1"' }, json: providers.fixture });
+    if (path.endsWith('/providers/fixture') && method === 'PATCH') {
+      if (request.headers()['if-match'] !== '"1"') return route.fulfill({ status: 409, json: { error: 'Provider changed; reload before saving' } });
+      providers.fixture = { ...providers.fixture, ...request.postDataJSON() };
+      return route.fulfill({ json: providers.fixture });
+    }
+    if (path.endsWith('/catalog-organization') && method === 'GET') return route.fulfill({ json: { groups: [], items: { provider: {}, model: {}, alias: {}, key: {} } } });
+    if (path.endsWith('/provider-presets')) return route.fulfill({ json: { data: [] } });
+    if (path.endsWith('/quota-checker-types')) return route.fulfill({ json: { data: [] } });
     if (path.includes('/providers/') && method === 'PUT') {
       const name = decodeURIComponent(path.split('/').pop()!);
       providers[name] = { ...JSON.parse(request.postData() ?? '{}'), api_key: 'configured' };
       return route.fulfill({ status: 204 });
     }
     if (path.endsWith('/oauth/providers')) return route.fulfill({ json: { data: [] } });
+    if (path.endsWith('/analytics/dashboards') && method === 'GET') return route.fulfill({ json: [] });
+    if (path.endsWith('/performance')) return route.fulfill({ json: { data: [], summary: {} } });
     if (path.endsWith('/logging/level')) return route.fulfill({ json: { level: 'info', startupLevel: 'info', supportedLevels: ['info'] } });
     if (path.endsWith('/logging/modules')) return route.fulfill({ json: { modules: [] } });
     if (path.endsWith('/system/logs/stream')) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'event: syslog\ndata: {"level":"info","message":"first","timestamp":"1"}\n\nevent: syslog\ndata: {"level":"info","message":"second","timestamp":"2"}\n\n' });
@@ -52,9 +64,9 @@ test('auth boundaries, navigation, and model search', async ({ page }) => {
   await page.getByRole('button', { name: /access dashboard/i }).click();
   await expect(page).toHaveURL(/\/models$/);
   await page.getByRole('link', { name: 'Models' }).click();
-  await expect(page.getByRole('cell', { name: /fast/ })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'fast Also known as quick' })).toBeVisible();
   await page.getByLabel('Search models').fill('missing');
-  await expect(page.getByText('No models match your search')).toBeVisible();
+  await expect(page.getByText('No items match these filters. Clear filters to see all items.')).toBeVisible();
 });
 
 test('usage records and API error state', async ({ page }) => {
@@ -72,17 +84,17 @@ test('provider CRUD state and ordered SSE stream', async ({ page }) => {
   await fixture(page);
   await page.addInitScript(() => localStorage.setItem('trefoil_admin_key', 'fixture-admin'));
   await page.goto('/providers');
-  await expect(page.getByText('https://fixture.invalid')).toBeVisible();
-  await page.getByRole('button', { name: /add provider/i }).click();
+  await expect(page.getByRole('row').filter({ hasText: 'fixture' })).toBeVisible();
+  await page.getByRole('button', { name: 'Add provider', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
-  await dialog.getByRole('button', { name: /API key provider/i }).click();
   await dialog.getByLabel('Provider ID').fill('new-provider');
-  await dialog.getByLabel('API base URL').fill('https://new.invalid');
+  await dialog.getByRole('button', { name: 'Add API URL' }).click();
+  await dialog.getByLabel('chat base URL').fill('https://new.invalid');
   await dialog.getByLabel(/API key/).fill('secret');
   await dialog.getByRole('button', { name: 'Save provider' }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByText('https://new.invalid')).toBeVisible();
+  await expect(page.getByRole('row').filter({ hasText: 'new-provider' })).toBeVisible();
   await page.goto('/system-logs');
   await expect(page.getByText('first')).toBeVisible();
   await expect(page.getByText('second')).toBeVisible();
@@ -93,21 +105,37 @@ test('provider CRUD state and ordered SSE stream', async ({ page }) => {
   expect(await first.evaluate((node, other) => !!(node.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING), await second.elementHandle())).toBe(true);
 });
 
+test('provider editor obtains a revision and sends a conditional edit', async ({ page }) => {
+  await fixture(page);
+  await page.addInitScript(() => localStorage.setItem('trefoil_admin_key', 'fixture-admin'));
+  await page.goto('/providers');
+  await page.getByRole('button', { name: 'Edit fixture' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Display name').fill('Renamed fixture');
+  const patch = page.waitForRequest(request => request.url().endsWith('/v0/management/providers/fixture') && request.method() === 'PATCH');
+  await dialog.getByRole('button', { name: 'Save provider' }).click();
+  const request = await patch;
+  expect(request.headers()['if-match']).toBe('"1"');
+  expect(request.postDataJSON()).toMatchObject({ display_name: 'Renamed fixture' });
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('row').filter({ hasText: 'Renamed fixture' })).toBeVisible();
+});
+
 test('dashboard shell collapses persistently and dashboard links reach real pages', async ({ page }) => {
   await fixture(page);
   await page.addInitScript(() => localStorage.setItem('trefoil_admin_key', 'fixture-admin'));
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Live Metrics' })).toBeVisible();
+  await expect(page.getByRole('main').getByRole('heading', { name: 'Overview' })).toBeVisible();
   await page.getByRole('button', { name: 'Collapse sidebar' }).click();
   await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
   await page.reload();
   await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
   await page.getByRole('link', { name: 'Usage Analytics' }).click();
-  await expect(page).toHaveURL(/\/usage$/);
+  await expect(page).toHaveURL(/\/analytics\?tab=usage$/);
   await page.goto('/');
   await page.getByRole('link', { name: 'Performance' }).click();
-  await expect(page).toHaveURL(/\/metrics$/);
+  await expect(page).toHaveURL(/\/analytics\?tab=performance$/);
 });
 
 test('dashboard navigation remains usable in mobile drawer', async ({ page }) => {
@@ -117,7 +145,7 @@ test('dashboard navigation remains usable in mobile drawer', async ({ page }) =>
   await page.goto('/');
   await page.getByRole('button', { name: 'Open navigation' }).click();
   await expect(page.getByRole('button', { name: 'Close navigation' })).toBeVisible();
-  await page.getByRole('link', { name: 'Providers' }).last().click();
+  await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link', { name: 'Providers' }).click();
   await expect(page).toHaveURL(/\/providers$/);
   await expect(page.getByRole('button', { name: 'Close navigation' })).toBeHidden();
 });

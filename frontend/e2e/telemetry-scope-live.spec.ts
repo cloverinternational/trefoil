@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { mockHost } from './mock-host';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -21,7 +22,7 @@ test('limited telemetry lists, summaries and analytics cannot read another key o
   });
   await new Promise<void>(done => server.listen(0, '0.0.0.0', done));
   try {
-    const origin = `http://192.168.96.1:${(server.address() as { port: number }).port}`;
+    const origin = `http://${mockHost}:${(server.address() as { port: number }).port}`;
     expect((await request.put(`/v0/management/providers/${provider}`, { headers, data: { api_base_url: origin, api_key: 'disposable', enabled: true } })).status()).toBe(200);
     for (let i = 0; i < 2; i++) expect((await request.put(`/v0/management/keys/${names[i]}`, { headers, data: { secret: secrets[i] } })).status()).toBe(200);
     for (let i = 0; i < 2; i++) expect((await request.post('/v1/chat/completions', { headers: { 'x-api-key': secrets[i] }, data: { model: `${provider}/sample`, messages: [{ role: 'user', content: 'ok' }] } })).status()).toBe(200);

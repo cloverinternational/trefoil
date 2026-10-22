@@ -158,16 +158,39 @@ pub async fn exchange<T: OAuthTransport + ?Sized>(
 }
 
 pub async fn exchange_with_state<T: OAuthTransport + ?Sized>(
-    transport: &T, provider: &str, code: &str, verifier: &str, redirect_uri: &str, state: Option<&str>,
+    transport: &T,
+    provider: &str,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+    state: Option<&str>,
 ) -> Result<TokenResponse, OAuthTransportError> {
     let spec = provider_spec(provider).ok_or(OAuthTransportError::UnsupportedProvider)?;
     let (mut fields, json) = if provider == "openrouter" {
-        (vec![("code".into(), code.into()), ("code_verifier".into(), verifier.into()), ("code_challenge_method".into(), "S256".into())], true)
+        (
+            vec![
+                ("code".into(), code.into()),
+                ("code_verifier".into(), verifier.into()),
+                ("code_challenge_method".into(), "S256".into()),
+            ],
+            true,
+        )
     } else {
-        (vec![("grant_type".into(), "authorization_code".into()), ("code".into(), code.into()), ("client_id".into(), spec.client_id.into()), ("redirect_uri".into(), redirect_uri.into()), ("code_verifier".into(), verifier.into())], provider == "anthropic")
+        (
+            vec![
+                ("grant_type".into(), "authorization_code".into()),
+                ("code".into(), code.into()),
+                ("client_id".into(), spec.client_id.into()),
+                ("redirect_uri".into(), redirect_uri.into()),
+                ("code_verifier".into(), verifier.into()),
+            ],
+            provider == "anthropic",
+        )
     };
     if provider == "anthropic" {
-        let state = state.filter(|state| !state.is_empty()).ok_or(OAuthTransportError::MissingFields)?;
+        let state = state
+            .filter(|state| !state.is_empty())
+            .ok_or(OAuthTransportError::MissingFields)?;
         fields.push(("state".into(), state.into()));
     }
     let response = transport
@@ -184,12 +207,24 @@ pub async fn exchange_with_state<T: OAuthTransport + ?Sized>(
             status: response.status,
         });
     }
-    if provider == "openrouter" { parse_openrouter_response(&response.body) } else { parse_token_response(&response.body, spec.token_field, "") }
+    if provider == "openrouter" {
+        parse_openrouter_response(&response.body)
+    } else {
+        parse_token_response(&response.body, spec.token_field, "")
+    }
 }
 
 fn parse_openrouter_response(body: &Value) -> Result<TokenResponse, OAuthTransportError> {
-    let access_token = body.get("key").and_then(Value::as_str).filter(|v| !v.trim().is_empty()).ok_or(OAuthTransportError::MissingFields)?;
-    Ok(TokenResponse { access_token: access_token.to_owned(), refresh_token: String::new(), expires_in: 0 })
+    let access_token = body
+        .get("key")
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .ok_or(OAuthTransportError::MissingFields)?;
+    Ok(TokenResponse {
+        access_token: access_token.to_owned(),
+        refresh_token: String::new(),
+        expires_in: 0,
+    })
 }
 
 pub fn parse_token_response(
@@ -238,15 +273,13 @@ impl OAuthTransport for ReqwestTransport {
             } else {
                 builder = builder.form(&request.fields);
             }
-            let response = builder.send()
-                .await
-                .map_err(|e| {
-                    if e.is_timeout() {
-                        OAuthTransportError::Timeout
-                    } else {
-                        OAuthTransportError::Transport
-                    }
-                })?;
+            let response = builder.send().await.map_err(|e| {
+                if e.is_timeout() {
+                    OAuthTransportError::Timeout
+                } else {
+                    OAuthTransportError::Transport
+                }
+            })?;
             let status = response.status().as_u16();
             let body = response
                 .json::<Value>()
@@ -299,18 +332,42 @@ mod tests {
     #[tokio::test]
     async fn anthropic_exchange_and_refresh_use_current_json_contract() {
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let mock = Mock { requests: requests.clone(), response: OAuthResponse { status:200, body:serde_json::json!({"access_token":"access","refresh_token":"refresh","expires_in":3600}) } };
-        exchange_with_state(&mock,"anthropic","code","verifier","http://localhost:53692/callback",Some("state")).await.unwrap();
-        refresh(&mock,"anthropic","refresh").await.unwrap();
+        let mock = Mock {
+            requests: requests.clone(),
+            response: OAuthResponse {
+                status: 200,
+                body: serde_json::json!({"access_token":"access","refresh_token":"refresh","expires_in":3600}),
+            },
+        };
+        exchange_with_state(
+            &mock,
+            "anthropic",
+            "code",
+            "verifier",
+            "http://localhost:53692/callback",
+            Some("state"),
+        )
+        .await
+        .unwrap();
+        refresh(&mock, "anthropic", "refresh").await.unwrap();
         let requests = requests.lock().unwrap();
         for request in requests.iter() {
             assert!(request.json);
-            assert_eq!(request.url,"https://platform.claude.com/v1/oauth/token");
-            assert!(request.fields.contains(&("client_id".into(),"9d1c250a-e61b-44d9-88ed-5944d1962f5e".into())));
+            assert_eq!(request.url, "https://platform.claude.com/v1/oauth/token");
+            assert!(request.fields.contains(&(
+                "client_id".into(),
+                "9d1c250a-e61b-44d9-88ed-5944d1962f5e".into()
+            )));
         }
-        assert!(requests[0].fields.contains(&("state".into(),"state".into())));
-        assert!(requests[0].fields.contains(&("code_verifier".into(),"verifier".into())));
-        assert!(requests[1].fields.contains(&("grant_type".into(),"refresh_token".into())));
+        assert!(requests[0]
+            .fields
+            .contains(&("state".into(), "state".into())));
+        assert!(requests[0]
+            .fields
+            .contains(&("code_verifier".into(), "verifier".into())));
+        assert!(requests[1]
+            .fields
+            .contains(&("grant_type".into(), "refresh_token".into())));
     }
 
     #[tokio::test]
@@ -398,14 +455,24 @@ mod wire_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let response = ReqwestTransport.send(OAuthRequest {
-            provider:"openrouter".into(), url:format!("http://{addr}/keys"), json:true,
-            fields:vec![("code".into(),"code".into()),("code_verifier".into(),"verifier".into()),("code_challenge_method".into(),"S256".into())], timeout:Duration::from_secs(1)
-        }).await.unwrap();
+        let response = ReqwestTransport
+            .send(OAuthRequest {
+                provider: "openrouter".into(),
+                url: format!("http://{addr}/keys"),
+                json: true,
+                fields: vec![
+                    ("code".into(), "code".into()),
+                    ("code_verifier".into(), "verifier".into()),
+                    ("code_challenge_method".into(), "S256".into()),
+                ],
+                timeout: Duration::from_secs(1),
+            })
+            .await
+            .unwrap();
         server.abort();
         let token = parse_openrouter_response(&response.body).unwrap();
-        assert_eq!(token.access_token,"permanent-key");
+        assert_eq!(token.access_token, "permanent-key");
         assert!(token.refresh_token.is_empty());
-        assert_eq!(token.expires_in,0);
+        assert_eq!(token.expires_in, 0);
     }
 }

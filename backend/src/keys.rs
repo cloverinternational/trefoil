@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,7 +44,6 @@ pub fn router() -> Router<AppState> {
 enum ApiError {
     Auth(StatusCode, &'static str, &'static str),
     Simple(StatusCode, String),
-    ValidationFailed,
 }
 
 impl ApiError {
@@ -73,10 +72,6 @@ impl IntoResponse for ApiError {
                 let body = serde_json::json!({ "error": message });
                 (status, Json(body)).into_response()
             }
-            ApiError::ValidationFailed => {
-                let body = serde_json::json!({ "error": "Validation failed", "details": [] });
-                (StatusCode::BAD_REQUEST, Json(body)).into_response()
-            }
         }
     }
 }
@@ -95,55 +90,6 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
-}
-
-/// Wire shape accepted by PUT/PATCH bodies. Mirrors `KeyConfigSchema` in
-/// `packages/backend/src/config.ts`. All fields optional at the wire level;
-/// `secret` is required by PUT (full create-or-replace) but not required by
-/// PATCH (partial update against an existing key).
-#[derive(Debug, Deserialize, Default)]
-struct KeyBody {
-    secret: Option<String>,
-    comment: Option<String>,
-    #[serde(rename = "permissionGroup")]
-    permission_group: Option<String>,
-    #[serde(rename = "expiresInMinutes")]
-    expires_in_minutes: Option<i64>,
-    /// Deprecated single-quota field, folded into `quotas` by
-    /// `normalize_quota_field` below (mirrors `normalizeKeyConfig`).
-    quota: Option<String>,
-    quotas: Option<Vec<String>>,
-    #[serde(rename = "allowedModels")]
-    allowed_models: Option<Vec<String>>,
-    #[serde(rename = "allowedProviders")]
-    allowed_providers: Option<Vec<String>>,
-    #[serde(rename = "excludedModels")]
-    excluded_models: Option<Vec<String>>,
-    #[serde(rename = "excludedProviders")]
-    excluded_providers: Option<Vec<String>>,
-    #[serde(rename = "allowRawPassthrough")]
-    allow_raw_passthrough: Option<bool>,
-    #[serde(rename = "allowedIps")]
-    allowed_ips: Option<Vec<String>>,
-}
-
-/// Mirrors `normalizeKeyConfig` in `packages/backend/src/config.ts`:
-/// an explicit `quotas` (even `[]`) always wins; `quota` is only used as a
-/// fallback when `quotas` is entirely absent.
-fn normalize_quota_field(body: &KeyBody) -> Option<Vec<String>> {
-    if let Some(quotas) = &body.quotas {
-        return Some(quotas.clone());
-    }
-    match &body.quota {
-        Some(q) if !q.is_empty() => Some(vec![q.clone()]),
-        _ => None,
-    }
-}
-
-fn valid_permission_group(group: &str) -> bool {
-    !group.is_empty()
-        && group.len() <= 64
-        && group.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
 fn has_expiry_fields(value: &Value) -> bool {
@@ -187,6 +133,121 @@ async fn get_key(
     }
 }
 
+/// Pinned Plexus `KeyConfigSchema` (`config.ts`).
+fn key_schema() -> &'static crate::zod::Schema {
+    use crate::zod::*;
+    static SCHEMA: std::sync::OnceLock<Schema> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        let names = || array(string().min(1.0)).optional();
+        object(vec![
+            ("secret", string()),
+            ("comment", string().optional()),
+            ("expiresInMinutes", number().int().positive().optional()),
+            ("expiresAt", number().int().positive().optional()),
+            ("disabledAt", number().int().positive().optional()),
+            ("quota", string().optional()),
+            ("quotas", names()),
+            ("allowedModels", names()),
+            ("allowedProviders", names()),
+            ("excludedModels", names()),
+            ("excludedProviders", names()),
+            ("allowRawPassthrough", boolean().optional()),
+            ("defaultServiceTier", enumeration(&["auto", "default", "standard", "flex", "priority", "fast", "ultrafast"]).nullable().optional()),
+            ("allowedIps", array(string().min(1.0).refine(|v| v.as_str().is_some_and(crate::config_routes::valid_ip_rule),
+                "Invalid IP rule. Use IPv4/IPv6, CIDR (a.b.c.d/n, ::/n), or a range (a.b.c.d-N or addr-addr).")).optional()),
+        ])
+    })
+}
+
+/// `normalizeKeyConfig`: explicit `quotas` (even `[]`) wins over legacy `quota`.
+fn normalize_key_config(mut value: Value) -> Value {
+    if let Some(map) = value.as_object_mut() {
+        if !map.contains_key("quotas") {
+            if let Some(quota) = map
+                .get("quota")
+                .and_then(Value::as_str)
+                .filter(|q| !q.is_empty())
+                .map(str::to_owned)
+            {
+                map.insert("quotas".into(), serde_json::json!([quota]));
+            }
+        }
+    }
+    value
+}
+
+fn validation_failed(details: Vec<Value>) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": "Validation failed", "details": details})),
+    )
+        .into_response()
+}
+
+/// `KeyRepository.saveKey` from a parsed config. Expiry is fixed at creation.
+fn key_from_parsed(parsed: &Value, existing: Option<&KeyConfig>) -> KeyConfig {
+    let list = |key: &str| {
+        parsed.get(key).and_then(Value::as_array).map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+    };
+    let quotas = list("quotas");
+    KeyConfig {
+        secret: parsed["secret"].as_str().unwrap_or_default().to_owned(),
+        permission_group: None,
+        comment: parsed
+            .get("comment")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        quotas_defined: quotas.is_some(),
+        quota_names: quotas.unwrap_or_default(),
+        allowed_providers: list("allowedProviders").unwrap_or_default(),
+        allowed_models: list("allowedModels").unwrap_or_default(),
+        excluded_providers: list("excludedProviders").unwrap_or_default(),
+        excluded_models: list("excludedModels").unwrap_or_default(),
+        allow_raw_passthrough: parsed.get("allowRawPassthrough") == Some(&Value::Bool(true)),
+        allowed_ips: list("allowedIps").unwrap_or_default(),
+        expires_at: match existing {
+            Some(existing) => existing.expires_at,
+            None => parsed
+                .get("expiresInMinutes")
+                .and_then(Value::as_i64)
+                .map(|minutes| now_ms() + minutes * 60_000),
+        },
+        disabled_at: existing.and_then(|e| e.disabled_at),
+        default_service_tier: parsed
+            .get("defaultServiceTier")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }
+}
+
+async fn save_key(state: &AppState, name: &str, config: KeyConfig) -> Response {
+    if let Some(pool) = &state.inner.database {
+        if crate::database::upsert_key(pool, name, &config)
+            .await
+            .is_err()
+        {
+            return ApiError::Simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+            .into_response();
+        }
+    }
+    state
+        .inner
+        .keys
+        .write()
+        .unwrap()
+        .insert(name.to_owned(), config);
+    Json(serde_json::json!({ "success": true, "name": name })).into_response()
+}
+
 async fn put_key(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -210,9 +271,7 @@ async fn put_key(
         )
         .into_response();
     }
-
     let existing = state.inner.keys.read().unwrap().get(&name).cloned();
-
     if existing.is_some() && has_expiry_fields(&raw) {
         return ApiError::Simple(
             StatusCode::BAD_REQUEST,
@@ -227,56 +286,11 @@ async fn put_key(
         )
         .into_response();
     }
-
-    let body: KeyBody = match serde_json::from_value(raw) {
-        Ok(b) => b,
-        Err(_) => return ApiError::ValidationFailed.into_response(),
+    let parsed = match key_schema().safe_parse(&raw) {
+        Ok(parsed) => normalize_key_config(parsed),
+        Err(details) => return validation_failed(details),
     };
-    let Some(secret) = body.secret.clone() else {
-        return ApiError::ValidationFailed.into_response();
-    };
-
-    if body.permission_group.as_deref().is_some_and(|group| !valid_permission_group(group)) {
-        return ApiError::ValidationFailed.into_response();
-    }
-
-    let quotas = normalize_quota_field(&body).unwrap_or_default();
-    let expires_at = match &existing {
-        Some(existing) => existing.expires_at,
-        None => body
-            .expires_in_minutes
-            .map(|minutes| now_ms() + minutes * 60_000),
-    };
-    let disabled_at = existing.as_ref().and_then(|e| e.disabled_at);
-
-    let config = KeyConfig {
-        secret,
-        permission_group: body.permission_group,
-        comment: body.comment,
-        quota_names: quotas,
-        allowed_providers: body.allowed_providers.unwrap_or_default(),
-        allowed_models: body.allowed_models.unwrap_or_default(),
-        excluded_providers: body.excluded_providers.unwrap_or_default(),
-        excluded_models: body.excluded_models.unwrap_or_default(),
-        allow_raw_passthrough: body.allow_raw_passthrough.unwrap_or(false),
-        allowed_ips: body.allowed_ips.unwrap_or_default(),
-        expires_at,
-        disabled_at,
-    };
-    if let Some(pool) = &state.inner.database {
-        if let Err(error) = crate::database::upsert_key(pool, &name, &config).await {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                .into_response();
-        }
-    }
-    state
-        .inner
-        .keys
-        .write()
-        .unwrap()
-        .insert(name.clone(), config);
-
-    Json(serde_json::json!({ "success": true, "name": name })).into_response()
+    save_key(&state, &name, key_from_parsed(&parsed, existing.as_ref())).await
 }
 
 async fn patch_key(
@@ -302,54 +316,21 @@ async fn patch_key(
         )
         .into_response();
     }
-
     let Some(existing) = state.inner.keys.read().unwrap().get(&name).cloned() else {
         return ApiError::Simple(StatusCode::NOT_FOUND, format!("API key '{name}' not found"))
             .into_response();
     };
-
-    let body: KeyBody = match serde_json::from_value(raw) {
-        Ok(b) => b,
-        Err(_) => return ApiError::ValidationFailed.into_response(),
-    };
-
-    if body.permission_group.as_deref().is_some_and(|group| !valid_permission_group(group)) {
-        return ApiError::ValidationFailed.into_response();
-    }
-
-    let quotas = normalize_quota_field(&body).unwrap_or(existing.quota_names);
-    let merged = KeyConfig {
-        secret: body.secret.unwrap_or(existing.secret),
-        permission_group: body.permission_group.or(existing.permission_group),
-        comment: body.comment.or(existing.comment),
-        quota_names: quotas,
-        allowed_providers: body.allowed_providers.unwrap_or(existing.allowed_providers),
-        allowed_models: body.allowed_models.unwrap_or(existing.allowed_models),
-        excluded_providers: body
-            .excluded_providers
-            .unwrap_or(existing.excluded_providers),
-        excluded_models: body.excluded_models.unwrap_or(existing.excluded_models),
-        allow_raw_passthrough: body
-            .allow_raw_passthrough
-            .unwrap_or(existing.allow_raw_passthrough),
-        allowed_ips: body.allowed_ips.unwrap_or(existing.allowed_ips),
-        expires_at: existing.expires_at,
-        disabled_at: existing.disabled_at,
-    };
-    if let Some(pool) = &state.inner.database {
-        if let Err(error) = crate::database::upsert_key(pool, &name, &merged).await {
-            return ApiError::Simple(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                .into_response();
+    let mut merged = serde_json::to_value(&existing).unwrap_or(Value::Null);
+    if let (Some(map), Value::Object(body)) = (merged.as_object_mut(), normalize_key_config(raw)) {
+        for (key, value) in body {
+            map.insert(key, value);
         }
     }
-    state
-        .inner
-        .keys
-        .write()
-        .unwrap()
-        .insert(name.clone(), merged);
-
-    Json(serde_json::json!({ "success": true, "name": name })).into_response()
+    let parsed = match key_schema().safe_parse(&merged) {
+        Ok(parsed) => parsed,
+        Err(details) => return validation_failed(details),
+    };
+    save_key(&state, &name, key_from_parsed(&parsed, Some(&existing))).await
 }
 
 async fn delete_key(

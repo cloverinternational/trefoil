@@ -1,0 +1,35 @@
+{
+  "setup": [
+    ["PUT", "/v0/management/providers/up-chat", {"api_base_url": {"chat": "{{MOCK}}/v1"}, "api_key": "sk-up-chat", "models": {"mock-model": {}, "mock-tool": {}}}],
+    ["PUT", "/v0/management/providers/up-msg", {"api_base_url": {"messages": "{{MOCK}}/v1"}, "api_key": "sk-up-msg", "models": {"claude-mock": {}}}],
+    ["PUT", "/v0/management/aliases/q-chat", {"target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-chat", "model": "mock-model"}]}]}],
+    ["PUT", "/v0/management/aliases/q-msg", {"target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-msg", "model": "claude-mock"}]}]}],
+    ["PUT", "/v0/management/aliases/q-priced", {"pricing": {"source": "simple", "input": 100000, "output": 200000}, "target_groups": [{"name": "g", "selector": "in_order", "targets": [{"provider": "up-chat", "model": "mock-model"}]}]}],
+    ["PUT", "/v0/management/user-quotas/q-req", {"type": "rolling", "limitType": "requests", "limit": 2, "duration": "1h"}],
+    ["PUT", "/v0/management/user-quotas/q-tok", {"type": "daily", "limitType": "tokens", "limit": 30}],
+    ["PUT", "/v0/management/user-quotas/q-cost", {"type": "monthly", "limitType": "cost", "limit": 3}],
+    ["PUT", "/v0/management/user-quotas/q-scoped", {"type": "rolling", "limitType": "requests", "limit": 1, "duration": "30m", "allowedProviders": ["up-msg"]}],
+    ["PUT", "/v0/management/keys/k-qreq", {"secret": "sk-qreq", "quotas": ["q-req"]}],
+    ["PUT", "/v0/management/keys/k-qtok", {"secret": "sk-qtok", "quotas": ["q-tok"]}],
+    ["PUT", "/v0/management/keys/k-qcost", {"secret": "sk-qcost", "quotas": ["q-cost"]}],
+    ["PUT", "/v0/management/keys/k-qscoped", {"secret": "sk-qscoped", "quotas": ["q-scoped"]}]
+  ],
+  "scenarios": [
+    {"name": "req quota 1", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-qreq"}, "body": {"model": "q-chat", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "req quota 2 stream", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-qreq"}, "body": {"model": "q-chat", "stream": true, "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "req quota 3 exceeded", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-qreq"}, "body": {"model": "q-chat", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "req quota exceeded messages", "path": "/v1/messages", "headers": {"authorization": "Bearer sk-qreq"}, "body": {"model": "q-msg", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "req quota exceeded responses", "path": "/v1/responses", "headers": {"authorization": "Bearer sk-qreq"}, "body": {"model": "q-chat", "input": "hi"}},
+    {"name": "tok quota 1", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-qtok"}, "body": {"model": "q-chat", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "tok quota 2", "path": "/v1/messages", "headers": {"authorization": "Bearer sk-qtok"}, "body": {"model": "q-msg", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "tok quota 3 exceeded", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-qtok"}, "body": {"model": "q-chat", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "cost quota 1", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-qcost"}, "body": {"model": "q-priced", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "cost quota 2 exceeded", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-qcost"}, "body": {"model": "q-priced", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "scoped quota other provider ok", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-qscoped"}, "body": {"model": "q-chat", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "scoped quota provider 1", "path": "/v1/messages", "headers": {"authorization": "Bearer sk-qscoped"}, "body": {"model": "q-msg", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "scoped quota provider exceeded", "path": "/v1/messages", "headers": {"authorization": "Bearer sk-qscoped"}, "body": {"model": "q-msg", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "scoped quota other provider still ok", "path": "/v1/chat/completions", "headers": {"authorization": "Bearer sk-qscoped"}, "body": {"model": "q-chat", "messages": [{"role": "user", "content": "hi"}]}},
+    {"name": "quota status k-qreq", "method": "GET", "path": "/v0/management/quota-status/k-qreq", "admin": true},
+    {"name": "self quotas", "method": "GET", "path": "/v0/management/self", "headers": {"authorization": "Bearer sk-qtok", "x-admin-key": "sk-qtok"}}
+  ]
+}

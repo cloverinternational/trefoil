@@ -99,11 +99,11 @@ async fn list_errors(
                 "id": row.try_get::<i32, _>("id").unwrap_or_default(),
                 "requestId": row.try_get::<String, _>("request_id").unwrap_or_default(),
                 "date": row.try_get::<String, _>("date").unwrap_or_default(),
+                "apiKey": row.try_get::<Option<String>, _>("api_key").unwrap_or(None),
                 "errorMessage": row.try_get::<Option<String>, _>("error_message").unwrap_or(None),
                 "errorStack": row.try_get::<Option<String>, _>("error_stack").unwrap_or(None),
                 "details": row.try_get::<Option<String>, _>("details").unwrap_or(None),
                 "createdAt": row.try_get::<i64, _>("created_at").unwrap_or_default(),
-                "apiKey": row.try_get::<Option<String>, _>("api_key").unwrap_or(None),
             })
         })
         .collect();

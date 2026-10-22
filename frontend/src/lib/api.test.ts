@@ -21,6 +21,7 @@ import {
   startOAuthSession,
   submitOAuthManualCode,
   submitOAuthPrompt,
+  submitOAuthSelect,
   cancelOAuthSession,
   verifyAdminKey,
   getMcpServers,
@@ -192,7 +193,7 @@ describe('frontend management API wire contracts', () => {
 
   it('covers OAuth session lifecycle requests with auth, encoded IDs, and JSON bodies', async () => {
     vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'oauth-admin-key') });
-    const session = { id: 'session/1', providerId: 'anthropic', accountId: 'default', status: 'awaiting_code', progress: [] };
+    const session = { id: 'session/1', providerId: 'anthropic', accountId: 'default', status: 'awaiting_manual_code', progress: [], createdAt: 1, updatedAt: 1 };
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response({ data: session })));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -200,6 +201,7 @@ describe('frontend management API wire contracts', () => {
     await expect(getOAuthSession('session/1')).resolves.toEqual(session);
     await expect(submitOAuthPrompt('session/1', ' 1234 ')).resolves.toEqual(session);
     await expect(submitOAuthManualCode('session/1', 'https://callback.example/code')).resolves.toEqual(session);
+    await expect(submitOAuthSelect('session/1', 'device_code')).resolves.toEqual(session);
     await expect(cancelOAuthSession('session/1')).resolves.toEqual(session);
 
     expect(fetchMock.mock.calls).toEqual([
@@ -207,6 +209,7 @@ describe('frontend management API wire contracts', () => {
       ['/v0/management/oauth/sessions/session%2F1', { headers: { 'x-admin-key': 'oauth-admin-key' } }],
       ['/v0/management/oauth/sessions/session%2F1/prompt', { method: 'POST', headers: { 'x-admin-key': 'oauth-admin-key', 'content-type': 'application/json' }, body: '{"value":" 1234 "}' }],
       ['/v0/management/oauth/sessions/session%2F1/manual-code', { method: 'POST', headers: { 'x-admin-key': 'oauth-admin-key', 'content-type': 'application/json' }, body: '{"value":"https://callback.example/code"}' }],
+      ['/v0/management/oauth/sessions/session%2F1/select', { method: 'POST', headers: { 'x-admin-key': 'oauth-admin-key', 'content-type': 'application/json' }, body: '{"value":"device_code"}' }],
       ['/v0/management/oauth/sessions/session%2F1/cancel', { method: 'POST', headers: { 'x-admin-key': 'oauth-admin-key' } }],
     ]);
   });

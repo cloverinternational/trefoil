@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Migrate a production Plexus SQLite database into a Trefoil PostgreSQL database.
 
-Source: Plexus production SQLite (drizzle lineage, e.g. /opt/clover/plexus-data/plexus.db).
+Source: a Plexus SQLite database (drizzle lineage), e.g. a copy of `plexus.db`
+        taken while Plexus is stopped. Never commit the database or the output.
 Target: Trefoil PostgreSQL (schema produced by backend/migrations/*.sql).
 
 What is migrated (config/state, FK-safe order):
@@ -22,8 +23,10 @@ Credentials:
         "trefoil/oauth/v1" + length-prefixed provider/account/field
         (key = TREFOIL_CREDENTIAL_KEY, 64 hex chars). TREFOIL_CREDENTIAL_KEY
         must be the same at Trefoil runtime.
-      * provider.api_key / api_keys.secret -> plaintext (Trefoil stores these
-        unencrypted in Postgres).
+      * provider.api_key / api_keys.secret -> plaintext in the generated SQL.
+        Start Trefoil with the same ENCRYPTION_KEY and it re-encrypts these
+        rows as `enc:v1:` at startup (database::encrypt_plaintext_secrets).
+        Treat any --out SQL file as a secret and delete it after applying.
 
 Usage:
   python3 plexus_to_trefoil.py --db plexus-snapshot.db --dsn "$DATABASE_URL" \
@@ -105,7 +108,7 @@ class Crypto:
         if self.plexus_key is None:
             raise SystemExit(
                 "Encountered Plexus-encrypted data but no decryption key was provided. "
-                "Set --encrypt-key or ENCRYPTION_KEY (from clover-vault env/env.plexus)."
+                "Set --encrypt-key or ENCRYPTION_KEY (the value your Plexus deployment uses)."
             )
         iv_hex, tag_hex, ct_hex = value[len(PLEXUS_PREFIX):].split(":")
         aes = AESGCM(self.plexus_key)

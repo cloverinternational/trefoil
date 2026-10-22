@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { mockHost } from './mock-host';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -26,7 +27,7 @@ test('real streamed request records TTFT and TPS; nonstream request leaves TTFT 
   });
   await new Promise<void>(done => server.listen(0, '0.0.0.0', done));
   try {
-    const origin = `http://192.168.96.1:${(server.address() as { port: number }).port}`;
+    const origin = `http://${mockHost}:${(server.address() as { port: number }).port}`;
     expect((await request.put(`/v0/management/providers/${provider}`, { headers, data: { api_base_url: origin, api_key: 'disposable', enabled: true } })).status()).toBe(200);
     await page.addInitScript(key => localStorage.setItem('trefoil_admin_key', key), admin);
     const streamed = await request.post('/v1/chat/completions', { headers: { 'x-api-key': admin }, data: { model: `${provider}/sample`, stream: true, messages: [{ role: 'user', content: 'hello' }] } });
@@ -141,7 +142,7 @@ test('native Gemini stream records measured TPS from content then terminal usage
   });
   await new Promise<void>(done => server.listen(0, '0.0.0.0', done));
   try {
-    const origin = `http://192.168.96.1:${(server.address() as { port: number }).port}`;
+    const origin = `http://${mockHost}:${(server.address() as { port: number }).port}`;
     expect((await request.put(`/v0/management/providers/${provider}`, { headers, data: { api_base_url: origin, api_key: 'disposable', enabled: true } })).status()).toBe(200);
     await page.addInitScript(key => localStorage.setItem('trefoil_admin_key', key), admin);
     const response = await request.post(`/v1beta/models/${provider}%2Fsample:streamGenerateContent`, { headers: { 'x-api-key': admin }, data: { contents: [{ parts: [{ text: 'hello' }] }], stream: true } });
@@ -172,7 +173,7 @@ test('client abort after partial output leaves no successful throughput sample',
   });
   await new Promise<void>(done => server.listen(0, '0.0.0.0', done));
   try {
-    const origin = `http://192.168.96.1:${(server.address() as { port: number }).port}`;
+    const origin = `http://${mockHost}:${(server.address() as { port: number }).port}`;
     expect((await request.put(`/v0/management/providers/${provider}`, { headers, data: { api_base_url: origin, api_key: 'disposable', enabled: true } })).status()).toBe(200);
     await page.addInitScript(key => localStorage.setItem('trefoil_admin_key', key), admin);
     await page.goto('/logs');
@@ -221,7 +222,7 @@ test('upstream transport interruption after partial text records error without t
   });
   await new Promise<void>(done => server.listen(0, '0.0.0.0', done));
   try {
-    const origin = `http://192.168.96.1:${(server.address() as { port: number }).port}`;
+    const origin = `http://${mockHost}:${(server.address() as { port: number }).port}`;
     expect((await request.put(`/v0/management/providers/${provider}`, { headers, data: { api_base_url: origin, api_key: 'disposable', enabled: true } })).status()).toBe(200);
     // An interrupted chunked response may make Playwright's API context reject
     // the entire request even after headers; the persisted row is authoritative.
@@ -260,7 +261,7 @@ test('a new request after a long partial stream is independent, not an inferred 
   });
   await new Promise<void>(done => server.listen(0, '0.0.0.0', done));
   try {
-    const origin = `http://192.168.96.1:${(server.address() as { port: number }).port}`;
+    const origin = `http://${mockHost}:${(server.address() as { port: number }).port}`;
     expect((await request.put(`/v0/management/providers/${provider}`, { headers, data: { api_base_url: origin, api_key: 'disposable', enabled: true } })).status()).toBe(200);
     const data = { model: `${provider}/sample`, stream: true, messages: [{ role: 'user', content: 'hello' }] };
     await request.post('/v1/chat/completions', { headers: { 'x-api-key': admin }, data }).catch(() => undefined);
@@ -305,7 +306,7 @@ test('clean EOF without SSE terminal marker is incomplete, not successful teleme
   });
   await new Promise<void>(done => server.listen(0, '0.0.0.0', done));
   try {
-    const origin = `http://192.168.96.1:${(server.address() as { port: number }).port}`;
+    const origin = `http://${mockHost}:${(server.address() as { port: number }).port}`;
     expect((await request.put(`/v0/management/providers/${provider}`, { headers, data: { api_base_url: origin, api_key: 'disposable', enabled: true } })).status()).toBe(200);
     const response = await request.post('/v1/chat/completions', { headers: { 'x-api-key': admin }, data: { model: `${provider}/sample`, stream: true, messages: [{ role: 'user', content: 'hello' }] } });
     expect(response.status()).toBe(200);

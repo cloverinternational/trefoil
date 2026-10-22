@@ -111,8 +111,8 @@ export const McpManagement: React.FC = () => {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="font-heading text-2xl font-semibold">MCP servers</h1>
-          <p className="text-sm text-muted-foreground">Manage remote and local tool integrations</p>
+          <h1 className="font-heading text-base font-semibold">MCP servers</h1>
+          <p className="text-xs text-muted-foreground">Manage remote and local tool integrations</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
@@ -125,34 +125,34 @@ export const McpManagement: React.FC = () => {
       </div>
 
       {error && (
-        <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-red-300">
+        <div role="alert" className=" border border-destructive/40 bg-destructive/10 p-3 text-xs text-red-300">
           {error}
         </div>
       )}
 
       {loading ? (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-3 lg:grid-cols-4">
           <Skeleton className="h-52" />
           <Skeleton className="h-52" />
         </div>
       ) : Object.keys(servers).length === 0 ? (
         <Card>
-          <CardContent className="flex flex-col items-center gap-2 py-16 text-center">
+          <CardContent className="flex flex-col items-center gap-2 py-8 text-center">
             <Server className="h-7 w-7 text-muted-foreground" />
             <p className="font-medium">No MCP servers configured</p>
-            <p className="text-sm text-muted-foreground">Add a server to expose tools to the gateway.</p>
+            <p className="text-xs text-muted-foreground">Add a server to expose tools to the gateway.</p>
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           {Object.entries(servers).map(([name, server]) => (
             <Card key={name}>
-              <CardContent className="p-5">
+              <CardContent className="p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
-                    <div className="rounded-lg bg-primary/10 p-2 text-primary"><Server className="h-5 w-5" /></div>
+                    <div className=" bg-primary/10 p-1.5 text-primary"><Server className="h-4 w-4" /></div>
                     <div className="min-w-0">
-                      <h2 className="truncate font-heading text-lg font-semibold">{name}</h2>
+                      <h2 className="truncate text-xs font-semibold">{name}</h2>
                       <p className="truncate font-mono text-xs text-muted-foreground">{server.mode} · {server.upstreamUrl || 'local process'}</p>
                     </div>
                   </div>
@@ -173,7 +173,7 @@ export const McpManagement: React.FC = () => {
                     <Button size="sm" onClick={() => void addKey(name)}>Add</Button>
                   </div>
                   {keys[name]?.map((key) => (
-                    <div key={key.id} className="mt-2 flex items-center justify-between rounded bg-muted/60 px-2 py-1.5 font-mono text-xs text-muted-foreground">
+                    <div key={key.id} className="mt-2 flex items-center justify-between  bg-muted/60 px-2 py-1.5 font-mono text-xs text-muted-foreground">
                       <span className="truncate">{key.key}</span>
                       <button
                         aria-label={`Delete MCP key ${key.id}`}
@@ -228,7 +228,7 @@ export const McpManagement: React.FC = () => {
                     </SelectContent>
                   </Select>
                 </div>
-                <label className={cn('flex items-center gap-2 text-sm')}>
+                <label className={cn('flex items-center gap-2 text-xs')}>
                   <Switch checked={form.enabled} onCheckedChange={(checked) => setForm({ ...form, enabled: checked })} />
                   Enabled
                 </label>

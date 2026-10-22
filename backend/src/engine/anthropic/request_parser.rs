@@ -1,0 +1,329 @@
+//! `transformers/anthropic/request-parser.ts`: client Anthropic request →
+//! unified request.
+//!
+//! - System message extraction from the separate `system` field
+//! - Content array parsing (text, image, tool_use, tool_result, thinking)
+//! - Tool choice normalization
+//! - Thinking configuration mapping
+use super::content_mapper::convert_anthropic_content;
+use super::helpers::{get_think_level, normalize_effort, not_iterable, stringify_opt, type_error};
+use super::tool_mapper::convert_anthropic_tools_to_unified;
+use crate::engine::js::{get, get_str, obj, stringify, truthy, Obj};
+use crate::engine::transformer::{EngineError, EngineResult};
+use serde_json::{json, Value};
+
+/// `parseAnthropicRequest`.
+pub fn parse_anthropic_request(input: &Value) -> EngineResult<Value> {
+    let mut messages: Vec<Value> = Vec::new();
+
+    // Anthropic uses a separate 'system' field; we merge it as a 'system' role message.
+    if truthy(input.get("system")) {
+        match &input["system"] {
+            Value::String(s) => messages.push(json!({"role": "system", "content": s})),
+            Value::Array(parts) => {
+                let mut system_content = Vec::new();
+                for part in parts {
+                    if part.is_null() {
+                        return Err(type_error(Some(part), "part.type"));
+                    }
+                    if get_str(part, &["type"]) != Some("text") {
+                        continue;
+                    }
+                    system_content.push(obj(vec![
+                        ("type", Some(json!("text"))),
+                        ("text", part.get("text").cloned()),
+                        ("cache_control", part.get("cache_control").cloned()),
+                    ]));
+                }
+                messages.push(json!({"role": "system", "content": system_content}));
+            }
+            _ => {}
+        }
+    }
+
+    if truthy(input.get("messages")) {
+        let msgs: &[Value] = match &input["messages"] {
+            Value::Array(items) => items,
+            // Iterating a string yields characters, none of which has a role.
+            Value::String(_) => &[],
+            _ => return Err(not_iterable("input.messages")),
+        };
+        for msg in msgs {
+            if msg.is_null() {
+                return Err(type_error(Some(msg), "msg.role"));
+            }
+            let role = get_str(msg, &["role"]);
+            if role != Some("user") && role != Some("assistant") {
+                continue;
+            }
+            let role = role.unwrap_or_default();
+            match msg.get("content") {
+                Some(Value::String(s)) => messages.push(json!({"role": role, "content": s})),
+                Some(Value::Array(content)) => {
+                    if let Some(c) = content.iter().find(|c| c.is_null()) {
+                        return Err(type_error(Some(c), "c.type"));
+                    }
+                    let of_type = |t: &str| {
+                        content
+                            .iter()
+                            .filter(|c| get_str(c, &["type"]) == Some(t))
+                            .collect::<Vec<_>>()
+                    };
+
+                    // Handle tool results sent by the user
+                    let tool_results = of_type("tool_result");
+                    if !tool_results.is_empty() && role == "user" {
+                        for tool in tool_results {
+                            let content = match tool.get("content") {
+                                Some(Value::String(s)) => Some(Value::String(s.clone())),
+                                other => stringify_opt(other),
+                            };
+                            messages.push(obj(vec![
+                                ("role", Some(json!("tool"))),
+                                ("content", content),
+                                ("tool_call_id", tool.get("tool_use_id").cloned()),
+                                ("cache_control", tool.get("cache_control").cloned()),
+                            ]));
+                        }
+                        let other_parts: Vec<Value> = content
+                            .iter()
+                            .filter(|c| get_str(c, &["type"]) != Some("tool_result"))
+                            .cloned()
+                            .collect();
+                        if !other_parts.is_empty() {
+                            messages.push(obj(vec![
+                                ("role", Some(json!("user"))),
+                                ("content", convert_anthropic_content(&other_parts)?),
+                            ]));
+                        }
+                        continue;
+                    }
+
+                    let mut unified: Obj = Obj::new();
+                    unified.insert("role".into(), json!(role));
+                    unified.insert("content".into(), json!(""));
+
+                    // Handle tool calls generated by the assistant
+                    let tool_uses = of_type("tool_use");
+                    if !tool_uses.is_empty() && role == "assistant" {
+                        let calls: Vec<Value> = tool_uses
+                            .iter()
+                            .map(|t| {
+                                let input = if truthy(t.get("input")) {
+                                    t["input"].clone()
+                                } else {
+                                    json!({})
+                                };
+                                obj(vec![
+                                    ("id", t.get("id").cloned()),
+                                    ("type", Some(json!("function"))),
+                                    (
+                                        "function",
+                                        Some(obj(vec![
+                                            ("name", t.get("name").cloned()),
+                                            ("arguments", Some(json!(stringify(&input)))),
+                                        ])),
+                                    ),
+                                ])
+                            })
+                            .collect();
+                        unified.insert("tool_calls".into(), Value::Array(calls));
+                    }
+
+                    // Handle Thinking/Reasoning content (Claude 3.7+ feature)
+                    let thinking_part = content
+                        .iter()
+                        .find(|c| get_str(c, &["type"]) == Some("thinking"));
+                    if let (Some(tp), "assistant") = (thinking_part, role) {
+                        unified.insert(
+                            "thinking".into(),
+                            obj(vec![
+                                ("content", tp.get("thinking").cloned()),
+                                ("signature", tp.get("signature").cloned()),
+                            ]),
+                        );
+                    }
+
+                    // Handle standard text/image parts
+                    let content_parts: Vec<Value> = content
+                        .iter()
+                        .filter(|c| {
+                            !matches!(
+                                get_str(c, &["type"]),
+                                Some("tool_use" | "tool_result" | "thinking")
+                            )
+                        })
+                        .cloned()
+                        .collect();
+                    if !content_parts.is_empty() {
+                        match convert_anthropic_content(&content_parts)? {
+                            Some(v) => {
+                                unified.insert("content".into(), v);
+                            }
+                            // `unifiedMsg.content = undefined`: dropped on serialization.
+                            None => {
+                                unified.shift_remove("content");
+                            }
+                        }
+                    } else if unified.contains_key("tool_calls") || unified.contains_key("thinking")
+                    {
+                        unified.insert("content".into(), Value::Null);
+                    }
+
+                    messages.push(Value::Object(unified));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let tools = if truthy(input.get("tools")) {
+        let Some(tools) = input["tools"].as_array() else {
+            return Err(EngineError::new("input.tools.map is not a function."));
+        };
+        Some(Value::Array(convert_anthropic_tools_to_unified(tools)?))
+    } else {
+        None
+    };
+
+    let mut result = obj(vec![
+        ("messages", Some(Value::Array(messages))),
+        ("model", input.get("model").cloned()),
+        ("max_tokens", input.get("max_tokens").cloned()),
+        ("temperature", input.get("temperature").cloned()),
+        ("stream", input.get("stream").cloned()),
+        ("tools", tools),
+        ("tool_choice", input.get("tool_choice").cloned()),
+    ]);
+
+    // Cross-format structured outputs: carry `output_config.format` onto the
+    // unified `response_format` so messages -> chat/responses/gemini routes can
+    // translate it instead of silently dropping it. Only `json_schema` is
+    // carried. `effort` is deliberately NOT carried here.
+    if get_str(input, &["output_config", "format", "type"]) == Some("json_schema") {
+        if let Some(schema) = get(input, &["output_config", "format", "schema"]) {
+            result.as_object_mut().expect("result is an object").insert(
+                "response_format".into(),
+                json!({"type": "json_schema", "json_schema": schema}),
+            );
+        }
+    }
+
+    // Map Thinking/Reasoning Configuration
+    if truthy(input.get("thinking")) {
+        let thinking_type = get(input, &["thinking", "type"]);
+        let thinking_budget = get(input, &["thinking", "budget_tokens"]).and_then(Value::as_f64);
+        let thinking_type_str = thinking_type.and_then(Value::as_str);
+        let enabled = matches!(thinking_type_str, Some("enabled" | "adaptive"));
+        let configured = normalize_effort(get(input, &["output_config", "effort"]));
+        let effort = if enabled {
+            if configured == Some("off") {
+                Some("none")
+            } else {
+                configured.or_else(|| thinking_budget.map(get_think_level))
+            }
+        } else {
+            None
+        };
+        result["reasoning"] = obj(vec![
+            ("effort", effort.map(|e| json!(e))),
+            (
+                "max_tokens",
+                if enabled {
+                    get(input, &["thinking", "budget_tokens"])
+                        .filter(|b| b.is_number())
+                        .cloned()
+                } else {
+                    None
+                },
+            ),
+            ("enabled", Some(json!(enabled))),
+            (
+                "adaptive",
+                if thinking_type_str == Some("adaptive") {
+                    Some(json!(true))
+                } else {
+                    None
+                },
+            ),
+        ]);
+    }
+
+    // Strict Tool Choice Mapping
+    if let Some(tc) = input.get("tool_choice").filter(|v| truthy(Some(v))) {
+        if tc.is_object() && get_str(tc, &["type"]) == Some("tool") {
+            result["tool_choice"] = json!({"type": "function", "function": obj(vec![("name", tc.get("name").cloned())])});
+        } else if (tc.is_object() || tc.is_array()) && truthy(tc.get("type")) {
+            result["tool_choice"] = tc["type"].clone();
+        }
+    }
+
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_system_tools_thinking_and_tool_results() {
+        let input = json!({
+            "model": "claude-x",
+            "max_tokens": 100,
+            "system": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}, {"type": "image"}],
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+                    {"type": "text", "text": "calling"},
+                    {"type": "tool_use", "id": "toolu_1", "name": "get", "input": {"a": 1}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": [{"type": "text", "text": "ok"}]},
+                    {"type": "text", "text": "next"},
+                ]},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_2", "name": "x"}]},
+            ],
+            "thinking": {"type": "enabled", "budget_tokens": 2048},
+            "tool_choice": {"type": "tool", "name": "get"},
+        });
+        let out = parse_anthropic_request(&input).unwrap();
+        assert_eq!(
+            stringify(&out),
+            stringify(&json!({
+                "messages": [
+                    {"role": "system", "content": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]},
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "calling", "tool_calls": [{"id": "toolu_1", "type": "function", "function": {"name": "get", "arguments": "{\"a\":1}"}}], "thinking": {"content": "hmm", "signature": "sig"}},
+                    {"role": "tool", "content": "[{\"type\":\"text\",\"text\":\"ok\"}]", "tool_call_id": "toolu_1"},
+                    {"role": "user", "content": "next"},
+                    {"role": "assistant", "content": null, "tool_calls": [{"id": "toolu_2", "type": "function", "function": {"name": "x", "arguments": "{}"}}]},
+                ],
+                "model": "claude-x",
+                "max_tokens": 100,
+                "tool_choice": {"type": "function", "function": {"name": "get"}},
+                "reasoning": {"effort": "medium", "max_tokens": 2048, "enabled": true},
+            }))
+        );
+    }
+
+    #[test]
+    fn thinking_effort_mapping() {
+        let r = parse_anthropic_request(&json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "off"}, "tool_choice": {"type": "auto"}})).unwrap();
+        assert_eq!(
+            r["reasoning"],
+            json!({"effort": "none", "enabled": true, "adaptive": true})
+        );
+        assert_eq!(r["tool_choice"], json!("auto"));
+        let r = parse_anthropic_request(
+            &json!({"thinking": {"type": "disabled", "budget_tokens": 10}}),
+        )
+        .unwrap();
+        assert_eq!(stringify(&r["reasoning"]), r#"{"enabled":false}"#);
+        let r = parse_anthropic_request(&json!({"thinking": {"type": "enabled", "budget_tokens": 20000}, "output_config": {"effort": "XHIGH"}})).unwrap();
+        assert_eq!(
+            r["reasoning"],
+            json!({"effort": "xhigh", "max_tokens": 20000, "enabled": true})
+        );
+    }
+}

@@ -164,9 +164,27 @@ async fn config(
     };
     let enabled: bool = row.try_get("enabled").unwrap_or(true);
     let mode: String = row.try_get("mode").unwrap_or_else(|_| "remote_http".into());
-    let url: String = row.try_get("upstream_url").unwrap_or_default();
-    if !enabled || mode != "remote_http" {
+    let mut url: String = row.try_get("upstream_url").unwrap_or_default();
+    if !enabled {
         return Err(error(StatusCode::NOT_FOUND, "MCP server is disabled"));
+    }
+    if mode == "local_http" {
+        // Plexus `ensureRunning` before proxying to the local process.
+        let view = crate::mcp::load_server(state, name)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(serde_json::Value::Null);
+        let Some(config) = crate::mcp_local::LocalConfig::from_view(&view) else {
+            return Err(error(
+                StatusCode::BAD_GATEWAY,
+                "Local MCP server failed to start",
+            ));
+        };
+        if let Err(message) = state.inner.mcp_manager.ensure_running(name, &config).await {
+            return Err(error(StatusCode::BAD_GATEWAY, &message));
+        }
+        url = config.local_url();
     }
     if url::Url::parse(&url)
         .ok()
@@ -177,6 +195,7 @@ async fn config(
     }
     let raw: Option<String> = row.try_get("headers").ok().flatten();
     let headers = raw
+        .and_then(|s| crate::secret_crypto::decrypt(&s).ok())
         .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
         .unwrap_or_default();
     Ok((

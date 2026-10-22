@@ -1,0 +1,1169 @@
+{
+ "reset_cooldowns": true,
+ "setup": [
+  [
+   "PUT",
+   "/v0/management/providers/up-oa",
+   {
+    "api_base_url": {
+     "chat": "{{MOCK}}/v1"
+    },
+    "api_key": "sk-up-oa",
+    "models": {
+     "emb": {
+      "type": "embeddings"
+     },
+     "emb-error500": {
+      "type": "embeddings"
+     },
+     "emb-error400": {
+      "type": "embeddings"
+     },
+     "emb-badjson": {
+      "type": "embeddings"
+     },
+     "tts": {
+      "type": "speech"
+     },
+     "tts-error500": {
+      "type": "speech"
+     },
+     "whisper": {
+      "type": "transcriptions"
+     },
+     "whisper-error500": {
+      "type": "transcriptions"
+     },
+     "whisper-badjson": {
+      "type": "transcriptions"
+     },
+     "img": {
+      "type": "image"
+     },
+     "img-emptyimg": {
+      "type": "image"
+     },
+     "img-urlimg": {
+      "type": "image"
+     },
+     "img-error500": {
+      "type": "image"
+     },
+     "img-error400": {
+      "type": "image"
+     }
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/up-gem",
+   {
+    "api_base_url": {
+     "gemini": "{{MOCK}}/v1beta"
+    },
+    "api_key": "sk-up-gem",
+    "models": {
+     "gemb": {
+      "type": "embeddings"
+     },
+     "gimage": {
+      "type": "image"
+     }
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/up-or",
+   {
+    "api_base_url": {
+     "openrouter-images": "{{MOCK}}/api/v1"
+    },
+    "api_key": "sk-up-or",
+    "models": {
+     "or-img": {
+      "type": "image"
+     },
+     "or-emptyimg": {
+      "type": "image"
+     }
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/emb-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "emb"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/emb-fail-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "emb-error500"
+       },
+       {
+        "provider": "up-oa",
+        "model": "emb"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/emb-400-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "emb-error400"
+       },
+       {
+        "provider": "up-oa",
+        "model": "emb"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/emb-500only-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "emb-error500"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/emb-bad-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "emb-badjson"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/gemb-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-gem",
+        "model": "gemb"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/tts-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "tts"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/tts-fail-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "tts-error500"
+       },
+       {
+        "provider": "up-oa",
+        "model": "tts"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/whisper-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "whisper"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/whisper-fail-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "whisper-error500"
+       },
+       {
+        "provider": "up-oa",
+        "model": "whisper"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/whisper-bad-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "whisper-badjson"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/img-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "img"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/img-gem-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-gem",
+        "model": "gimage"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/img-or-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-or",
+        "model": "or-img"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/img-or-empty-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-or",
+        "model": "or-emptyimg"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/img-fail-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "img-error500"
+       },
+       {
+        "provider": "up-oa",
+        "model": "img"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/img-400-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "img-error400"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/img-url-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "img-urlimg"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/img-multi-a",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "up-oa",
+        "model": "img"
+       },
+       {
+        "provider": "up-or",
+        "model": "or-img"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ ],
+ "scenarios": [
+  {
+   "name": "auth missing",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "emb-a",
+    "input": "x"
+   },
+   "headers": {
+    "authorization": ""
+   }
+  },
+  {
+   "name": "auth bad key",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "emb-a",
+    "input": "x"
+   },
+   "headers": {
+    "authorization": "Bearer nope"
+   }
+  },
+  {
+   "name": "auth x-api-key",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "emb-a",
+    "input": "x"
+   },
+   "headers": {
+    "authorization": "",
+    "x-api-key": "sk-k"
+   }
+  },
+  {
+   "name": "emb basic",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "emb-a",
+    "input": "hello",
+    "encoding_format": "float"
+   }
+  },
+  {
+   "name": "emb list",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "emb-a",
+    "input": [
+     "a",
+     "b"
+    ],
+    "dimensions": 8
+   }
+  },
+  {
+   "name": "emb direct",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "direct/up-oa/emb",
+    "input": "hello"
+   }
+  },
+  {
+   "name": "emb gemini single",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "gemb-a",
+    "input": "hello",
+    "dimensions": 4
+   }
+  },
+  {
+   "name": "emb gemini batch",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "gemb-a",
+    "input": [
+     "a",
+     "b",
+     "c"
+    ],
+    "taskType": "RETRIEVAL_QUERY"
+   }
+  },
+  {
+   "name": "emb gemini empty",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "gemb-a",
+    "input": []
+   }
+  },
+  {
+   "name": "emb failover 500",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "emb-fail-a",
+    "input": "x"
+   }
+  },
+  {
+   "name": "emb failover 400",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "emb-400-a",
+    "input": "x"
+   }
+  },
+  {
+   "name": "emb 500 only",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "emb-500only-a",
+    "input": "x"
+   }
+  },
+  {
+   "name": "emb badjson",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "emb-bad-a",
+    "input": "x"
+   }
+  },
+  {
+   "name": "emb unknown",
+   "path": "/v1/embeddings",
+   "body": {
+    "model": "nope",
+    "input": "x"
+   }
+  },
+  {
+   "name": "emb no body",
+   "path": "/v1/embeddings",
+   "headers": {
+    "content-type": "application/json"
+   }
+  },
+  {
+   "name": "tts basic",
+   "path": "/v1/audio/speech",
+   "body": {
+    "model": "tts-a",
+    "input": "hello",
+    "voice": "alloy"
+   }
+  },
+  {
+   "name": "tts wav",
+   "path": "/v1/audio/speech",
+   "body": {
+    "model": "tts-a",
+    "input": "hello",
+    "voice": "alloy",
+    "response_format": "wav",
+    "speed": 1.5,
+    "instructions": "calm"
+   }
+  },
+  {
+   "name": "tts sse",
+   "path": "/v1/audio/speech",
+   "body": {
+    "model": "tts-a",
+    "input": "hello",
+    "voice": "alloy",
+    "stream_format": "sse"
+   }
+  },
+  {
+   "name": "tts failover",
+   "path": "/v1/audio/speech",
+   "body": {
+    "model": "tts-fail-a",
+    "input": "hello",
+    "voice": "alloy"
+   }
+  },
+  {
+   "name": "tts unknown",
+   "path": "/v1/audio/speech",
+   "body": {
+    "model": "nope",
+    "input": "hello",
+    "voice": "alloy"
+   }
+  },
+  {
+   "name": "stt json",
+   "path": "/v1/audio/transcriptions",
+   "multipart": [
+    {
+     "name": "file",
+     "filename": "a.wav",
+     "content_type": "audio/wav",
+     "data": "RIFF$\u0000\u0000\u0000WAVEfmt "
+    },
+    {
+     "name": "model",
+     "value": "whisper-a"
+    }
+   ]
+  },
+  {
+   "name": "stt text",
+   "path": "/v1/audio/transcriptions",
+   "multipart": [
+    {
+     "name": "file",
+     "filename": "a.wav",
+     "content_type": "audio/wav",
+     "data": "RIFF$\u0000\u0000\u0000WAVEfmt "
+    },
+    {
+     "name": "model",
+     "value": "whisper-a"
+    },
+    {
+     "name": "response_format",
+     "value": "text"
+    }
+   ]
+  },
+  {
+   "name": "stt verbose",
+   "path": "/v1/audio/transcriptions",
+   "multipart": [
+    {
+     "name": "file",
+     "filename": "a.wav",
+     "content_type": "audio/wav",
+     "data": "RIFF$\u0000\u0000\u0000WAVEfmt "
+    },
+    {
+     "name": "model",
+     "value": "whisper-a"
+    },
+    {
+     "name": "response_format",
+     "value": "verbose_json"
+    },
+    {
+     "name": "language",
+     "value": "en"
+    },
+    {
+     "name": "temperature",
+     "value": "0.2"
+    },
+    {
+     "name": "prompt",
+     "value": "p"
+    }
+   ]
+  },
+  {
+   "name": "stt bad format",
+   "path": "/v1/audio/transcriptions",
+   "multipart": [
+    {
+     "name": "file",
+     "filename": "a.wav",
+     "content_type": "audio/wav",
+     "data": "RIFF$\u0000\u0000\u0000WAVEfmt "
+    },
+    {
+     "name": "model",
+     "value": "whisper-a"
+    },
+    {
+     "name": "response_format",
+     "value": "srt"
+    }
+   ]
+  },
+  {
+   "name": "stt no model",
+   "path": "/v1/audio/transcriptions",
+   "multipart": [
+    {
+     "name": "file",
+     "filename": "a.wav",
+     "content_type": "audio/wav",
+     "data": "RIFF$\u0000\u0000\u0000WAVEfmt "
+    }
+   ]
+  },
+  {
+   "name": "stt no file",
+   "path": "/v1/audio/transcriptions",
+   "multipart": [
+    {
+     "name": "model",
+     "value": "whisper-a"
+    }
+   ]
+  },
+  {
+   "name": "stt no filetype",
+   "path": "/v1/audio/transcriptions",
+   "multipart": [
+    {
+     "name": "file",
+     "filename": "a.bin",
+     "data": "RIFF$\u0000\u0000\u0000WAVEfmt "
+    },
+    {
+     "name": "model",
+     "value": "whisper-a"
+    }
+   ]
+  },
+  {
+   "name": "stt failover",
+   "path": "/v1/audio/transcriptions",
+   "multipart": [
+    {
+     "name": "file",
+     "filename": "a.wav",
+     "content_type": "audio/wav",
+     "data": "RIFF$\u0000\u0000\u0000WAVEfmt "
+    },
+    {
+     "name": "model",
+     "value": "whisper-fail-a"
+    }
+   ]
+  },
+  {
+   "name": "stt badjson",
+   "path": "/v1/audio/transcriptions",
+   "multipart": [
+    {
+     "name": "file",
+     "filename": "a.wav",
+     "content_type": "audio/wav",
+     "data": "RIFF$\u0000\u0000\u0000WAVEfmt "
+    },
+    {
+     "name": "model",
+     "value": "whisper-bad-a"
+    }
+   ]
+  },
+  {
+   "name": "stt json body",
+   "path": "/v1/audio/transcriptions",
+   "body": {
+    "model": "whisper-a"
+   }
+  },
+  {
+   "name": "img gen basic",
+   "path": "/v1/images/generations",
+   "body": {
+    "model": "img-a",
+    "prompt": "a cat",
+    "size": "1024x1024",
+    "n": 1,
+    "quality": "auto"
+   }
+  },
+  {
+   "name": "img gen response_format",
+   "path": "/v1/images/generations",
+   "body": {
+    "model": "img-a",
+    "prompt": "a cat",
+    "response_format": "b64_json",
+    "style": "vivid",
+    "user": "u"
+   }
+  },
+  {
+   "name": "img gen fail",
+   "path": "/v1/images/generations",
+   "body": {
+    "model": "img-fail-a",
+    "prompt": "a cat"
+   }
+  },
+  {
+   "name": "img gen 400",
+   "path": "/v1/images/generations",
+   "body": {
+    "model": "img-400-a",
+    "prompt": "a cat"
+   }
+  },
+  {
+   "name": "img gen gemini",
+   "path": "/v1/images/generations",
+   "body": {
+    "model": "img-gem-a",
+    "prompt": "a cat",
+    "size": "2048x1024"
+   }
+  },
+  {
+   "name": "img gen unknown",
+   "path": "/v1/images/generations",
+   "body": {
+    "model": "nope",
+    "prompt": "a cat"
+   }
+  },
+  {
+   "name": "img or basic",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-a",
+    "prompt": "a cat",
+    "aspect_ratio": "16:9"
+   }
+  },
+  {
+   "name": "img or target",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-or-a",
+    "prompt": "a cat",
+    "resolution": "2K",
+    "seed": 3
+   }
+  },
+  {
+   "name": "img or empty",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-or-empty-a",
+    "prompt": "a cat"
+   }
+  },
+  {
+   "name": "img or gemini",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-gem-a",
+    "prompt": "a cat",
+    "aspect_ratio": "16:9",
+    "resolution": "1K",
+    "n": 2
+   }
+  },
+  {
+   "name": "img or url",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-url-a",
+    "prompt": "a cat"
+   }
+  },
+  {
+   "name": "img or bad n",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-a",
+    "prompt": "a cat",
+    "n": 11
+   }
+  },
+  {
+   "name": "img or stream",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-a",
+    "prompt": "a cat",
+    "stream": true
+   }
+  },
+  {
+   "name": "img or size conflict",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-a",
+    "prompt": "x",
+    "size": "1024x1024",
+    "aspect_ratio": "16:9"
+   }
+  },
+  {
+   "name": "img or no prompt",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-a"
+   }
+  },
+  {
+   "name": "img or provider only",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-multi-a",
+    "prompt": "x",
+    "provider": {
+     "only": [
+      "up-or"
+     ]
+    }
+   }
+  },
+  {
+   "name": "img or provider none",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-multi-a",
+    "prompt": "x",
+    "provider": {
+     "only": [
+      "zzz"
+     ]
+    }
+   }
+  },
+  {
+   "name": "img or provider sort",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-multi-a",
+    "prompt": "x",
+    "provider": {
+     "sort": "price"
+    }
+   }
+  },
+  {
+   "name": "img or provider options",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-a",
+    "prompt": "x",
+    "provider": {
+     "options": {
+      "up-oa": {
+       "foo": "bar",
+       "model": "evil"
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "img or reference",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-a",
+    "prompt": "edit",
+    "input_references": [
+     {
+      "type": "image_url",
+      "image_url": {
+       "url": "data:image/png;base64,iVBORw0KGgo="
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "img or bad reference",
+   "path": "/v1/images",
+   "body": {
+    "model": "img-a",
+    "prompt": "edit",
+    "input_references": [
+     {
+      "type": "image_url",
+      "image_url": {
+       "url": "ftp://x"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "img edit basic",
+   "path": "/v1/images/edits",
+   "multipart": [
+    {
+     "name": "image",
+     "filename": "a.png",
+     "content_type": "image/png",
+     "data": "\u0089PNG\r\n\u001a\n0000"
+    },
+    {
+     "name": "prompt",
+     "value": "add hat"
+    },
+    {
+     "name": "model",
+     "value": "img-a"
+    },
+    {
+     "name": "n",
+     "value": "2"
+    },
+    {
+     "name": "size",
+     "value": "512x512"
+    }
+   ]
+  },
+  {
+   "name": "img edit octet",
+   "path": "/v1/images/edits",
+   "multipart": [
+    {
+     "name": "image",
+     "filename": "a.png",
+     "content_type": "application/octet-stream",
+     "data": "\u0089PNG\r\n\u001a\n0000"
+    },
+    {
+     "name": "prompt",
+     "value": "add hat"
+    },
+    {
+     "name": "model",
+     "value": "img-a"
+    }
+   ]
+  },
+  {
+   "name": "img edit mask",
+   "path": "/v1/images/edits",
+   "multipart": [
+    {
+     "name": "image",
+     "filename": "a.png",
+     "content_type": "image/png",
+     "data": "\u0089PNG\r\n\u001a\n0000"
+    },
+    {
+     "name": "mask",
+     "filename": "m.png",
+     "content_type": "image/png",
+     "data": "\u0089PNG\r\n\u001a\n0000"
+    },
+    {
+     "name": "prompt",
+     "value": "add hat"
+    },
+    {
+     "name": "model",
+     "value": "img-a"
+    }
+   ]
+  },
+  {
+   "name": "img edit gemini",
+   "path": "/v1/images/edits",
+   "multipart": [
+    {
+     "name": "image",
+     "filename": "a.png",
+     "content_type": "image/png",
+     "data": "\u0089PNG\r\n\u001a\n0000"
+    },
+    {
+     "name": "prompt",
+     "value": "add hat"
+    },
+    {
+     "name": "model",
+     "value": "img-gem-a"
+    }
+   ]
+  },
+  {
+   "name": "img edit no image",
+   "path": "/v1/images/edits",
+   "multipart": [
+    {
+     "name": "prompt",
+     "value": "add hat"
+    },
+    {
+     "name": "model",
+     "value": "img-a"
+    }
+   ]
+  },
+  {
+   "name": "img edit no prompt",
+   "path": "/v1/images/edits",
+   "multipart": [
+    {
+     "name": "image",
+     "filename": "a.png",
+     "content_type": "image/png",
+     "data": "\u0089PNG\r\n\u001a\n0000"
+    },
+    {
+     "name": "model",
+     "value": "img-a"
+    }
+   ]
+  },
+  {
+   "name": "img edit json",
+   "path": "/v1/images/edits",
+   "body": {
+    "model": "img-a",
+    "prompt": "x"
+   }
+  }
+ ]
+}

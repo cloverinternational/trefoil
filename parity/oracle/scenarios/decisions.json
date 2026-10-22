@@ -1,0 +1,240 @@
+{
+ "setup": [
+  [
+   "PUT",
+   "/v0/management/providers/dec-up",
+   {
+    "api_base_url": {
+     "systemone": "{{MOCK}}"
+    },
+    "api_key": "sk-up",
+    "models": {
+     "jev-ok": {},
+     "jev-error500": {},
+     "jev-error400": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/providers/dec-chat",
+   {
+    "api_base_url": {
+     "chat": "{{MOCK}}/v1"
+    },
+    "api_key": "sk-up",
+    "models": {
+     "chat-model": {}
+    }
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/dec-alias",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "dec-up",
+        "model": "jev-ok"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/dec-fail",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "dec-up",
+        "model": "jev-error500"
+       },
+       {
+        "provider": "dec-up",
+        "model": "jev-ok"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/dec-bad",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "dec-up",
+        "model": "jev-error400"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  [
+   "PUT",
+   "/v0/management/aliases/dec-chatonly",
+   {
+    "target_groups": [
+     {
+      "name": "g",
+      "selector": "in_order",
+      "targets": [
+       {
+        "provider": "dec-chat",
+        "model": "chat-model"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ ],
+ "scenarios": [
+  {
+   "name": "alias success",
+   "path": "/v1/decisions",
+   "body": {
+    "model": "dec-alias",
+    "state": {
+     "t": 1
+    },
+    "questions": {
+     "a": {
+      "type": "noul",
+      "instructions": "x"
+     }
+    },
+    "user": "dropped"
+   }
+  },
+  {
+   "name": "systemone path",
+   "path": "/v1/systemone",
+   "body": {
+    "model": "dec-alias",
+    "state": "s",
+    "questions": {
+     "q": {
+      "type": "score",
+      "instructions": "r",
+      "criteria": [
+       "lo",
+       "hi"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "name": "direct routing",
+   "path": "/v1/decisions",
+   "body": {
+    "model": "direct/dec-up/jev-ok",
+    "state": "s",
+    "questions": {
+     "a": {
+      "type": "noul",
+      "instructions": "x"
+     }
+    }
+   }
+  },
+  {
+   "name": "failover 500",
+   "path": "/v1/decisions",
+   "body": {
+    "model": "dec-fail",
+    "state": "s",
+    "questions": {
+     "a": {
+      "type": "noul",
+      "instructions": "x"
+     }
+    }
+   }
+  },
+  {
+   "name": "upstream 400",
+   "path": "/v1/decisions",
+   "body": {
+    "model": "dec-bad",
+    "state": "s",
+    "questions": {
+     "a": {
+      "type": "noul",
+      "instructions": "x"
+     }
+    }
+   }
+  },
+  {
+   "name": "chat-only alias",
+   "path": "/v1/decisions",
+   "body": {
+    "model": "dec-chatonly",
+    "state": "s",
+    "questions": {
+     "a": {
+      "type": "noul",
+      "instructions": "x"
+     }
+    }
+   }
+  },
+  {
+   "name": "bare provider/model",
+   "path": "/v1/decisions",
+   "body": {
+    "model": "dec-up/jev-ok",
+    "state": "s",
+    "questions": {
+     "a": {
+      "type": "noul",
+      "instructions": "x"
+     }
+    }
+   }
+  },
+  {
+   "name": "validation",
+   "path": "/v1/decisions",
+   "body": {
+    "model": "dec-alias",
+    "state": 5,
+    "questions": {}
+   }
+  },
+  {
+   "name": "no auth",
+   "path": "/v1/decisions",
+   "headers": {
+    "authorization": ""
+   },
+   "body": {
+    "model": "dec-alias"
+   }
+  },
+  {
+   "name": "usage rows",
+   "method": "GET",
+   "path": "/v0/management/usage?limit=8&incomingApiType=decisions",
+   "admin": true
+  }
+ ]
+}

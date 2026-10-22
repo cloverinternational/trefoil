@@ -2,13 +2,23 @@
 name = "trefoil-backend"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+rust-version = "1.88"
+description = "Self-hosted LLM API gateway and router: one endpoint for OpenAI, Anthropic and Gemini formats, with failover, quotas and usage tracking. Plexus-compatible."
+repository = "https://github.com/cloverinternational/trefoil"
+homepage = "https://github.com/cloverinternational/trefoil"
+readme = "../README.md"
+keywords = ["llm", "gateway", "router", "openai", "anthropic"]
+categories = ["web-programming::http-server"]
+publish = false
 
 [dependencies]
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "sync", "time", "io-util"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "migrate", "json", "chrono"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = { version = "2", features = ["serde"] }
 subtle = "2"
 sha2 = "0.10"
 base64 = "0.22"
@@ -19,6 +29,8 @@ rand = "0.8"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 futures-util = "0.3"
+async-trait = "0.1"
+bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 flate2 = "1"
 tar = "0.4"
@@ -26,5 +38,17 @@ csv = "1"
 thiserror = "1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+scrypt = { version = "0.11", default-features = false }
+tiktoken-rs = "0.12.1"
 
 [dev-dependencies]
+
+# The engine is a line-by-line port of Plexus (TypeScript); keeping its function
+# signatures, error types, and enum layouts faithful to the reference makes
+# side-by-side review possible. These structural lints would force reshaping
+# those signatures, so they are allowed crate-wide. Everything else is fixed.
+[lints.clippy]
+result_large_err = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+large_enum_variant = "allow"
