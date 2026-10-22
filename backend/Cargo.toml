@@ -25,7 +25,7 @@ base64 = "0.22"
 aes-gcm = "0.10"
 hex = "0.4"
 url = "2"
-rand = "0.8"
+rand = "0.10"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 futures-util = "0.3"

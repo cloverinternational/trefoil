@@ -2371,7 +2371,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "indexmap",
- "rand 0.8.8",
+ "rand 0.10.2",
  "regex",
  "reqwest",
  "scrypt",
