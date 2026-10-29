@@ -302,6 +302,10 @@ impl DebugManager {
         });
     }
 
+    /// `DebugLoggingInspector.finalize()`: one-shot per `(request, mode)`. The
+    /// finalized tap stays in the store as a tombstone (until `flush`) so a
+    /// later finalize, e.g. the explicit one before usage is read, is a no-op
+    /// instead of replacing the reconstruction with an empty capture.
     fn finalize_tap(&self, request_id: &str, mode: &'static str, api_type: &str) {
         let body = {
             let mut s = store().lock().unwrap();
@@ -310,9 +314,7 @@ impl DebugManager {
                 return;
             }
             tap.finalized = true;
-            let body = tap.chunks.join("");
-            s.taps.remove(&(request_id.to_owned(), mode));
-            body
+            std::mem::take(&mut tap.chunks).join("")
         };
         let snapshot = reconstruct(api_type, &body);
         if mode == "raw" {
@@ -446,6 +448,8 @@ impl DebugHooks for DebugManager {
     fn flush(&self, request_id: &str) {
         let log = {
             let mut s = store().lock().unwrap();
+            s.taps.remove(&(request_id.to_owned(), "raw"));
+            s.taps.remove(&(request_id.to_owned(), "transformed"));
             let Some(log) = s.pending.get(request_id).cloned() else {
                 return;
             };
@@ -1137,5 +1141,48 @@ mod tests {
         assert_eq!(r["choices"][0]["delta"]["content"], "Hi");
         assert_eq!(r["choices"][0]["finish_reason"], "stop");
         assert_eq!(r["usage"]["prompt_tokens"], 1);
+    }
+
+    const CHAT_BODY: &str = "data: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"c\",\"choices\":[],\"usage\":{\"prompt_tokens\":3}}\n\ndata: [DONE]\n\n";
+
+    fn manager() -> DebugManager {
+        DebugManager::new(&AppState::new(Some("admin".into()), HashMap::new()))
+    }
+
+    #[test]
+    fn finalizing_a_tap_twice_keeps_the_first_reconstruction() {
+        let dbg = manager();
+        let rid = "debug-tap-finalize-twice";
+        dbg.raw_chunk(rid, "chat", CHAT_BODY);
+        dbg.raw_end(rid, "chat");
+        let first = dbg.reconstructed_raw_response(rid).expect("snapshot");
+        assert_eq!(first["usage"]["prompt_tokens"], 3);
+
+        // The usage inspector finalizes the taps again before reading usage;
+        // that must not replace the capture with an empty one, and chunks
+        // arriving after the tap closed are ignored.
+        dbg.raw_end(rid, "chat");
+        dbg.raw_chunk(rid, "chat", "data: {\"late\":true}\n\n");
+        dbg.raw_end(rid, "chat");
+        assert_eq!(dbg.reconstructed_raw_response(rid), Some(first));
+
+        dbg.flush(rid);
+        assert!(!store()
+            .lock()
+            .unwrap()
+            .taps
+            .contains_key(&(rid.to_owned(), "raw")));
+    }
+
+    #[test]
+    fn transformed_tap_snapshot_survives_repeated_end() {
+        let dbg = manager();
+        let rid = "debug-tap-transformed-twice";
+        dbg.transformed_chunk(rid, "chat", CHAT_BODY);
+        dbg.transformed_end(rid, "chat");
+        let first = dbg.transformed_response_snapshot(rid).expect("snapshot");
+        dbg.transformed_end(rid, "chat");
+        assert_eq!(dbg.transformed_response_snapshot(rid), Some(first));
+        dbg.flush(rid);
     }
 }

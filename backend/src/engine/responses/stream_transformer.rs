@@ -24,6 +24,11 @@ pub struct ResponsesStreamTransformer {
     has_function_call: bool,
     rendered_image_item_ids: HashSet<String>,
     rendered_client_tool_call_ids: HashSet<String>,
+    /// Chat tool-call indexes that already got a start chunk (id/name).
+    function_call_indexes_with_started_chunks: HashSet<u64>,
+    /// Chat tool-call indexes whose arguments were already emitted (streamed
+    /// deltas or a completed event), so later `.done`/`completed` copies are skipped.
+    function_call_indexes_with_handled_arguments: HashSet<u64>,
 }
 
 impl Default for ResponsesStreamTransformer {
@@ -37,6 +42,8 @@ impl Default for ResponsesStreamTransformer {
             has_function_call: false,
             rendered_image_item_ids: HashSet::new(),
             rendered_client_tool_call_ids: HashSet::new(),
+            function_call_indexes_with_started_chunks: HashSet::new(),
+            function_call_indexes_with_handled_arguments: HashSet::new(),
         }
     }
 }
@@ -74,6 +81,46 @@ impl ResponsesStreamTransformer {
             self.tool_call_index_by_item_id.insert(i, index);
         }
         index
+    }
+
+    /// `emitCompletedFunctionCallArguments`: emits the full arguments of a
+    /// function call that finished without streamed deltas, preceded by the
+    /// call's id/name when no start chunk was sent (completion-only calls).
+    fn emit_completed_function_call_arguments(
+        &mut self,
+        data: &Value,
+        arguments: Value,
+        item: Option<&Value>,
+        out: &mut Vec<Value>,
+    ) {
+        let mut merged = data.clone();
+        if let (Some(item), Some(m)) = (item, merged.as_object_mut()) {
+            m.insert("item".to_owned(), item.clone());
+        }
+        let index = self.tool_call_index(&merged);
+        if self
+            .function_call_indexes_with_handled_arguments
+            .contains(&index)
+        {
+            return;
+        }
+        let has_started_chunk = self
+            .function_call_indexes_with_started_chunks
+            .contains(&index);
+        let mut function = vec![("arguments", Some(arguments))];
+        let mut tc = vec![("index", Some(json!(index)))];
+        if !has_started_chunk {
+            // A completion-only call needs the item to supply its id/name.
+            let Some(item) = item else { return };
+            tc.push(("id", item.get("call_id").cloned()));
+            tc.push(("type", Some(json!("function"))));
+            function.insert(0, ("name", item.get("name").cloned()));
+        }
+        tc.push(("function", Some(obj(function))));
+        out.push(self.chunk(json!({"tool_calls": [obj(tc)]}), None));
+        self.function_call_indexes_with_started_chunks.insert(index);
+        self.function_call_indexes_with_handled_arguments
+            .insert(index);
     }
 
     /// `{id, model, created: now, delta, ...extra, finish_reason: null}`.
@@ -137,6 +184,8 @@ impl ResponsesStreamTransformer {
             Some("response.function_call_arguments.delta") => {
                 self.has_function_call = true;
                 let index = self.tool_call_index(data);
+                self.function_call_indexes_with_handled_arguments
+                    .insert(index);
                 let tc = json!({"index": index, "function": obj(vec![("arguments", data.get("delta").cloned())])});
                 out.push(self.chunk(json!({"tool_calls": [tc]}), None));
             }
@@ -145,6 +194,7 @@ impl ResponsesStreamTransformer {
             {
                 self.has_function_call = true;
                 let index = self.tool_call_index(data);
+                self.function_call_indexes_with_started_chunks.insert(index);
                 let item = &data["item"];
                 let tc = obj(vec![
                     ("index", Some(json!(index))),
@@ -159,6 +209,18 @@ impl ResponsesStreamTransformer {
                     ),
                 ]);
                 out.push(self.chunk(json!({"tool_calls": [tc]}), None));
+            }
+            Some("response.function_call_arguments.done") => {
+                let args = coalesce(data.get("arguments"), Some(&json!(""))).unwrap_or_default();
+                self.emit_completed_function_call_arguments(data, args, None, &mut out);
+            }
+            Some("response.output_item.done")
+                if get_str(data, &["item", "type"]) == Some("function_call") =>
+            {
+                self.has_function_call = true;
+                let item = &data["item"];
+                let args = coalesce(item.get("arguments"), Some(&json!(""))).unwrap_or_default();
+                self.emit_completed_function_call_arguments(data, args, Some(item), &mut out);
             }
             Some("response.output_item.done")
                 if get_str(data, &["item", "type"]) == Some("image_generation_call") =>
@@ -229,7 +291,22 @@ impl ResponsesStreamTransformer {
                         )),
                     ));
                 }
-                for item in output {
+                for (output_index, item) in output.iter().enumerate() {
+                    if get_str(item, &["type"]) == Some("function_call") {
+                        let args =
+                            coalesce(item.get("arguments"), Some(&json!(""))).unwrap_or_default();
+                        let fallback = obj(vec![
+                            ("output_index", Some(json!(output_index))),
+                            ("item_id", item.get("id").cloned()),
+                        ]);
+                        self.emit_completed_function_call_arguments(
+                            &fallback,
+                            args,
+                            Some(item),
+                            &mut out,
+                        );
+                        continue;
+                    }
                     if !is_client_executed_tool_item(Some(item)) {
                         continue;
                     }
