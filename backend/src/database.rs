@@ -1413,6 +1413,24 @@ mod tests {
     };
     use crate::state::KeyConfig;
 
+    /// Plexus #1019: the connection string's `sslmode` is honoured and an
+    /// unknown value is an error rather than a silent downgrade to plaintext.
+    #[test]
+    fn connection_string_sslmode_is_honoured_and_validated() {
+        use sqlx::postgres::{PgConnectOptions, PgSslMode};
+        use std::str::FromStr;
+
+        let mode = |query: &str| {
+            PgConnectOptions::from_str(&format!("postgres://u:p@h:5432/db{query}"))
+                .map(|options| options.get_ssl_mode())
+        };
+        assert!(matches!(mode("?sslmode=disable"), Ok(PgSslMode::Disable)));
+        assert!(matches!(mode("?sslmode=require"), Ok(PgSslMode::Require)));
+        assert!(matches!(mode("?sslmode=verify-ca"), Ok(PgSslMode::VerifyCa)));
+        assert!(matches!(mode("?sslmode=verify-full"), Ok(PgSslMode::VerifyFull)));
+        assert!(mode("?sslmode=bogus").is_err());
+    }
+
     #[test]
     fn pool_default_is_bounded() {
         assert_eq!(DEFAULT_MAX_CONNECTIONS, 16);
