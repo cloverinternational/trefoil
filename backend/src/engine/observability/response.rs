@@ -1298,6 +1298,14 @@ impl StreamSession {
         out
     }
 
+    /// `rawDebugCapture?.finalize(); transformedDebugCapture?.finalize()`.
+    fn end_debug_taps(&self) {
+        let rid = self.request_id();
+        let debug = &self.init.svc.debug;
+        debug.raw_end(&rid, &self.init.provider_api_type);
+        debug.transformed_end(&rid, &self.init.api_type);
+    }
+
     fn snapshot(&self) -> Option<Snapshot<'_>> {
         match self
             .init
@@ -1371,6 +1379,9 @@ impl StreamSession {
         }
         self.flushed = true;
         let mut stats = ObservedUsage::default();
+        // Reconstruct everything captured so far before reading usage and
+        // flushing the trace (both taps are idempotent).
+        self.end_debug_taps();
         let snapshot = self.snapshot();
         let pat = self.init.provider_api_type.clone();
         let incoming = self.incoming_api_type();
@@ -1494,6 +1505,9 @@ impl StreamSession {
             return;
         }
         self.flushed = true;
+        // A teardown can bypass the normal tap end; capture happens at write
+        // time, so reconstruct what was observed before reading the snapshot.
+        self.end_debug_taps();
         let mut record = self.init.record.clone();
         let status = match record.str("responseStatus") {
             Some(s @ ("stall" | "timeout")) => s.to_owned(),
