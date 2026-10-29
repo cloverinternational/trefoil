@@ -385,7 +385,12 @@ fn safe_configured_header(name: &str) -> bool {
     )
 }
 
-fn strip_zero_ttl(value: &mut Value) -> bool {
+/// Some upstreams (GitHub's MCP server) advertise a non-positive `ttlMs` on
+/// tools/list results, which TTL-honoring clients treat as permanently
+/// invalid. Clamp it to one minute (Plexus `clampNonPositiveToolsListTtl`).
+const MIN_TOOLS_LIST_TTL_MS: i64 = 60_000;
+
+fn clamp_non_positive_ttl(value: &mut Value) -> bool {
     let messages = match value {
         Value::Array(items) => items.iter_mut().collect::<Vec<_>>(),
         _ => vec![value],
@@ -401,7 +406,7 @@ fn strip_zero_ttl(value: &mut Value) -> bool {
                 .and_then(Value::as_i64)
                 .is_some_and(|ttl| ttl <= 0)
         {
-            result.remove("ttlMs");
+            result.insert("ttlMs".into(), Value::from(MIN_TOOLS_LIST_TTL_MS));
             changed = true;
         }
     }
@@ -419,7 +424,7 @@ fn sanitize_sse_lines(buffer: &mut String, chunk: &[u8]) -> Bytes {
             .or_else(|| line.strip_prefix("data:"));
         if let Some(data) = data {
             if let Ok(mut value) = serde_json::from_str::<Value>(data) {
-                if strip_zero_ttl(&mut value) {
+                if clamp_non_positive_ttl(&mut value) {
                     output.push_str("data: ");
                     output.push_str(&value.to_string());
                     output.push('\n');
@@ -539,7 +544,7 @@ async fn forward(
         let body = if is_tools_list {
             match serde_json::from_slice::<Value>(&bytes) {
                 Ok(mut value) => {
-                    if strip_zero_ttl(&mut value) {
+                    if clamp_non_positive_ttl(&mut value) {
                         serde_json::to_vec(&value).unwrap_or_else(|_| bytes.to_vec())
                     } else {
                         bytes.to_vec()
@@ -782,13 +787,17 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn strips_non_positive_tool_ttl_but_preserves_positive_ttl() {
+    fn clamps_non_positive_tool_ttl_but_preserves_positive_ttl() {
         let mut zero = json!({"result":{"tools":[],"ttlMs":0}});
-        assert!(super::strip_zero_ttl(&mut zero));
-        assert!(zero["result"].get("ttlMs").is_none());
+        assert!(super::clamp_non_positive_ttl(&mut zero));
+        assert_eq!(zero["result"]["ttlMs"], 60_000);
+
+        let mut negative = json!([{"result":{"tools":[],"ttlMs":-5}}]);
+        assert!(super::clamp_non_positive_ttl(&mut negative));
+        assert_eq!(negative[0]["result"]["ttlMs"], 60_000);
 
         let mut positive = json!({"result":{"tools":[],"ttlMs":1000}});
-        assert!(!super::strip_zero_ttl(&mut positive));
+        assert!(!super::clamp_non_positive_ttl(&mut positive));
         assert_eq!(positive["result"]["ttlMs"], 1000);
     }
 
