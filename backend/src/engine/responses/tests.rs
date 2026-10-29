@@ -144,6 +144,98 @@ fn finish_reason_tracks_function_calls() {
     assert_eq!(chunks.last().unwrap()["finish_reason"], json!("tool_calls"));
 }
 
+/// `(index, arguments)` of every tool-call delta, in order.
+fn tool_call_arguments(chunks: &[Value]) -> Vec<(u64, String)> {
+    chunks
+        .iter()
+        .filter_map(|c| c["delta"]["tool_calls"].as_array())
+        .flatten()
+        .map(|tc| {
+            (
+                tc["index"].as_u64().unwrap(),
+                tc["function"]["arguments"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn forwards_completed_arguments_when_no_argument_deltas_were_streamed() {
+    let item = json!({"id": "fc_example", "type": "function_call", "status": "completed", "call_id": "call_example", "name": "example_lookup", "arguments": "{\"limit\":100,\"offset\":50}"});
+    let chunks = transform_events(&[
+        json!({"type": "response.output_item.added", "sequence_number": 1, "output_index": 0, "item": {"id": "fc_example", "type": "function_call", "status": "in_progress", "call_id": "call_example", "name": "example_lookup", "arguments": ""}}),
+        json!({"type": "response.function_call_arguments.done", "sequence_number": 2, "item_id": "fc_example", "output_index": 0, "arguments": "{\"limit\":100,\"offset\":50}"}),
+        json!({"type": "response.output_item.done", "sequence_number": 3, "output_index": 0, "item": item}),
+        json!({"type": "response.completed", "sequence_number": 4, "response": {"id": "resp_example", "model": "example-model", "status": "completed", "output": [item], "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}}),
+    ]);
+    assert_eq!(
+        tool_call_arguments(&chunks),
+        vec![
+            (0, String::new()),
+            (0, "{\"limit\":100,\"offset\":50}".to_owned())
+        ]
+    );
+    assert_eq!(chunks.last().unwrap()["finish_reason"], json!("tool_calls"));
+}
+
+#[test]
+fn does_not_repeat_completed_arguments_after_forwarding_argument_deltas() {
+    let item = json!({"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "example_lookup", "arguments": "{\"limit\":100,\"offset\":50}"});
+    let chunks = transform_events(&[
+        json!({"type": "response.created", "response": {"id": "resp_1", "model": "gpt-4o", "created_at": 1234567890}}),
+        json!({"type": "response.output_item.added", "output_index": 0, "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "example_lookup", "arguments": ""}}),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 0, "item_id": "fc_1", "delta": "{\"limit\":100,\"offset\":50}"}),
+        json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
+        json!({"type": "response.completed", "response": {"output": [item]}}),
+    ]);
+    assert_eq!(
+        tool_call_arguments(&chunks),
+        vec![
+            (0, String::new()),
+            (0, "{\"limit\":100,\"offset\":50}".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn completion_only_fallback_arguments_stay_separate_from_parallel_call_deltas() {
+    let chunks = transform_events(&[
+        json!({"type": "response.created", "response": {"id": "resp_1", "model": "gpt-4o", "created_at": 1234567890}}),
+        json!({"type": "response.output_item.added", "output_index": 0, "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "first_tool", "arguments": ""}}),
+        json!({"type": "response.output_item.added", "output_index": 1, "item": {"id": "fc_2", "type": "function_call", "call_id": "call_2", "name": "second_tool", "arguments": ""}}),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "item_id": "fc_2", "delta": "{\"which\":\"second\"}"}),
+        json!({"type": "response.output_item.done", "output_index": 0, "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "first_tool", "arguments": "{\"which\":\"first\"}"}}),
+        json!({"type": "response.output_item.done", "output_index": 1, "item": {"id": "fc_2", "type": "function_call", "call_id": "call_2", "name": "second_tool", "arguments": "{\"which\":\"second\"}"}}),
+    ]);
+    assert_eq!(
+        tool_call_arguments(&chunks),
+        vec![
+            (0, String::new()),
+            (1, String::new()),
+            (1, "{\"which\":\"second\"}".to_owned()),
+            (0, "{\"which\":\"first\"}".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn completion_only_call_without_start_chunk_carries_id_and_name() {
+    let chunks = transform_events(&[
+        json!({"type": "response.created", "response": {"id": "resp_1", "model": "gpt-4o", "created_at": 1234567890}}),
+        json!({"type": "response.completed", "response": {"output": [{"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "only_tool", "arguments": "{}"}]}}),
+    ]);
+    let tcs: Vec<&Value> = chunks
+        .iter()
+        .filter(|c| c["delta"].get("tool_calls").is_some())
+        .collect();
+    assert_eq!(tcs.len(), 1);
+    assert_eq!(
+        tcs[0]["delta"]["tool_calls"],
+        json!([{"index": 0, "id": "call_1", "type": "function", "function": {"name": "only_tool", "arguments": "{}"}}])
+    );
+    assert_eq!(chunks.last().unwrap()["finish_reason"], json!("tool_calls"));
+}
+
 fn reasoning_summary_events() -> Vec<Value> {
     vec![
         json!({"type": "response.created", "response": {"id": "resp_reasoning_1", "model": "gpt-5", "created_at": 1234567890}}),
