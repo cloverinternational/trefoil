@@ -351,6 +351,9 @@ fn build_enabled_options(
             Some("summary") => {
                 base.insert("thinkingDisplay".into(), json!("summarized"));
             }
+            Some("hidden") => {
+                base.insert("thinkingDisplay".into(), json!("omitted"));
+            }
             _ => {}
         }
         if get(model, &["compat", "forceAdaptiveThinking"]) == Some(&Value::Bool(true)) {

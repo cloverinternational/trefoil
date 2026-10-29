@@ -199,8 +199,19 @@ pub fn extract_generation_intent(payload: &Value, request: &Value) -> Generation
         .as_ref(),
     );
     let tier = pick_service_tier_intent(request, source);
+    // Cross-format requests express reasoning in the client's own dialect, so
+    // read it from the original body rather than the translated payload.
+    let reasoning_source = match request.get("originalBody").filter(|b| truthy(Some(b))) {
+        Some(original)
+            if get_str(request, &["incomingApiType"]).map(str::to_lowercase).as_deref()
+                != Some("messages") =>
+        {
+            original
+        }
+        _ => source,
+    };
     GenerationIntent {
-        reasoning: extract_reasoning_intent(source, request),
+        reasoning: extract_reasoning_intent(reasoning_source, request),
         max_tokens: max_tokens.as_ref().and_then(Value::as_f64),
         temperature: temperature.as_ref().and_then(Value::as_f64),
         verbosity,
@@ -817,6 +828,35 @@ fn route_declares_tier_support(route: &RouteResult, target_api_type: &str) -> bo
     values
         .iter()
         .any(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+}
+
+/// `applyNativeAnthropicCompat(payload, request, modelId)`: catalog-backed
+/// translation on cross-format native Anthropic OAuth routes.
+pub fn apply_native_anthropic_compat(
+    payload: Value,
+    request: &Value,
+    model_id: &str,
+    resolve: PiAiResolver<'_>,
+) -> Value {
+    let Some(model) = resolve("anthropic", model_id)
+        .filter(|m| get_str(m, &["api"]) == Some("anthropic-messages"))
+    else {
+        return payload;
+    };
+    let original_body = request
+        .get("originalBody")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Obj::new()));
+    let intent = extract_generation_intent(&original_body, request);
+    let mut options = build_generation_options(&model, Some(&intent));
+    // Messages requires max_tokens. When the client omitted a limit, use the
+    // catalog ceiling rather than the generic builder's conservative fallback.
+    if request.get("max_tokens").is_none() && intent.max_tokens.is_none() {
+        if let Some(ceiling) = get_f64(&model, &["maxTokens"]).filter(|c| *c > 0.0) {
+            options.insert("maxTokens".into(), num(ceiling));
+        }
+    }
+    project_anthropic(&payload, &model, &intent, &options, false)
 }
 
 /// `resolvePiAiModel(provider, modelId)` hook (the TS tests spy on it).

@@ -197,7 +197,7 @@ fn remap_name_field(obj: &mut Value, key: &str) {
 }
 
 /// `remapOAuthToolNames(body)`.
-fn remap_oauth_tool_names(result: &mut Value) {
+pub fn remap_oauth_tool_names(result: &mut Value) {
     if let Some(tools) = result.get_mut("tools").and_then(Value::as_array_mut) {
         for tool in tools {
             let ty = tool.get("type");
@@ -240,8 +240,6 @@ fn remap_oauth_tool_names(result: &mut Value) {
         }
     }
 }
-
-const SANITIZED_SYSTEM: &str = "Use the available tools when needed to help with software engineering tasks.\nKeep responses concise and focused on the user's request.\nPrefer acting on the user's task over describing product-specific workflows.";
 
 fn reminder_block(text: &str) -> String {
     format!("<system-reminder>\nAs you answer the user's questions, you can use the following context from the system:\n{text}\n\nIMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n")
@@ -288,19 +286,16 @@ fn inject_claude_code_system_prompt(result: &mut Value) {
                 if get_str(part, &["type"]) != Some("text") {
                     continue;
                 }
+                // The caller's instructions are relocated verbatim (untrimmed).
                 if let Some(t) = get_str(part, &["text"])
-                    .map(crate::engine::dispatch::util::js_trim)
-                    .filter(|t| !t.is_empty())
+                    .filter(|t| !crate::engine::dispatch::util::js_trim(t).is_empty())
                 {
                     parts.push(t.to_owned());
                 }
             }
         }
-        Some(Value::String(s)) => {
-            let t = crate::engine::dispatch::util::js_trim(s);
-            if !t.is_empty() {
-                parts.push(t.to_owned());
-            }
+        Some(Value::String(s)) if !crate::engine::dispatch::util::js_trim(s).is_empty() => {
+            parts.push(s.clone());
         }
         _ => {}
     }
@@ -314,7 +309,7 @@ fn inject_claude_code_system_prompt(result: &mut Value) {
         );
     }
     if !parts.is_empty() {
-        prepend_to_first_user_message(result, SANITIZED_SYSTEM);
+        prepend_to_first_user_message(result, &parts.join("\n\n"));
     }
 }
 
@@ -603,29 +598,33 @@ fn billing_header_text(body: &Value) -> String {
 /// `injectClaudeCodeIdentity(body)`.
 fn inject_claude_code_identity(body: &mut Value) {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(items) = body.get("system").and_then(Value::as_array) {
-        for part in items {
-            if get_str(part, &["type"]) != Some("text") {
-                continue;
-            }
-            let txt = get_str(part, &["text"])
-                .map(crate::engine::dispatch::util::js_trim)
-                .unwrap_or("");
-            if txt.is_empty()
-                || txt.starts_with(BILLING_HEADER_PREFIX)
-                || txt == CLAUDE_CODE_IDENTITY_TEXT
-            {
-                continue;
-            }
-            parts.push(txt.to_owned());
+    // A string `system` is treated as a single text block.
+    let existing: Vec<&str> = match body.get("system") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter(|p| get_str(p, &["type"]) == Some("text"))
+            .map(|p| get_str(p, &["text"]).unwrap_or(""))
+            .collect(),
+        Some(Value::String(s)) => vec![s.as_str()],
+        _ => Vec::new(),
+    };
+    for txt in existing {
+        let trimmed = crate::engine::dispatch::util::js_trim(txt);
+        if trimmed.is_empty()
+            || trimmed.starts_with(BILLING_HEADER_PREFIX)
+            || trimmed == CLAUDE_CODE_IDENTITY_TEXT
+        {
+            continue;
         }
+        // The caller's instructions are relocated verbatim (untrimmed).
+        parts.push(txt.to_owned());
     }
     let billing = billing_header_text(body);
     if let Some(m) = body.as_object_mut() {
         m.insert("system".into(), static_system_blocks(billing));
     }
     if !parts.is_empty() {
-        prepend_to_first_user_message(body, SANITIZED_SYSTEM);
+        prepend_to_first_user_message(body, &parts.join("\n\n"));
     }
 }
 
@@ -784,6 +783,91 @@ mod tests {
             ]
         );
         assert_eq!(namespace_non_cc_tool_name("é😀"), "mcp__client_____");
+    }
+
+    fn first_user_content(body: &Value) -> &Value {
+        &body["messages"][0]["content"]
+    }
+
+    #[test]
+    fn identity_preserves_multiple_instruction_blocks_and_whitespace() {
+        let first = "  First instruction.\n";
+        let second = "\nSecond instruction.  ";
+        let mut body = json!({
+            "system": [
+                {"type": "text", "text": CLAUDE_CODE_IDENTITY_TEXT},
+                {"type": "text", "text": first},
+                {"type": "text", "text": second},
+            ],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+        });
+        inject_claude_code_identity(&mut body);
+        let content = first_user_content(&body);
+        assert!(content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{first}\n\n{second}")));
+        assert_eq!(content[1]["text"], "hello");
+        assert!(!body["system"][2]["text"].as_str().unwrap().contains(first));
+    }
+
+    #[test]
+    fn identity_preserves_string_system_instructions() {
+        let instructions = "  Legal instructions.\nDo not omit terms.\n";
+        let mut body = json!({
+            "system": instructions,
+            "messages": [{"role": "user", "content": "Review this."}],
+        });
+        inject_claude_code_identity(&mut body);
+        let content = first_user_content(&body).as_str().unwrap();
+        assert!(content.contains(instructions));
+        assert!(content.contains("Review this."));
+        assert!(!content.contains("Use the available tools when needed"));
+    }
+
+    #[test]
+    fn v1_transform_preserves_caller_instructions() {
+        let instructions = "  You are OpenCode.\nFollow the project rules.\n";
+        let out = apply_claude_oauth_transform(
+            json!({
+                "system": [{"type": "text", "text": instructions}],
+                "messages": [{"role": "user", "content": "Hello"}],
+            }),
+            "sk-ant-oat-test",
+        );
+        assert!(first_user_content(&out)
+            .as_str()
+            .unwrap()
+            .contains(instructions));
+        assert!(!out["system"][2]["text"]
+            .as_str()
+            .unwrap()
+            .contains(instructions));
+    }
+
+    #[test]
+    fn native_prepare_injects_exactly_one_reminder_with_full_instructions() {
+        // Mirrors `prepare_anthropic_oauth_request`: canonicalize tool names,
+        // then let the masking pipeline own identity relocation.
+        let instructions = "caller system prompt";
+        let mut body = json!({
+            "system": instructions,
+            "tools": [{"name": "bash", "input_schema": {"type": "object", "required": ["command"]}}],
+            "messages": [{"role": "user", "content": "hello"}],
+        });
+        remap_oauth_tool_names(&mut body);
+        let (masked, _) = apply_claude_code_masking(&body);
+        let messages = stringify(&masked["messages"]);
+        assert_eq!(messages.matches("<system-reminder>").count(), 1);
+        assert!(messages.contains(instructions));
+        assert!(!stringify(&masked["system"]).contains(instructions));
+        let tool_names: Vec<&str> = masked["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(tool_names.contains(&"Bash") && !tool_names.contains(&"bash"));
     }
 
     #[test]

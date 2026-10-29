@@ -314,7 +314,7 @@ pub fn build_anthropic_request(request: &Value) -> EngineResult<Value> {
         ("system", system),
         (
             "max_tokens",
-            or(request.get("max_tokens"), Some(&json!(4096))),
+            or(request.get("max_tokens"), Some(&json!(64000))),
         ),
         ("temperature", request.get("temperature").cloned()),
         ("stream", request.get("stream").cloned()),
@@ -500,7 +500,7 @@ mod tests {
                     ]},
                 ],
                 "system": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}],
-                "max_tokens": 4096,
+                "max_tokens": 64000,
                 "stream": true,
                 "tools": [{"name": "get", "description": "", "input_schema": {"type": "object"}}],
                 "thinking": {"type": "disabled"},

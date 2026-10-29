@@ -109,7 +109,9 @@ fn auto_compat_matches_typescript_goldens() {
         (
             "inline",
             json!({"model": "x", "messages": [], "reasoning": {"effort": "high"}, "temperature": 0.4, "max_tokens": 256, "service_tier": "flex"}),
-            req(json!({"originalBody": {"service_tier": "flex"}})),
+            req(
+                json!({"originalBody": {"service_tier": "flex", "reasoning": {"effort": "high"}}}),
+            ),
             route(
                 "upstream/special",
                 json!({"auto_compat": true, "pi_ai_quirks": {"chat": {"api": "openai-completions", "reasoning": true, "thinkingLevelMap": {"off": "none", "high": "high"}, "serviceTierMap": {"standard": "default"}, "compat": {"thinkingFormat": "openrouter", "maxTokensField": "max_completion_tokens", "supportsTemperature": false}, "models": {"upstream/special": {"thinkingLevelMap": {"high": "hard"}, "compat": {"supportsTemperature": true}, "maxTokens": 64}}}}}),
@@ -172,6 +174,73 @@ fn default_route() -> RouteResult {
         json!({"api_base_url": "https://example.test/v1", "api_key": "k", "auto_compat": true, "pi_ai_provider": "openai"}),
         Some(json!({"pi_ai_model_id": "registry-model"})),
     )
+}
+
+fn native_anthropic_model() -> Value {
+    pi_model(json!({
+        "id": "claude-opus-5-5",
+        "provider": "anthropic",
+        "api": "anthropic-messages",
+        "maxTokens": 64000,
+        "compat": {"forceAdaptiveThinking": true},
+    }))
+}
+
+#[test]
+fn native_anthropic_compat_translates_effort_and_uses_catalog_ceiling() {
+    let request = req(json!({
+        "incomingApiType": "responses",
+        "originalBody": {"reasoning": {"effort": "medium"}, "temperature": 1},
+    }));
+    let out = apply_native_anthropic_compat(
+        json!({"model": "claude-opus-5-5", "messages": [], "max_tokens": 4096, "temperature": 1}),
+        &request,
+        "claude-opus-5-5",
+        &mocked(native_anthropic_model()),
+    );
+    assert_eq!(
+        out["thinking"],
+        json!({"type": "adaptive", "display": "summarized"})
+    );
+    assert_eq!(out["output_config"]["effort"], "medium");
+    // The client sent no limit: the catalog ceiling replaces the fallback.
+    assert_eq!(out["max_tokens"], 64000);
+    // Temperature is dropped while thinking is on.
+    assert!(out.get("temperature").is_none());
+}
+
+#[test]
+fn native_anthropic_compat_keeps_explicit_limits_and_hidden_reasoning() {
+    let request = req(json!({
+        "incomingApiType": "responses",
+        "max_tokens": 12345,
+        "originalBody": {"reasoning": {"effort": "high", "summary": "none"}, "max_output_tokens": 12345},
+    }));
+    let out = apply_native_anthropic_compat(
+        json!({"model": "provider-model", "max_tokens": 12345}),
+        &request,
+        "provider-model",
+        &mocked(native_anthropic_model()),
+    );
+    assert_eq!(out["max_tokens"], 12345);
+    assert_eq!(
+        out["thinking"],
+        json!({"type": "adaptive", "display": "omitted"})
+    );
+}
+
+#[test]
+fn native_anthropic_compat_ignores_non_anthropic_models() {
+    let payload = json!({"model": "m", "messages": []});
+    let out = apply_native_anthropic_compat(
+        payload.clone(),
+        &req(json!({})),
+        "m",
+        &mocked(pi_model(json!({}))),
+    );
+    assert_eq!(out, payload);
+    let none = apply_native_anthropic_compat(payload.clone(), &req(json!({})), "m", &|_, _| None);
+    assert_eq!(none, payload);
 }
 
 #[test]

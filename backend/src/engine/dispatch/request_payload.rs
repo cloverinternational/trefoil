@@ -9,7 +9,9 @@
 //! (token resolution, masking, stash) runs in `engine::dispatcher::oauth`.
 use super::adapter_resolver::is_anthropic_target_provider;
 use super::adapters::ResolvedAdapter;
-use super::auto_compat::{apply_registry_auto_compat, strip_lite_unsupported_tools};
+use super::auto_compat::{
+    apply_native_anthropic_compat, apply_registry_auto_compat, strip_lite_unsupported_tools,
+};
 use super::cache_key_injection::{
     apply_body_cache_key_injection, apply_header_cache_key_injection,
 };
@@ -252,6 +254,14 @@ pub fn build_request_payload(
     gemini_tail(&mut payload, target_api_type);
     payload = apply_service_tier_selection(payload, request, target_api_type);
     payload = apply_gemini_thinking_config(route, target_api_type, payload)?;
+    if anthropic_native && !bypass {
+        payload = apply_native_anthropic_compat(
+            payload,
+            request,
+            &route.model,
+            &crate::engine::dispatch::pi_ai::resolve_pi_ai_model,
+        );
+    }
     payload = apply_registry_auto_compat(payload, request, route, target_api_type);
     payload = apply_eager_tool_input_streaming(payload, request, route, target_api_type, bypass);
     payload = apply_body_cache_key_injection(payload, route, request, target_api_type);
