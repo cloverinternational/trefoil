@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/cloverinternational/trefoil/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/cloverinternational/trefoil/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0a0a0a&color=ff8300"></a>
-  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-ff8300?style=flat-square&labelColor=0a0a0a"></a>
-  <img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-ff8300?style=flat-square&labelColor=0a0a0a&logo=rust&logoColor=white">
-  <img alt="PostgreSQL 16" src="https://img.shields.io/badge/postgresql-16-ff8300?style=flat-square&labelColor=0a0a0a&logo=postgresql&logoColor=white">
-  <img alt="Plexus compatible" src="https://img.shields.io/badge/plexus-compatible-ff8300?style=flat-square&labelColor=0a0a0a">
+  <a href="https://github.com/cloverinternational/trefoil/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/cloverinternational/trefoil/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0a0a0a&color=22c55e"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square&labelColor=0a0a0a"></a>
+  <img alt="Rust 1.88+" src="https://img.shields.io/badge/rust-1.88%2B-22c55e?style=flat-square&labelColor=0a0a0a&logo=rust&logoColor=white">
+  <img alt="PostgreSQL 16" src="https://img.shields.io/badge/postgresql-16-22c55e?style=flat-square&labelColor=0a0a0a&logo=postgresql&logoColor=white">
+  <img alt="Plexus compatible" src="https://img.shields.io/badge/plexus-compatible-22c55e?style=flat-square&labelColor=0a0a0a">
 </p>
 
 <p align="center">
