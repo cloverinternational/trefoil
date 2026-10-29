@@ -11,7 +11,9 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install --no-install-recommends --yes ca-certificates wget \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --create-home trefoil
+    && useradd --system --uid 10001 --create-home trefoil \
+    && mkdir -p /app/data \
+    && chown trefoil /app/data
 COPY --from=builder /src/target/release/trefoil-backend /usr/local/bin/trefoil-backend
 USER trefoil
 EXPOSE 8080

@@ -163,12 +163,53 @@ async fn lists_pinned_oauth_provider_descriptors() {
     );
     assert_eq!(
         body["data"][5],
-        json!({"id":"openai-codex","name":"OpenAI (ChatGPT Plus/Pro)","usesCallbackServer":true})
+        json!({"id":"openai-codex","name":"OpenAI (ChatGPT Plus/Pro)","usesCallbackServer":true,"selectable":false})
     );
     assert_eq!(
         body["data"][0],
-        json!({"id":"anthropic","name":"Anthropic (Claude Pro/Max)","usesCallbackServer":false})
+        json!({"id":"anthropic","name":"Anthropic (Claude Pro/Max)","usesCallbackServer":false,"selectable":true})
     );
+    // Legacy Codex stays listed and resolvable for existing configurations.
+    assert!(is_supported_provider("openai-codex"));
+    assert_eq!(
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["selectable"] == false)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn installation_device_id_is_generated_once_and_reused() {
+    let state = fixture();
+    let first = installation_device_id(&state).await.unwrap();
+    assert!(is_uuid(&first));
+    assert_eq!(installation_device_id(&state).await.unwrap(), first);
+    assert_eq!(
+        state.inner.settings.read().unwrap()[INSTALLATION_DEVICE_ID_SETTING],
+        json!(first)
+    );
+
+    // A stored valid ID (e.g. restored from a backup) is kept; garbage is replaced.
+    let restored = "123e4567-e89b-12d3-a456-426614174000";
+    state
+        .inner
+        .settings
+        .write()
+        .unwrap()
+        .insert(INSTALLATION_DEVICE_ID_SETTING.into(), json!(restored));
+    assert_eq!(installation_device_id(&state).await.unwrap(), restored);
+    state
+        .inner
+        .settings
+        .write()
+        .unwrap()
+        .insert(INSTALLATION_DEVICE_ID_SETTING.into(), json!("not-a-uuid"));
+    let replaced = installation_device_id(&state).await.unwrap();
+    assert!(is_uuid(&replaced) && replaced != "not-a-uuid");
 }
 
 #[tokio::test]
@@ -541,11 +582,20 @@ async fn real_flows_reach_first_interaction_like_plexus() {
     )
     .await;
     let id = body["data"]["id"].as_str().unwrap().to_string();
-    let session = wait_status(&manager, &id, OAuthSessionStatus::Error).await;
-    assert_eq!(
-        session.error.as_deref(),
-        Some("Sign in with ChatGPT requires a device ID (UUID) for this installation")
-    );
+    // Plexus #1040: the login no longer fails for lack of a device ID; the
+    // installation's persisted ID is used as the agent host.
+    let session = wait_status(&manager, &id, OAuthSessionStatus::AwaitingManualCode).await;
+    let device_id = state.inner.settings.read().unwrap()[INSTALLATION_DEVICE_ID_SETTING]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(is_uuid(&device_id));
+    let url = url::Url::parse(&session.auth_info.unwrap().url).unwrap();
+    let host_id = url
+        .query_pairs()
+        .find(|(key, _)| key == "ext_agent_host_id")
+        .map(|(_, value)| value.into_owned());
+    assert_eq!(host_id, Some(format!("urn:uuid:{device_id}")));
     let (status, body) = call(
         &state,
         "POST",
@@ -554,7 +604,7 @@ async fn real_flows_reach_first_interaction_like_plexus() {
     )
     .await;
     assert_eq!(status, Code::OK);
-    assert_eq!(body["data"]["status"], "error");
+    assert_eq!(body["data"]["status"], "cancelled");
 }
 
 // ─── Session manager semantics ────────────────────────────────────────────

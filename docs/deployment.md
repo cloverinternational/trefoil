@@ -40,6 +40,7 @@ database migrations automatically at startup.
 | `TREFOIL_CREDENTIAL_KEY` | OAuth access and refresh tokens (AES-256-GCM, bound to provider/account/field) | Required to read or write OAuth credentials. Exactly 64 hex characters. |
 | `ENCRYPTION_KEY` | Provider API keys, API key secrets and other sensitive settings (Plexus-compatible `enc:v1:` envelope) | Optional but recommended. 64 hex characters are used directly; any other value is stretched with scrypt. When unset, values are stored in plaintext and a warning is logged. When set, existing plaintext provider API keys and API key secrets are encrypted at startup. |
 | `POSTGRES_PASSWORD` | The database | Required by Compose. |
+| `MCP_SERVERS_DATA_DIR` / `DATA_DIR` | Persistent per-server `MCP_DATA_DIR` for local MCP servers (`<root>/<sha256 of server name>`, mode 0700; removed when the server is deleted) | Optional. Defaults to `<DATA_DIR or /app/data>/mcp-servers`; Compose mounts a `trefoil-data` volume at `/app/data`. |
 
 Back up `TREFOIL_CREDENTIAL_KEY` and `ENCRYPTION_KEY` separately from the
 database. Changing either value does not re-encrypt existing rows: data

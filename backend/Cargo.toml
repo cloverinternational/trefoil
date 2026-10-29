@@ -15,7 +15,7 @@ publish = false
 [dependencies]
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "sync", "time", "io-util"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "migrate", "json", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "json", "chrono"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 indexmap = { version = "2", features = ["serde"] }

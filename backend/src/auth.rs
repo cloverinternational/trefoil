@@ -111,6 +111,29 @@ fn constant_time_hash_equals(a: &str, b: &str) -> bool {
 /// Resolve the principal for a request, walking the full key set even after
 /// a match (matches the reference's rationale for avoiding a timing signal
 /// on key position).
+/// Plexus `acceptBearerAdminKey`: MCP clients commonly can only configure a
+/// bearer token, so `Authorization: Bearer <key>` stands in for `x-admin-key`.
+/// A non-empty `x-admin-key` header always wins. The result is still resolved
+/// through [`resolve_principal`], so callers keep enforcing the admin role.
+pub fn admin_key_or_bearer(headers: &HeaderMap) -> Option<String> {
+    if let Some(key) = headers.get("x-admin-key").and_then(|v| v.to_str().ok()) {
+        if !key.is_empty() {
+            return Some(key.to_owned());
+        }
+    }
+    let authorization = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let mut parts = authorization.split_whitespace();
+    let scheme = parts.next()?;
+    let token = parts.next()?;
+    if !scheme.eq_ignore_ascii_case("bearer") || parts.next().is_some() {
+        return None;
+    }
+    Some(token.to_owned())
+}
+
 pub fn resolve_principal(state: &AppState, provided_key: Option<&str>) -> Option<Principal> {
     let provided_key = provided_key?;
     if provided_key.is_empty() {
@@ -167,6 +190,25 @@ mod tests {
     use http_body_util::BodyExt;
     use std::collections::HashMap;
     use tower::ServiceExt;
+
+    #[test]
+    fn bearer_token_stands_in_for_admin_key_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer  secret ".parse().unwrap());
+        assert_eq!(admin_key_or_bearer(&headers).as_deref(), Some("secret"));
+
+        headers.insert("x-admin-key", "explicit".parse().unwrap());
+        assert_eq!(admin_key_or_bearer(&headers).as_deref(), Some("explicit"));
+
+        headers.insert("x-admin-key", "".parse().unwrap());
+        assert_eq!(admin_key_or_bearer(&headers).as_deref(), Some("secret"));
+
+        let mut basic = HeaderMap::new();
+        basic.insert("authorization", "Basic abc".parse().unwrap());
+        assert_eq!(admin_key_or_bearer(&basic), None);
+        basic.insert("authorization", "Bearer a b".parse().unwrap());
+        assert_eq!(admin_key_or_bearer(&basic), None);
+    }
 
     fn state_with(admin_key: &str) -> AppState {
         let mut keys = HashMap::new();

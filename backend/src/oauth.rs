@@ -153,10 +153,61 @@ async fn providers(State(state): State<AppState>, headers: HeaderMap) -> Respons
         .oauth_sessions
         .list_providers()
         .into_iter()
-        .map(|(id, name, cb)| json!({"id": id, "name": name, "usesCallbackServer": cb}))
+        .map(|(id, name, cb)| {
+            let selectable = crate::oauth_login::is_selectable(&id);
+            json!({"id": id, "name": name, "usesCallbackServer": cb, "selectable": selectable})
+        })
         .collect();
     let total = data.len();
     Json(json!({"data": data, "total": total})).into_response()
+}
+
+/// System-settings key holding the installation's agent host UUID.
+pub(crate) const INSTALLATION_DEVICE_ID_SETTING: &str = "oauth.installationDeviceId";
+
+fn is_uuid(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                *c == b'-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// Plexus `getInstallationDeviceId`: a stable per-installation UUID persisted
+/// in system settings (and therefore in backups). OpenAI expects the same
+/// value on later logins from the same installation. Created on first use.
+pub(crate) async fn installation_device_id(state: &AppState) -> Result<String, String> {
+    let stored = state
+        .inner
+        .settings
+        .read()
+        .unwrap()
+        .get(INSTALLATION_DEVICE_ID_SETTING)
+        .and_then(Value::as_str)
+        .filter(|id| is_uuid(id))
+        .map(str::to_owned);
+    if let Some(id) = stored {
+        return Ok(id);
+    }
+    let created = crate::oauth_login::random_uuid();
+    if let Some(pool) = state.inner.database.as_ref() {
+        let mut entry = Map::new();
+        entry.insert(INSTALLATION_DEVICE_ID_SETTING.into(), json!(created));
+        crate::database::upsert_settings_bulk(pool, &entry)
+            .await
+            .map_err(|_| "failed to persist the OAuth installation device ID".to_string())?;
+    }
+    state
+        .inner
+        .settings
+        .write()
+        .unwrap()
+        .insert(INSTALLATION_DEVICE_ID_SETTING.into(), json!(created));
+    Ok(created)
 }
 
 async fn create_session(
@@ -173,10 +224,21 @@ async fn create_session(
     };
     let provider = parsed["providerId"].as_str().unwrap_or_default();
     let account = parsed["accountId"].as_str().unwrap_or_default();
+    // Sign in with ChatGPT fails before doing anything without a stable
+    // installation device ID, so resolve it up front for every login.
+    let device_id = match installation_device_id(&state).await {
+        Ok(id) => id,
+        Err(message) => return error(StatusCode::INTERNAL_SERVER_ERROR, message),
+    };
     match state
         .inner
         .oauth_sessions
-        .create_session(provider, account, database_store(state.clone()))
+        .create_session_with_device_id(
+            provider,
+            account,
+            database_store(state.clone()),
+            Some(device_id),
+        )
         .await
     {
         Ok(session) => session_response(session),

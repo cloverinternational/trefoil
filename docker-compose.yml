@@ -30,6 +30,9 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       PORT: 8080
+    volumes:
+      # Persistent MCP_DATA_DIR for local MCP servers (<DATA_DIR>/mcp-servers).
+      - trefoil-data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,3 +63,4 @@ services:
 
 volumes:
   trefoil-postgres:
+  trefoil-data:

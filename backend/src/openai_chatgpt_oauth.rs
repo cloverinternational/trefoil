@@ -35,7 +35,8 @@ pub struct Endpoints {
     pub authorize_url: String,
     pub token_url: String,
     pub callback_port: u16,
-    /// pi-ai `options.getDeviceId()`; `None` reads `TREFOIL_OAUTH_DEVICE_ID`.
+    /// pi-ai `options.getDeviceId()`; `None` uses the session's installation
+    /// device ID, then `TREFOIL_OAUTH_DEVICE_ID`.
     pub device_id: Option<String>,
 }
 
@@ -206,11 +207,15 @@ pub async fn login(
     interaction: Interaction,
     endpoints: Endpoints,
 ) -> Result<OAuthCredentials, String> {
-    let device_id = endpoints.device_id.clone().or_else(|| {
-        std::env::var("TREFOIL_OAUTH_DEVICE_ID")
-            .ok()
-            .map(|v| v.trim().to_string())
-    });
+    let device_id = endpoints
+        .device_id
+        .clone()
+        .or_else(|| interaction.device_id().map(str::to_owned))
+        .or_else(|| {
+            std::env::var("TREFOIL_OAUTH_DEVICE_ID")
+                .ok()
+                .map(|v| v.trim().to_string())
+        });
     let host_id = agent_host_id(device_id)?;
     let (verifier, challenge) = generate_pkce();
     let state = random_value();
