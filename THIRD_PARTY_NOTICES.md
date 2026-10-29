@@ -6,7 +6,7 @@ material from the projects listed below, each under its own license.
 ## Plexus
 
 - Project: <https://github.com/mcowger/plexus>
-- Reference revision: `17b7e60804e3401acbe2bc2beb6b9b9042b31cce`
+- Reference revision: `a4cd39b078ddd2daadc04f108cc039a9c8805716`
 - License: MIT
 
 Trefoil is a Rust port of Plexus. Code, data and documentation derived from

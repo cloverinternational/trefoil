@@ -12,7 +12,7 @@ reading code.
 All parity work targets one pinned Plexus commit:
 
 ```
-17b7e60804e3401acbe2bc2beb6b9b9042b31cce
+a4cd39b078ddd2daadc04f108cc039a9c8805716
 ```
 
 Behaviour that changed in Plexus after this revision is out of scope until the
@@ -26,7 +26,7 @@ committed. It needs [Bun](https://bun.sh).
 
 ```sh
 git clone https://github.com/mcowger/plexus.git .reference/plexus
-git -C .reference/plexus checkout 17b7e60804e3401acbe2bc2beb6b9b9042b31cce
+git -C .reference/plexus checkout a4cd39b078ddd2daadc04f108cc039a9c8805716
 (cd .reference/plexus && bun install --frozen-lockfile --ignore-scripts)
 # Needed by the differential runner unless SKIP_REFERENCE_BUILD=1:
 (cd .reference/plexus && bun run build:frontend && bun run generate:openapi:asset)

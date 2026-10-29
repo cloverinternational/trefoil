@@ -190,20 +190,38 @@ for the published UI/API port.
 
 ## Migrating from Plexus
 
-`migration/plexus_to_trefoil.py` copies a Plexus SQLite database into a Trefoil
-PostgreSQL database: OAuth credentials, providers, models, aliases, API keys,
-user quotas, MCP servers and settings, plus optional history
-(`--with-history`). It decrypts Plexus-encrypted values with Plexus's
-`ENCRYPTION_KEY` and re-encrypts OAuth tokens with `TREFOIL_CREDENTIAL_KEY`.
+`migration/plexus_to_trefoil.py` moves a running Plexus (SQLite or PostgreSQL)
+into Trefoil through the management API both gateways share. It exports
+Plexus's backup and restores it into Trefoil: providers, model aliases, API
+keys, user quotas, MCP servers and keys, system settings and OAuth
+credentials, plus optional history (`--with-history`: usage, logs, errors,
+performance, cooldowns and quota state). Plexus decrypts secrets on export and
+Trefoil re-encrypts them on import, so no encryption keys are passed to the
+script. Python 3 standard library only.
 
 ```sh
-pip install cryptography
-python3 migration/plexus_to_trefoil.py --db plexus-copy.db --dsn "$DATABASE_URL" --apply
+export PLEXUS_ADMIN_KEY=... TREFOIL_ADMIN_KEY=...
+python3 migration/plexus_to_trefoil.py \
+    --plexus-url http://plexus:4000 --trefoil-url http://trefoil:8080 --dry-run
+python3 migration/plexus_to_trefoil.py \
+    --plexus-url http://plexus:4000 --trefoil-url http://trefoil:8080
 ```
 
-Use a copy of `plexus.db` taken while Plexus is stopped, start Trefoil with the
-same `ENCRYPTION_KEY` afterwards, and read the script header for all options.
-Clients keep working unchanged: the inference and `/v0` paths are the same.
+1. Start Trefoil with `ENCRYPTION_KEY` (use Plexus's value to keep the same
+   key) and `TREFOIL_CREDENTIAL_KEY`, and set a new `ADMIN_KEY`.
+2. Run with `--dry-run` to see what the backup contains.
+3. Run the migration. It refuses a Trefoil that already has providers,
+   aliases or keys unless you pass `--yes`, because a restore replaces them.
+   After restoring, it re-exports Trefoil's config and checks every section.
+4. Point clients at Trefoil. Inference and `/v0` paths are the same, so
+   clients keep working unchanged.
+
+Plexus on a SQLite file with no running server: start Plexus on a copy of the
+file, or restore an existing backup with `--backup-file` (a config `.json` or a
+full `.tar.gz`). Backup files hold secrets in plaintext; `--save-backup` writes
+one with mode 0600, so delete it when you are done.
+`parity/plexus-migration-e2e.sh` runs the whole flow against the real Plexus
+reference.
 
 ## Architecture
 

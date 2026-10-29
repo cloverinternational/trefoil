@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reference Plexus moved to `a4cd39b0` (46 commits). Ported: Anthropic OAuth
+  reasoning translation and system-prompt preservation, mid-conversation system
+  entries and per-turn effort, `responses:lite` reasoning context, Muse Code
+  subscription compatibility, automatic prompt caching for translated requests,
+  completion-only Responses tool arguments, provider-stream capture before
+  trace flush, MCP admin-key bearer auth, persistent local MCP data
+  directories, `tools/list` TTL clamping, `sslmode` for PostgreSQL URLs, hiding
+  the legacy OpenAI Codex login, the ChatGPT sign-in device id, and the Cheaper
+  Inference and Runcrate provider presets. No upstream PostgreSQL migrations
+  were added in this range.
+- `migration/plexus_to_trefoil.py` now migrates a running Plexus through the
+  management backup/restore API instead of reading its SQLite file.
+
 - Admin UI: compact, square-edged redesign across every page (no rounded
   corners or shadows, 13px base type, denser tables, cards and forms), a
   brighter destructive color in dark mode, and a full-width layout.
@@ -26,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cargo and npm package metadata (`rust-version`, repository, description).
 
 ### Fixed
+
+- Backup restore ignored user quotas, settings, MCP servers and keys, and OAuth
+  credentials, rejected real Plexus alias and key exports, and could not
+  restore full archives (including Trefoil's own). Config backups now also
+  export MCP servers and keys and OAuth credentials.
 
 - `Button` ignored `asChild`, so link buttons rendered as a `<button>` wrapping
   an anchor (the Models "Add model" button wrapped onto two lines).

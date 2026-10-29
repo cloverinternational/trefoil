@@ -1,11 +1,11 @@
 # Plexus → Trefoil parity: working gap list
 
 Oracle: `parity/oracle/` (stack.sh, oauth_stack.sh, oracle.py, mock_upstream.py, scenarios/).
-Reference pin: `.reference/plexus` @ `17b7e608`.
+Reference pin: `.reference/plexus` @ `a4cd39b0`.
 
-## Status (2026-10-18)
-- Full differential `parity/run.sh`: **428/428 match** at the new pin (two consecutive
-  runs; no new OpenAPI-driven cases). The harness drops Plexus's nondeterministic
+## Status (2026-10-29)
+- Full differential `parity/run.sh`: **428/428 match** at the new pin (no new
+  OpenAPI-driven cases; the first run at the moved pin showed 4 divergences, fixed below). The harness drops Plexus's nondeterministic
   "Failed to insert pending usage record" log entries (a Plexus UsageStorage
   upsert/pending-insert race, seen on SQLite and on PostgreSQL via
   `PLEXUS_STORAGE=postgres`) from the system-logs case; all other log entries are
@@ -30,12 +30,31 @@ Reference pin: `.reference/plexus` @ `17b7e608`.
   the engine port (`backend/src/engine/`); legacy inference.rs removed.
 
 ## Resolved since last pass
+- Pin moved to `a4cd39b0` (46 commits, no new PostgreSQL migrations). Ported #1006
+  (pi-ai bump: see accepted differences), #1012, #1018, #1019, #1021, #1022, #1024,
+  #1025, #1026, #1028, #1033, #1035, #1037, #1039, #1040 and the Cheaper Inference and
+  Runcrate presets; #1014, #1016 and #1023 are N/A (Bun-compiled workers, no Synthetic
+  checker, frontend-only).
+- The moved pin exposed three Trefoil gaps, fixed: `oauth/providers` reported
+  `usesCallbackServer: false` for `openai` (#1040); `GET backup` failed without
+  `TREFOIL_CREDENTIAL_KEY` once OAuth credentials were exported; and dispatch resolved
+  models only from the embedded snapshot, so Anthropic OAuth routes for a model that
+  exists only in the models store/overlay sent `max_tokens` 64000 instead of the
+  catalog limit (#1026). Dispatch now resolves through the merged catalog.
 - Ported upstream #1001: strict JSON-schema `response_format` is forwarded across
   formats.
 - Ported upstream #999: alias metadata `short_name` override with a derived default.
 - Upstream #1000 (free-text alias targets) is N/A for Trefoil.
 
 ## Known, accepted differences
+- The embedded pi-ai catalog snapshots (`assets/pi-catalog.json`,
+  `engine/dispatch/pi_models.json`) are still pi-ai 1.2.0 while Plexus is on 1.4.0
+  (#1006). Models added since only resolve once the catalog store or pi.dev refresh
+  supplies them. Regenerating both snapshots is a separate task.
+- Stateful suites can show one-off diffs straight after `--setup` (observed:
+  `models list`, `decisions usage rows`); a fresh stack, `--setup` alone, a few
+  seconds' wait, then a single run was 0 differences for every suite except the
+  documented quota/network timing and wording ones.
 - Error stacks stored as first line only (no JS stack frames).
 - Network errors now use Bun fetch's messages and codes (`ConnectionRefused`, ECONNRESET),
   so retryability matches Plexus (`scenarios/network-errors.json`). Bun's DNS-cache
