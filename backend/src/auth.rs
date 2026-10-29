@@ -121,7 +121,10 @@ pub fn admin_key_or_bearer(headers: &HeaderMap) -> Option<String> {
             return Some(key.to_owned());
         }
     }
-    let authorization = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let authorization = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
     let mut parts = authorization.split_whitespace();
     let scheme = parts.next()?;
     let token = parts.next()?;

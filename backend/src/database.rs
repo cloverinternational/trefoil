@@ -1426,8 +1426,14 @@ mod tests {
         };
         assert!(matches!(mode("?sslmode=disable"), Ok(PgSslMode::Disable)));
         assert!(matches!(mode("?sslmode=require"), Ok(PgSslMode::Require)));
-        assert!(matches!(mode("?sslmode=verify-ca"), Ok(PgSslMode::VerifyCa)));
-        assert!(matches!(mode("?sslmode=verify-full"), Ok(PgSslMode::VerifyFull)));
+        assert!(matches!(
+            mode("?sslmode=verify-ca"),
+            Ok(PgSslMode::VerifyCa)
+        ));
+        assert!(matches!(
+            mode("?sslmode=verify-full"),
+            Ok(PgSslMode::VerifyFull)
+        ));
         assert!(mode("?sslmode=bogus").is_err());
     }
 
