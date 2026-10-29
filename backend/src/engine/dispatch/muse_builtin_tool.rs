@@ -106,7 +106,8 @@ mod tests {
         ));
         assert_eq!(inject_muse_builtin_tool(genuine.clone()), genuine);
 
-        let once = inject_muse_builtin_tool(json!({"tools": [{"type": "function", "name": "read"}]}));
+        let once =
+            inject_muse_builtin_tool(json!({"tools": [{"type": "function", "name": "read"}]}));
         assert_eq!(inject_muse_builtin_tool(once.clone()), once);
     }
 

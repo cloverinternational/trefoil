@@ -603,7 +603,10 @@ mod tests {
             ],
         });
         let built = roundtrip(&request, true);
-        assert_eq!(built["messages"][1]["output_config"], json!({"effort": "low"}));
+        assert_eq!(
+            built["messages"][1]["output_config"],
+            json!({"effort": "low"})
+        );
         assert_eq!(
             request["messages"][1]["output_config"],
             json!({"effort": "minimal"})

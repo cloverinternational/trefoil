@@ -15,8 +15,8 @@ use super::auto_compat::{
 use super::cache_key_injection::{
     apply_body_cache_key_injection, apply_header_cache_key_injection,
 };
-use super::eager_tool_streaming::apply_eager_tool_input_streaming;
-use super::model_behaviors::apply_model_behaviors;
+use super::eager_tool_streaming::{apply_eager_tool_input_streaming, sends_to_anthropic_api};
+use super::model_behaviors::{apply_model_behaviors, BehaviorContext};
 use super::oauth_routes::{is_claude_masking_api_key_route, is_native_oauth_route, is_pi_ai_route};
 use super::responses_extensions::{
     detect_responses_extensions, has_unsupported_responses_extensions,
@@ -272,13 +272,32 @@ pub fn build_request_payload(
         route.model_config.as_ref().and_then(|m| m.get("extraBody")),
     );
     if let Some(canonical) = route.canonical_model.as_deref().filter(|c| !c.is_empty()) {
-        if let Some(alias) = config.alias(canonical) {
+        let alias = config.alias(canonical);
+        if let Some(alias) = alias {
             payload = spread_into(payload, alias.get("extraBody"));
-            if let Some(advanced) = alias.get("advanced").filter(|a| truthy(Some(a))) {
-                let incoming = get_str(request, &["incomingApiType"]).unwrap_or("");
-                payload = apply_model_behaviors(payload, Some(advanced), incoming, canonical);
-            }
         }
+        // Invoked even when the alias has no `advanced` entries: some
+        // behaviors apply implicitly. `inject_cache_control` auto-enables for
+        // aliases that dispatch to Anthropic's own API, and an explicitly
+        // configured behavior (including `enabled: false`) always overrides
+        // that default.
+        let ctx = BehaviorContext {
+            incoming_api_type: get_str(request, &["incomingApiType"]).unwrap_or(""),
+            canonical_model: canonical,
+            target_api_type,
+            auto_enable_cache_control: sends_to_anthropic_api(route, target_api_type),
+            // The native Anthropic path rewrites `system` (Claude Code
+            // masking) after this point, so behaviors must not count on a
+            // system breakpoint there.
+            system_rewritten_by_masking: anthropic_native,
+        };
+        payload = apply_model_behaviors(
+            payload,
+            alias
+                .and_then(|a| a.get("advanced"))
+                .filter(|a| truthy(Some(a))),
+            &ctx,
+        );
     }
 
     for entry in adapters {

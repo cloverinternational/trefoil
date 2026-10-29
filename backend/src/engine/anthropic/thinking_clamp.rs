@@ -238,7 +238,10 @@ mod tests {
         }
         // Models that cannot disable thinking clamp per-entry effort too.
         let out = clamp(with_entry(json!("off"), "claude-opus-5"));
-        assert_eq!(out["messages"][1]["output_config"], json!({"effort": "low"}));
+        assert_eq!(
+            out["messages"][1]["output_config"],
+            json!({"effort": "low"})
+        );
     }
 
     #[test]

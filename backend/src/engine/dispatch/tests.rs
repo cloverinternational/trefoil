@@ -109,9 +109,7 @@ fn auto_compat_matches_typescript_goldens() {
         (
             "inline",
             json!({"model": "x", "messages": [], "reasoning": {"effort": "high"}, "temperature": 0.4, "max_tokens": 256, "service_tier": "flex"}),
-            req(
-                json!({"originalBody": {"service_tier": "flex", "reasoning": {"effort": "high"}}}),
-            ),
+            req(json!({"originalBody": {"service_tier": "flex", "reasoning": {"effort": "high"}}})),
             route(
                 "upstream/special",
                 json!({"auto_compat": true, "pi_ai_quirks": {"chat": {"api": "openai-completions", "reasoning": true, "thinkingLevelMap": {"off": "none", "high": "high"}, "serviceTierMap": {"standard": "default"}, "compat": {"thinkingFormat": "openrouter", "maxTokensField": "max_completion_tokens", "supportsTemperature": false}, "models": {"upstream/special": {"thinkingLevelMap": {"high": "hard"}, "compat": {"supportsTemperature": true}, "maxTokens": 64}}}}}),
@@ -678,7 +676,10 @@ fn lite_payload_enforces_reasoning_context() {
             "incompatible",
             Some(json!({"effort": "high", "summary": "auto", "context": "last_turn"})),
         ),
-        ("valid", Some(json!({"effort": "high", "context": "all_turns"}))),
+        (
+            "valid",
+            Some(json!({"effort": "high", "context": "all_turns"})),
+        ),
     ];
     for (label, reasoning) in cases {
         let r = route(
@@ -756,13 +757,25 @@ fn mid_conversation_entries_only_survive_messages_targets() {
         {"role": "system", "content": "x", "mid_conversation": true},
     ]});
     // FakeTransformer echoes `messages`, so this observes what it was handed.
-    let to_messages =
-        build_request_payload(&request, &r, &FakeTransformer, "messages", &[], &Config::default())
-            .unwrap();
+    let to_messages = build_request_payload(
+        &request,
+        &r,
+        &FakeTransformer,
+        "messages",
+        &[],
+        &Config::default(),
+    )
+    .unwrap();
     assert_eq!(to_messages.payload["messages"].as_array().unwrap().len(), 2);
-    let to_chat =
-        build_request_payload(&request, &r, &FakeTransformer, "chat", &[], &Config::default())
-            .unwrap();
+    let to_chat = build_request_payload(
+        &request,
+        &r,
+        &FakeTransformer,
+        "chat",
+        &[],
+        &Config::default(),
+    )
+    .unwrap();
     assert_eq!(to_chat.payload["messages"].as_array().unwrap().len(), 1);
 }
 
@@ -843,6 +856,69 @@ fn payload_plans_oauth_routes() {
     .oauth
     .unwrap();
     assert!(!plan.native && plan.provider == "xai");
+}
+
+/// Chat → Messages request dispatched through `alias`, to `base_url`.
+fn cache_control_payload(base_url: &str, advanced: Option<Value>, extra_config: Value) -> Value {
+    let mut config = json!({"api_base_url": base_url, "api_key": "k"});
+    for (k, v) in extra_config.as_object().unwrap() {
+        config[k] = v.clone();
+    }
+    let mut r = route("claude-sonnet-4-6", config, None);
+    r.canonical_model = Some("alias".into());
+    let mut alias = json!({});
+    if let Some(advanced) = advanced {
+        alias["advanced"] = advanced;
+    }
+    let app = Config::new(json!({"models": {"alias": alias}}));
+    let request = json!({"model": "alias", "incomingApiType": "chat", "stream": false,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]});
+    build_request_payload(&request, &r, &FakeTransformer, "messages", &[], &app)
+        .unwrap()
+        .payload
+}
+
+#[test]
+fn cache_control_is_injected_implicitly_for_anthropic_hosts() {
+    // No `advanced` entries at all: the behavior auto-enables.
+    let p = cache_control_payload("https://api.anthropic.com/v1", None, json!({}));
+    assert_eq!(p["tools"][0]["cache_control"], json!({"type": "ephemeral"}));
+    assert_eq!(
+        p["messages"][0]["content"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
+
+    // Explicit opt-out wins over the implicit default.
+    let off = json!([{"type": "inject_cache_control", "enabled": false}]);
+    let p = cache_control_payload("https://api.anthropic.com/v1", Some(off), json!({}));
+    assert!(p["tools"][0].get("cache_control").is_none());
+    assert!(p["messages"][0]["content"][0]
+        .get("cache_control")
+        .is_none());
+
+    // Other hosts only get it when asked for explicitly.
+    let p = cache_control_payload("https://proxy.example/v1", None, json!({}));
+    assert!(p["tools"][0].get("cache_control").is_none());
+    let on = json!([{"type": "inject_cache_control", "ttl": "1h"}]);
+    let p = cache_control_payload("https://proxy.example/v1", Some(on), json!({}));
+    assert_eq!(
+        p["tools"][0]["cache_control"],
+        json!({"type": "ephemeral", "ttl": "1h"})
+    );
+}
+
+#[test]
+fn cache_control_system_site_is_skipped_on_masking_routes() {
+    let p = cache_control_payload(
+        "https://api.anthropic.com",
+        None,
+        json!({"useClaudeMasking": true}),
+    );
+    // Masking rebuilds `system`, so only tools and the tail are marked.
+    assert!(p["tools"][0].get("cache_control").is_some());
+    assert!(p["messages"][0]["content"][0]
+        .get("cache_control")
+        .is_some());
 }
 
 #[test]

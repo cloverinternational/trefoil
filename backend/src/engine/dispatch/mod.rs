@@ -23,6 +23,7 @@ pub mod adapter_resolver;
 pub mod adapters;
 pub mod attempt_history;
 pub mod auto_compat;
+pub mod cache_control_injection;
 pub mod cache_key_injection;
 pub mod cache_retention;
 pub mod eager_tool_streaming;

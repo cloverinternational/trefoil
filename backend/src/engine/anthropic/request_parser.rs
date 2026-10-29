@@ -260,8 +260,11 @@ pub fn parse_anthropic_request(input: &Value) -> EngineResult<Value> {
         // inside `messages`. Prefer it so cross-format egress (and logging off
         // the unified request) sees the real per-turn effort.
         let mid_effort = get_mid_conversation_effort(input).map(Value::String);
-        let configured =
-            normalize_effort(mid_effort.as_ref().or_else(|| get(input, &["output_config", "effort"])));
+        let configured = normalize_effort(
+            mid_effort
+                .as_ref()
+                .or_else(|| get(input, &["output_config", "effort"])),
+        );
         let effort = if enabled {
             if configured == Some("off") {
                 Some("none")

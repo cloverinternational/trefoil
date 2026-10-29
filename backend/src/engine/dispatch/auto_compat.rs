@@ -203,7 +203,9 @@ pub fn extract_generation_intent(payload: &Value, request: &Value) -> Generation
     // read it from the original body rather than the translated payload.
     let reasoning_source = match request.get("originalBody").filter(|b| truthy(Some(b))) {
         Some(original)
-            if get_str(request, &["incomingApiType"]).map(str::to_lowercase).as_deref()
+            if get_str(request, &["incomingApiType"])
+                .map(str::to_lowercase)
+                .as_deref()
                 != Some("messages") =>
         {
             original
