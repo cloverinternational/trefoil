@@ -592,6 +592,75 @@ fn payload_transformed_with_adapters_and_lite() {
     assert_eq!(out.payload["seen_oauth_provider"], "p");
     assert_eq!(out.payload["parallel_tool_calls"], false);
     assert_eq!(out.payload["tools"], json!([]));
+    assert_eq!(out.payload["reasoning"], json!({"context": "all_turns"}));
+}
+
+#[test]
+fn lite_payload_enforces_reasoning_context() {
+    let original_input = json!([
+        {"type": "additional_tools", "role": "developer", "tools": []},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+    ]);
+    let cases: [(&str, Option<Value>); 5] = [
+        ("omitted", None),
+        ("null", Some(Value::Null)),
+        ("empty", Some(json!({}))),
+        (
+            "incompatible",
+            Some(json!({"effort": "high", "summary": "auto", "context": "last_turn"})),
+        ),
+        ("valid", Some(json!({"effort": "high", "context": "all_turns"}))),
+    ];
+    for (label, reasoning) in cases {
+        let r = route(
+            "gpt-6.1-terra",
+            json!({"api_base_url": "https://x/v1", "api_key": "k"}),
+            None,
+        );
+        let mut body = json!({"model": "gpt-6.1-terra", "input": original_input});
+        if let Some(reasoning) = reasoning.clone() {
+            body["reasoning"] = reasoning;
+        }
+        let request = json!({"model": "alias", "messages": [], "incomingApiType": "responses:lite", "originalBody": body});
+        let out = build_request_payload(
+            &request,
+            &r,
+            &FakeTransformer,
+            "responses:lite",
+            &[],
+            &Config::default(),
+        )
+        .unwrap();
+        assert!(out.bypass_transformation, "{label}");
+        let mut expected = reasoning
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        expected.insert("context".into(), json!("all_turns"));
+        assert_eq!(out.payload["reasoning"], Value::Object(expected), "{label}");
+        assert_eq!(out.payload["input"], original_input, "{label}");
+        // The caller's original body is never mutated.
+        assert_eq!(request["originalBody"], body, "{label}");
+    }
+}
+
+#[test]
+fn base_responses_target_does_not_get_lite_reasoning() {
+    let r = route(
+        "gpt-5",
+        json!({"api_base_url": "https://x/v1", "api_key": "k"}),
+        None,
+    );
+    let request = json!({"model": "alias", "messages": [], "incomingApiType": "responses",
+        "originalBody": {"model": "gpt-5", "input": []}});
+    let out = build_request_payload(
+        &request,
+        &r,
+        &FakeTransformer,
+        "responses",
+        &[],
+        &Config::default(),
+    )
+    .unwrap();
     assert!(out.payload.get("reasoning").is_none());
 }
 

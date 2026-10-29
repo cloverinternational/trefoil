@@ -253,12 +253,11 @@ pub fn build_request_payload(
 
     if !native_oauth && target_api_type.to_lowercase() == "responses:lite" {
         let mut m = obj_of(Some(&payload));
-        if let Some(reasoning) = m.get("reasoning").filter(|r| truthy(Some(r))).cloned() {
-            let mut r = obj_of(Some(&reasoning));
-            let context = coalesce(reasoning.get("context"), None).unwrap_or(json!("all_turns"));
-            r.insert("context".into(), context);
-            m.insert("reasoning".into(), Value::Object(r));
-        }
+        // The lite header requires `context: "all_turns"` even when the client
+        // omits reasoning entirely; other reasoning options are preserved.
+        let mut r = obj_of(m.get("reasoning").filter(|r| truthy(Some(r))));
+        r.insert("context".into(), json!("all_turns"));
+        m.insert("reasoning".into(), Value::Object(r));
         m.insert("parallel_tool_calls".into(), json!(false));
         payload = strip_lite_unsupported_tools(Value::Object(m)).0;
     }
