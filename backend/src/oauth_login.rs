@@ -224,7 +224,7 @@ pub const PROVIDERS: &[(&str, &str, bool)] = &[
     ("github-copilot", "GitHub Copilot", false),
     ("kimi-coding", "Kimi Code (subscription)", false),
     ("meta", "Meta (Muse subscription)", false),
-    ("openai", "OpenAI (ChatGPT subscription)", false),
+    ("openai", "OpenAI (ChatGPT subscription)", true),
     ("openai-codex", "OpenAI (ChatGPT Plus/Pro)", true),
     ("openrouter", "OpenRouter OAuth", false),
     ("xai", "xAI (Grok/X subscription)", false),

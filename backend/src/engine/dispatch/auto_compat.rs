@@ -853,7 +853,7 @@ pub fn apply_native_anthropic_compat(
     let mut options = build_generation_options(&model, Some(&intent));
     // Messages requires max_tokens. When the client omitted a limit, use the
     // catalog ceiling rather than the generic builder's conservative fallback.
-    if request.get("max_tokens").is_none() && intent.max_tokens.is_none() {
+    if request.get("max_tokens").is_none_or(Value::is_null) && intent.max_tokens.is_none() {
         if let Some(ceiling) = get_f64(&model, &["maxTokens"]).filter(|c| *c > 0.0) {
             options.insert("maxTokens".into(), num(ceiling));
         }

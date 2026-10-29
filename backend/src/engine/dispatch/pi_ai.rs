@@ -250,6 +250,15 @@ fn catalog() -> &'static Value {
 /// `resolvePiAiModel(provider, modelId)` / `getCatalogModel` over the
 /// built-in pi-ai 1.2.0 chat catalog (model record JSON, `provider` added).
 pub fn resolve_pi_ai_model(provider: &str, model_id: &str) -> Option<Value> {
+    // The merged catalog (bundled snapshot + models store + pi.dev refresh) is
+    // what Plexus's registry resolves against, so a refreshed or overlaid model
+    // the embedded snapshot lacks still resolves.
+    if let Some(mut model) = crate::pi_catalog::catalog().get_model(provider, model_id) {
+        if let Some(record) = model.as_object_mut() {
+            record.insert("provider".into(), json!(provider));
+        }
+        return Some(model);
+    }
     let model = get_arr(catalog(), &["providers", provider])?
         .iter()
         .find(|m| get_str(m, &["id"]) == Some(model_id))?;

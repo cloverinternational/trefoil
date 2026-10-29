@@ -208,6 +208,30 @@ fn native_anthropic_compat_translates_effort_and_uses_catalog_ceiling() {
 }
 
 #[test]
+fn native_anthropic_compat_treats_a_null_client_limit_as_absent() {
+    // The unified request carries `max_tokens: null` when the client sent no
+    // limit; that must fall back to the catalog ceiling, not the generic default.
+    let request = req(json!({
+        "incomingApiType": "chat",
+        "max_tokens": null,
+        "originalBody": {"messages": []},
+    }));
+    let model = pi_model(json!({
+        "id": "claude-mock",
+        "provider": "anthropic",
+        "api": "anthropic-messages",
+        "maxTokens": 8192,
+    }));
+    let out = apply_native_anthropic_compat(
+        json!({"model": "claude-mock", "messages": [], "max_tokens": 64000}),
+        &request,
+        "claude-mock",
+        &mocked(model),
+    );
+    assert_eq!(out["max_tokens"], 8192);
+}
+
+#[test]
 fn native_anthropic_compat_keeps_explicit_limits_and_hidden_reasoning() {
     let request = req(json!({
         "incomingApiType": "responses",

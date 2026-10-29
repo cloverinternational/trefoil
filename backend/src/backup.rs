@@ -873,6 +873,15 @@ async fn restore_extras(
 /// enterprise domain is stored as a `<domain>\n` prefix on the refresh token
 /// (see `OAuthCredentials::stored_refresh`); split it back out for the backup.
 async fn export_oauth_credentials(pool: &sqlx::PgPool) -> Result<Vec<serde_json::Value>, String> {
+    // The credential key is only needed to decrypt stored tokens, so a gateway
+    // without OAuth credentials can still export its config without one.
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth_credentials")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    if stored == 0 {
+        return Ok(Vec::new());
+    }
     let credentials = crate::database::load_oauth_credentials(pool)
         .await
         .map_err(|e| e.to_string())?;
