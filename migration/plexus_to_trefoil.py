@@ -1,338 +1,210 @@
 #!/usr/bin/env python3
-"""Migrate a production Plexus SQLite database into a Trefoil PostgreSQL database.
+"""Migrate a running Plexus instance to Trefoil through their management APIs.
 
-Source: a Plexus SQLite database (drizzle lineage), e.g. a copy of `plexus.db`
-        taken while Plexus is stopped. Never commit the database or the output.
-Target: Trefoil PostgreSQL (schema produced by backend/migrations/*.sql).
+Plexus and Trefoil expose the same `/v0/management/backup` and
+`/v0/management/restore` endpoints, so this works for Plexus on SQLite and on
+PostgreSQL alike and never touches either database directly.
 
-What is migrated (config/state, FK-safe order):
-    oauth_credentials -> providers -> provider_models -> model_aliases ->
-    model_alias_targets -> api_keys -> user_quota_definitions ->
-    mcp_servers -> system_settings -> alias_metadata_overrides
+What moves (config backup, always):
+    providers, model aliases, API keys, user quotas, MCP servers and MCP keys,
+    system settings and OAuth credentials.
+With --with-history (full .tar.gz backup) the operational tables move too:
+    request usage, debug logs, inference errors, provider performance and
+    cooldowns, quota state and snapshots, MCP usage, responses/conversations.
 
-Optional history (--with-history): request_usage, meter_snapshots,
-mcp_request_usage, inference_errors, provider_performance, provider_cooldowns,
-quota_state, quota_snapshots, debug_logs, mcp_debug_logs.
+Secrets: Plexus decrypts API keys and OAuth tokens on export and Trefoil
+re-encrypts them on import, so no encryption keys are needed here. Set
+ENCRYPTION_KEY and TREFOIL_CREDENTIAL_KEY on Trefoil as for any deployment.
+Backup files contain those secrets in plaintext: treat --save-backup output as
+a secret and delete it afterwards.
 
-Credentials:
-  - Plexus encrypts provider.api_key and oauth_credentials tokens as
-    `enc:v1:<iv>:<tag>:<ct>` (AES-256-GCM, key = ENCRYPTION_KEY hex or
-    scrypt(N=16384, salt='plexus-encryption-key-derivation')). Trefoil cannot
-    read that envelope, so this script decrypts and re-encrypts:
-      * oauth tokens -> Trefoil envelope `v1:<b64(nonce||ct||tag)>` with AAD
-        "trefoil/oauth/v1" + length-prefixed provider/account/field
-        (key = TREFOIL_CREDENTIAL_KEY, 64 hex chars). TREFOIL_CREDENTIAL_KEY
-        must be the same at Trefoil runtime.
-      * provider.api_key / api_keys.secret -> plaintext in the generated SQL.
-        Start Trefoil with the same ENCRYPTION_KEY and it re-encrypts these
-        rows as `enc:v1:` at startup (database::encrypt_plaintext_secrets).
-        Treat any --out SQL file as a secret and delete it after applying.
+Restore REPLACES the providers, aliases and keys already in Trefoil, so the
+script refuses to run against a populated Trefoil unless --yes is given.
 
 Usage:
-  python3 plexus_to_trefoil.py --db plexus-snapshot.db --dsn "$DATABASE_URL" \
-      --apply [--with-history]
+  PLEXUS_ADMIN_KEY=... TREFOIL_ADMIN_KEY=... python3 plexus_to_trefoil.py \\
+      --plexus-url http://plexus:4000 --trefoil-url http://trefoil:8080 \\
+      [--with-history] [--dry-run] [--yes]
 
-The script is idempotent: it TRUNCATEs the target tables it manages before
-inserting. Source IDs are preserved and sequences re-synced.
+  # Plexus on a SQLite file: start Plexus against a copy of the file, then
+  # point --plexus-url at it. Or, from a backup you already have:
+  python3 plexus_to_trefoil.py --backup-file plexus-backup.json \\
+      --trefoil-url http://trefoil:8080
+
+Exit status: 0 on success (and verification), 1 on any failure.
 """
 
 import argparse
-import base64
 import json
 import os
-import sqlite3
-import subprocess
 import sys
+import urllib.error
+import urllib.request
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
-
-# (source_table, target_table, unique_conflict_keys, encrypted_fields)
-CONFIG_TABLES = [
-    ("oauth_credentials", "oauth_credentials", None, ("access_token", "refresh_token")),
-    ("providers", "providers", ("slug",), ("api_key",)),
-    ("provider_models", "provider_models", ("provider_id", "model_name"), ()),
-    ("model_aliases", "model_aliases", ("slug",), ()),
-    ("model_alias_targets", "model_alias_targets", ("alias_id", "provider_slug", "model_name"), ()),
-    ("api_keys", "api_keys", ("name",), ("secret",)),
-    ("user_quota_definitions", "user_quota_definitions", ("name",), ()),
-    ("mcp_servers", "mcp_servers", ("name",), ()),
-    ("system_settings", "system_settings", None, ("value",)),  # value jsonb, not encrypted
-    ("alias_metadata_overrides", "alias_metadata_overrides", ("alias_id",), ()),
-]
-
-HISTORY_TABLES = [
-    ("request_usage", "request_usage", None, ()),
-    ("meter_snapshots", "meter_snapshots", None, ()),
-    ("mcp_request_usage", "mcp_request_usage", None, ()),
-    ("inference_errors", "inference_errors", None, ()),
-    ("provider_performance", "provider_performance", None, ()),
-    ("provider_cooldowns", "provider_cooldowns", None, ()),
-    ("quota_state", "quota_state", None, ()),
-    ("quota_snapshots", "quota_snapshots", None, ()),
-    ("debug_logs", "debug_logs", None, ()),
-    ("mcp_debug_logs", "mcp_debug_logs", None, ()),
-]
-
-PLEXUS_PREFIX = "enc:v1:"
-PLEXUS_SALT = b"plexus-encryption-key-derivation"
-PLEXUS_SCRYPT_N = 16384
-TREFOIL_AAD_DOMAIN = b"trefoil/oauth/v1"
-PSQL_FIELD_SEP = "\x1f"  # unit separator; never appears in identifiers or enum labels
-
-# Legacy source values that newer Trefoil enums no longer carry.
-# 'auto' in Plexus production meant "resolve automatically", which Trefoil
-# represents as NULL.
-LEGACY_ENUM_MAP = {
-    ("model_aliases", "metadata_source"): {"auto": None},
-}
+CONFIG_SECTIONS = ("providers", "models", "keys", "user_quotas", "mcp_servers", "mcp_keys")
 
 
-class Crypto:
-    def __init__(self, plexus_key_raw, trefoil_key_hex):
-        self.plexus_key = self._plexus_key(plexus_key_raw) if plexus_key_raw else None
-        self.trefoil_key = bytes.fromhex(trefoil_key_hex) if trefoil_key_hex else None
-
-    @staticmethod
-    def _plexus_key(raw):
-        raw = raw.strip()
-        if len(raw) == 64 and all(c in "0123456789abcdefABCDEF" for c in raw):
-            return bytes.fromhex(raw)
-        kdf = Scrypt(raw.encode(), PLEXUS_SALT, 32, n=PLEXUS_SCRYPT_N, r=8, p=1)
-        return kdf.derive()
-
-    def decrypt_plexus(self, value):
-        """Decrypt `enc:v1:<iv_hex>:<tag_hex>:<ct_hex>`; plaintext passes through."""
-        if value is None or not value.startswith(PLEXUS_PREFIX):
-            return value
-        if self.plexus_key is None:
-            raise SystemExit(
-                "Encountered Plexus-encrypted data but no decryption key was provided. "
-                "Set --encrypt-key or ENCRYPTION_KEY (the value your Plexus deployment uses)."
-            )
-        iv_hex, tag_hex, ct_hex = value[len(PLEXUS_PREFIX):].split(":")
-        aes = AESGCM(self.plexus_key)
-        return aes.decrypt(bytes.fromhex(iv_hex), bytes.fromhex(ct_hex) + bytes.fromhex(tag_hex), None).decode("utf-8")
-
-    def encrypt_trefoil(self, provider, account, field, plaintext):
-        if plaintext is None:
-            return None
-        if self.trefoil_key is None:
-            raise SystemExit(
-                "Trefoil credential re-encryption requires --credential-key or "
-                "TREFOIL_CREDENTIAL_KEY (64 hex chars); use the same key at Trefoil runtime."
-            )
-        aad = TREFOIL_AAD_DOMAIN
-        for component in (provider, account, field):
-            encoded = component.encode("utf-8")
-            aad += len(encoded).to_bytes(8, "big") + encoded
-        nonce = os.urandom(12)
-        aes = AESGCM(self.trefoil_key)
-        sealed = aes.encrypt(nonce, plaintext.encode("utf-8"), aad)
-        return "v1:" + base64.b64encode(nonce + sealed).decode("ascii")
+class MigrationError(Exception):
+    pass
 
 
-def sql_literal(value):
-    if value is None:
-        return "NULL"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, (int, float)):
-        return repr(value)
-    return "'" + str(value).replace("'", "''") + "'"
+def request(method, url, admin_key, body=None, content_type=None, timeout=600):
+    headers = {"x-admin-key": admin_key} if admin_key else {}
+    if content_type:
+        headers["content-type"] = content_type
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", "replace")[:400]
+        raise MigrationError(f"{method} {url} -> HTTP {err.code}: {detail}") from None
+    except urllib.error.URLError as err:
+        raise MigrationError(f"{method} {url} failed: {err.reason}") from None
 
 
-def load_target_columns(psql_dsn):
-    """Return {table: {column: data_type}} for the Trefoil database."""
-    query = """
-        SELECT table_name, column_name, data_type, udt_name
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-    """
-    enum_query = """
-        SELECT n.nspname, t.typname, e.enumlabel
-        FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
-        JOIN pg_enum e ON e.enumtypid = t.oid
-    """
-    cols, enums = {}, {}
-    for q, sink in ((query, "cols"), (enum_query, "enums")):
-        proc = subprocess.run(
-            ["psql", psql_dsn, "--no-psqlrc", "-At", "-P", "pager=off",
-             "-F", PSQL_FIELD_SEP, "-c", q],
-            capture_output=True, text=True, check=True,
-            env={**os.environ, "PAGER": "cat"},
-        )
-        if proc.returncode != 0 or not proc.stdout.strip():
-            raise SystemExit(f"Schema introspection query failed: {proc.stderr.strip()}")
-        for line in proc.stdout.splitlines():
-            parts = line.split("\x1f")
-            if sink == "cols" and len(parts) == 4:
-                table, column, dtype, udt_name = parts
-                cols.setdefault(table, {})[column] = (
-                    "enum:" + udt_name if dtype == "USER-DEFINED" else dtype
-                )
-            elif sink == "enums" and len(parts) == 3:
-                enums.setdefault(parts[1], set()).add(parts[2])
-    return cols, enums
+def base(url):
+    return url.rstrip("/")
 
 
-def coerce(table, column, src_value, target_type, enums):
-    if src_value is None:
-        return None
-    if target_type == "boolean":
-        if isinstance(src_value, bool):
-            return src_value
-        if isinstance(src_value, int):
-            return src_value != 0
-        return str(src_value).lower() in ("1", "true", "t", "yes")
-    if target_type == "jsonb":
-        if isinstance(src_value, (dict, list)):
-            return json.dumps(src_value)
-        text = str(src_value)
-        try:
-            return json.dumps(json.loads(text))
-        except (json.JSONDecodeError, ValueError):
-            raise SystemExit(f"Column {table}.{column} is jsonb but source value is not JSON: {text[:80]!r}")
-    if target_type.startswith("enum:"):
-        label = str(src_value)
-        if label in LEGACY_ENUM_MAP.get((table, column), {}):
-            return LEGACY_ENUM_MAP[(table, column)][label]
-        enum_name = target_type[5:]
-        if label not in enums.get(enum_name, set()):
-            raise SystemExit(
-                f"Column {table}.{column}: value {label!r} is not a label of enum {enum_name}. "
-                f"Known labels: {sorted(enums.get(enum_name, set()))}"
-            )
-        return label
-    if target_type in ("integer", "bigint"):
-        return int(src_value)
-    if target_type in ("real", "double precision", "numeric"):
-        return float(src_value)
-    return str(src_value)
+def fetch_backup(plexus_url, admin_key, full):
+    suffix = "?full=true" if full else ""
+    _, body = request("GET", f"{base(plexus_url)}/v0/management/backup{suffix}", admin_key)
+    return body
 
 
-def migrate_table(sqlite, table, target, conflict_keys, encrypted_fields,
-                  crypto, target_cols, enums, out, label):
-    if target not in target_cols:
-        print(f"  [{label}] skipped: target table {target} does not exist")
-        return 0
-    src_cols = [r[1] for r in sqlite.execute(f"PRAGMA table_info(`{table}`)")]
-    shared = [c for c in src_cols if c in target_cols[target]]
-    dropped = [c for c in src_cols if c not in target_cols[target]]
-    if dropped:
-        print(f"  [{label}] dropping source-only columns: {', '.join(dropped)}")
+def parse_envelope(raw):
+    """Return the config envelope from a config-only JSON backup."""
+    try:
+        envelope = json.loads(raw)
+    except ValueError:
+        raise MigrationError("backup is not valid JSON") from None
+    if envelope.get("plexus_backup") is not True or "data" not in envelope:
+        raise MigrationError("not a Plexus config backup (missing plexus_backup/data)")
+    return envelope
 
-    count = 0
-    for row in sqlite.execute(f"SELECT {', '.join(chr(96)+c+chr(96) for c in shared)} FROM `{table}`"):
-        values = dict(zip(shared, row))
-        # Plexus encrypts any config TEXT value that may hold a secret
-        # (provider api_key/headers/extra_body, quota checker options,
-        # alias advanced/extra_body, mcp headers, api key secrets, ...).
-        # Trefoil stores these as plaintext, so decrypt universally before
-        # any other handling.
-        for col, val in values.items():
-            if isinstance(val, str) and val.startswith(PLEXUS_PREFIX):
-                values[col] = crypto.decrypt_plexus(val)
-        # Credential translation.
-        provider = values.get("oauth_provider_type") or values.get("provider")
-        account = values.get("account_id") or values.get("slug") or values.get("name") or ""
-        for field in encrypted_fields:
-            if field not in values:
-                continue
-            plaintext = crypto.decrypt_plexus(values[field])
-            if target == "oauth_credentials":
-                values[field] = crypto.encrypt_trefoil(str(provider), str(account), field, plaintext)
-            else:
-                values[field] = plaintext
-        # jsonb passthrough for system_settings.value even without key.
-        coerced = {
-            col: coerce(target, col, val, target_cols[target][col], enums)
-            for col, val in values.items()
-        }
-        cols_sql = ", ".join(f'"{c}"' for c in shared)
-        vals_sql = ", ".join(sql_literal(coerced[c]) for c in shared)
-        if conflict_keys:
-            key_sql = ", ".join(f'"{c}"' for c in conflict_keys)
-            updates = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in shared
-                                if c not in conflict_keys and c != "id")
-            if updates:
-                out.write(f'INSERT INTO "{target}" ({cols_sql}) VALUES ({vals_sql}) '
-                          f"ON CONFLICT ({key_sql}) DO UPDATE SET {updates};\n")
-            else:  # all columns are the conflict key
-                out.write(f'INSERT INTO "{target}" ({cols_sql}) VALUES ({vals_sql}) '
-                          f"ON CONFLICT ({key_sql}) DO NOTHING;\n")
+
+def summarize(data):
+    counts = {}
+    for section in CONFIG_SECTIONS + ("settings",):
+        value = data.get(section)
+        counts[section] = len(value) if value else 0
+    counts["oauth_credentials"] = len(data.get("oauth_credentials") or [])
+    return counts
+
+
+def trefoil_is_populated(trefoil_url, admin_key):
+    _, body = request("GET", f"{base(trefoil_url)}/v0/management/backup", admin_key)
+    data = parse_envelope(body)["data"]
+    return {k: v for k, v in summarize(data).items()
+            if k in ("providers", "models", "keys") and v}
+
+
+def verify(trefoil_url, admin_key, expected):
+    """Re-export Trefoil's config and compare section sizes with the source."""
+    _, body = request("GET", f"{base(trefoil_url)}/v0/management/backup", admin_key)
+    actual = summarize(parse_envelope(body)["data"])
+    problems = [
+        f"{section}: expected {want}, Trefoil has {actual.get(section, 0)}"
+        for section, want in expected.items()
+        if actual.get(section, 0) != want
+    ]
+    return actual, problems
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--plexus-url", help="Base URL of the running Plexus instance")
+    ap.add_argument("--plexus-admin-key", default=os.environ.get("PLEXUS_ADMIN_KEY"),
+                    help="Plexus admin key (env PLEXUS_ADMIN_KEY)")
+    ap.add_argument("--backup-file",
+                    help="Use an existing Plexus backup (.json config or .tar.gz full) instead of --plexus-url")
+    ap.add_argument("--trefoil-url", required=True, help="Base URL of the Trefoil instance")
+    ap.add_argument("--trefoil-admin-key", default=os.environ.get("TREFOIL_ADMIN_KEY"),
+                    help="Trefoil admin key (env TREFOIL_ADMIN_KEY)")
+    ap.add_argument("--with-history", action="store_true",
+                    help="Also migrate usage/log history (full .tar.gz backup; can be large)")
+    ap.add_argument("--save-backup", metavar="PATH",
+                    help="Write the fetched backup to PATH (contains plaintext secrets, mode 0600)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Fetch and summarize the backup; do not touch Trefoil")
+    ap.add_argument("--yes", action="store_true",
+                    help="Allow replacing providers/aliases/keys already present in Trefoil")
+    args = ap.parse_args(argv)
+
+    if bool(args.plexus_url) == bool(args.backup_file):
+        ap.error("give exactly one of --plexus-url or --backup-file")
+    if args.plexus_url and not args.plexus_admin_key:
+        ap.error("--plexus-admin-key (or PLEXUS_ADMIN_KEY) is required with --plexus-url")
+    if not args.dry_run and not args.trefoil_admin_key:
+        ap.error("--trefoil-admin-key (or TREFOIL_ADMIN_KEY) is required")
+
+    try:
+        if args.backup_file:
+            with open(args.backup_file, "rb") as handle:
+                raw = handle.read()
+            print(f"Read {len(raw)} bytes from {args.backup_file}")
         else:
-            out.write(f'INSERT INTO "{target}" ({cols_sql}) VALUES ({vals_sql});\n')
-        count += 1
-    print(f"  [{label}] {count} rows staged")
-    return count
+            print(f"Exporting from Plexus at {base(args.plexus_url)} ...")
+            raw = fetch_backup(args.plexus_url, args.plexus_admin_key, args.with_history)
+            print(f"Received {len(raw)} bytes")
 
+        is_archive = raw[:2] == b"\x1f\x8b"
+        if is_archive and not args.with_history and args.backup_file:
+            args.with_history = True  # a full archive was supplied explicitly
+        if args.with_history and not is_archive:
+            raise MigrationError("--with-history needs a full .tar.gz backup, got JSON")
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--db", required=True, help="Path to Plexus SQLite database (a snapshot copy)")
-    ap.add_argument("--dsn", help="Target PostgreSQL DSN; with --apply the generated SQL runs immediately")
-    ap.add_argument("--out", default="migration-out.sql", help="Output SQL file (default: migration-out.sql)")
-    ap.add_argument("--apply", action="store_true", help="Apply generated SQL via psql (requires --dsn)")
-    ap.add_argument("--with-history", action="store_true", help="Also migrate usage/history tables (large)")
-    ap.add_argument("--encrypt-key", default=os.environ.get("ENCRYPTION_KEY") or os.environ.get("PLEXUS_ENCRYPTION_KEY"),
-                    help="Plexus ENCRYPTION_KEY (hex or passphrase) for decrypting credentials")
-    ap.add_argument("--credential-key", default=os.environ.get("TREFOIL_CREDENTIAL_KEY"),
-                    help="Trefoil credential key (64 hex) for re-encrypting OAuth tokens")
-    args = ap.parse_args()
-    if args.apply and not args.dsn:
-        ap.error("--apply requires --dsn")
+        if args.save_backup:
+            fd = os.open(args.save_backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw)
+            print(f"Saved backup to {args.save_backup} (contains secrets; delete after use)")
 
-    crypto = Crypto(args.encrypt_key, args.credential_key)
-    sqlite = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+        if is_archive:
+            expected = None  # counts live inside the archive; verified by the restore result
+        else:
+            expected = summarize(parse_envelope(raw)["data"])
+            print("Backup contents: " + ", ".join(f"{k}={v}" for k, v in expected.items()))
 
-    tables = list(CONFIG_TABLES) + (HISTORY_TABLES if args.with_history else [])
-    def display_dsn(dsn):
-        # Redact the password component before printing.
-        if not dsn:
-            return "(deferred)"
-        head, sep, tail = dsn.partition("://")
-        if sep and "@" in tail:
-            creds, _, host = tail.rpartition("@")
-            user = creds.split(":")[0]
-            return f"{head}://{user}:<redacted>@{host}"
-        return dsn
+        if args.dry_run:
+            print("Dry run: Trefoil was not modified.")
+            return 0
 
-    print(f"Inspecting target schema at {display_dsn(args.dsn)} ...")
-    target_cols, enums = load_target_columns(args.dsn) if args.dsn else ({}, {})
+        existing = trefoil_is_populated(args.trefoil_url, args.trefoil_admin_key)
+        if existing and not args.yes:
+            raise MigrationError(
+                "Trefoil already has " + ", ".join(f"{v} {k}" for k, v in existing.items())
+                + "; restore replaces them. Re-run with --yes to proceed."
+            )
 
-    # Preview pass (row counts) works without a DSN by retrying schema load after connect.
-    with open(args.out, "w", encoding="utf-8") as out:
-        out.write("-- Generated by plexus_to_trefoil.py — DO NOT EDIT\n")
-        out.write("BEGIN;\n")
-        # Truncate in reverse dependency order for a clean, idempotent load.
-        for _, target, _, _ in reversed(tables):
-            if target in target_cols:
-                out.write(f'TRUNCATE TABLE "{target}" CASCADE;\n')
-        for src, target, conflict_keys, encrypted in tables:
-            migrate_table(sqlite, src, target, conflict_keys, encrypted,
-                          crypto, target_cols, enums, out, src)
-        # Re-sync serial sequences after explicit-id inserts.
-        for _, target, _, _ in tables:
-            if target in target_cols and "id" in target_cols[target]:
-                out.write(
-                    f"SELECT CASE WHEN pg_get_serial_sequence('{target}', 'id') IS NOT NULL THEN "
-                    f"setval(pg_get_serial_sequence('{target}', 'id'), "
-                    f"COALESCE((SELECT MAX(id) FROM \"{target}\"), 1), "
-                    f"COALESCE((SELECT MAX(id) FROM \"{target}\") IS NOT NULL, true)) END;\n"
-                )
-        out.write("COMMIT;\n")
+        content_type = "application/gzip" if is_archive else "application/json"
+        print("Restoring into Trefoil ...")
+        _, body = request("POST", f"{base(args.trefoil_url)}/v0/management/restore",
+                          args.trefoil_admin_key, raw, content_type)
+        result = json.loads(body or b"{}")
+        if not result.get("success"):
+            raise MigrationError(f"restore did not report success: {result}")
+        if "restored" in result:
+            print("Restored rows: " + ", ".join(f"{k}={v}" for k, v in sorted(result["restored"].items())))
 
-    print(f"Wrote {args.out}")
-    if args.apply:
-        proc = subprocess.run(
-            ["psql", args.dsn, "--no-psqlrc", "-v", "ON_ERROR_STOP=1", "-f", args.out],
-        )
-        if proc.returncode != 0:
-            raise SystemExit(f"psql failed with exit code {proc.returncode}")
-        print("Applied successfully.")
+        if is_archive:
+            # The archive's config.json is the envelope's `data`; read it back for comparison.
+            import io, tarfile
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+                config = json.load(tar.extractfile("config.json"))
+            expected = summarize(config.get("data", config))
+        actual, problems = verify(args.trefoil_url, args.trefoil_admin_key, expected)
+        print("Trefoil now has: " + ", ".join(f"{k}={v}" for k, v in actual.items()))
+        if problems:
+            raise MigrationError("verification failed:\n  " + "\n  ".join(problems))
+        print("Migration complete and verified.")
+        return 0
+    except MigrationError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
