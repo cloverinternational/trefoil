@@ -443,12 +443,18 @@ async fn delete_server(
     let Some(pool) = &state.inner.database else {
         return Json(json!({"success":true})).into_response();
     };
+    // Plexus `deleteServer`: stop the process, delete the config, then drop
+    // the server's persisted MCP_DATA_DIR.
+    let _ = state.inner.mcp_manager.stop(&name).await;
     match sqlx::query("DELETE FROM mcp_servers WHERE name=$1")
-        .bind(name)
+        .bind(&name)
         .execute(pool)
         .await
     {
-        Ok(_) => Json(json!({"success":true})).into_response(),
+        Ok(_) => match crate::mcp_local::remove_mcp_server_data_dir(&name, None) {
+            Ok(()) => Json(json!({"success":true})).into_response(),
+            Err(_) => internal_error(),
+        },
         Err(_) => internal_error(),
     }
 }

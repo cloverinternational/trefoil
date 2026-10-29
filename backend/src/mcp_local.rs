@@ -6,7 +6,9 @@
 //! serialized; `stop`/`restart` bump a lifecycle version that cancels an
 //! in-flight startup. Readiness is any HTTP status below 500.
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -26,6 +28,90 @@ const SAFE_INHERITED_ENV_KEYS: &[&str] = &[
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
 ];
+
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+
+/// Plexus `getMcpServerDataDir`: a stable, opaque directory for one local MCP
+/// server. The name is hashed rather than used as a path component so it can
+/// never traverse out of the configured root and does not disclose the server
+/// name on disk. The root is `MCP_SERVERS_DATA_DIR`, else
+/// `<DATA_DIR or /app/data>/mcp-servers`.
+pub fn mcp_server_data_dir(server_name: &str, root: Option<&Path>) -> PathBuf {
+    let root = match root {
+        Some(root) => root.to_path_buf(),
+        None => match std::env::var("MCP_SERVERS_DATA_DIR") {
+            Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
+            _ => {
+                let data_dir = std::env::var("DATA_DIR")
+                    .ok()
+                    .filter(|dir| !dir.is_empty())
+                    .unwrap_or_else(|| "/app/data".into());
+                PathBuf::from(data_dir).join("mcp-servers")
+            }
+        },
+    };
+    let root = std::path::absolute(&root).unwrap_or(root);
+    let key: String = Sha256::digest(server_name.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    root.join(key)
+}
+
+/// Plexus `ensureMcpServerDataDir`: create or validate a private (0700)
+/// directory for a local MCP server. Symlinks are rejected.
+pub fn ensure_mcp_server_data_dir(
+    server_name: &str,
+    root: Option<&Path>,
+) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let directory = mcp_server_data_dir(server_name, root);
+    let parent = directory
+        .parent()
+        .ok_or("Local MCP data root is not a directory")?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(PRIVATE_DIRECTORY_MODE)
+        .create(parent)
+        .map_err(|error| error.to_string())?;
+    let root_info = std::fs::symlink_metadata(parent).map_err(|error| error.to_string())?;
+    if root_info.file_type().is_symlink() || !root_info.is_dir() {
+        return Err("Local MCP data root is not a directory".into());
+    }
+    match std::fs::symlink_metadata(&directory) {
+        Ok(existing) if existing.file_type().is_symlink() || !existing.is_dir() => {
+            return Err("Local MCP data path is not a directory".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::DirBuilder::new()
+                .mode(PRIVATE_DIRECTORY_MODE)
+                .create(&directory)
+                .map_err(|error| error.to_string())?;
+        }
+        Err(error) => return Err(error.to_string()),
+    }
+    std::fs::set_permissions(
+        &directory,
+        std::fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(directory)
+}
+
+/// Plexus `removeMcpServerDataDir`: drop a server's persisted data when the
+/// server itself is deleted. A missing directory is not an error.
+pub fn remove_mcp_server_data_dir(server_name: &str, root: Option<&Path>) -> Result<(), String> {
+    let directory = mcp_server_data_dir(server_name, root);
+    match std::fs::symlink_metadata(&directory) {
+        Ok(existing) if existing.file_type().is_symlink() || !existing.is_dir() => {
+            Err("Local MCP data path is not a directory".into())
+        }
+        Ok(_) => std::fs::remove_dir_all(&directory).map_err(|error| error.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
 
 /// Parsed `local_http` config (`LocalHttpMcpServerConfigSchema` output).
 #[derive(Debug, Clone, PartialEq)]
@@ -351,7 +437,20 @@ impl McpProcessManager {
         for (k, v) in &config.env {
             command.env(k, v);
         }
+        // Always override a user-supplied MCP_DATA_DIR: the directory is
+        // managed by Trefoil and unique to this server, not an arbitrary path.
+        let data_dir = match ensure_mcp_server_data_dir(name, None) {
+            Ok(dir) => dir,
+            Err(error) => {
+                let mut s = state.lock().unwrap();
+                s.status = "failed";
+                s.last_error = Some(error.clone());
+                append_log(&mut s, &format!("Data directory failed: {error}"));
+                return Err(error);
+            }
+        };
         command
+            .env("MCP_DATA_DIR", data_dir)
             .env("PORT", config.port.to_string())
             .env("HOST", "127.0.0.1");
         let mut child = match command.spawn() {
@@ -535,5 +634,67 @@ unsafe fn libc_kill(pid: i32, signal: i32) {
 impl std::fmt::Debug for McpProcessManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("McpProcessManager")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure_mcp_server_data_dir, mcp_server_data_dir, remove_mcp_server_data_dir};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    fn scratch_root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "trefoil-mcp-data-{}",
+            crate::oauth_login::random_uuid()
+        ))
+    }
+
+    #[test]
+    fn data_dir_is_stable_opaque_and_contained_in_the_root() {
+        let root = scratch_root();
+        let first = mcp_server_data_dir("../escape", Some(&root));
+        assert_eq!(first, mcp_server_data_dir("../escape", Some(&root)));
+        assert_ne!(first, mcp_server_data_dir("other", Some(&root)));
+        assert_eq!(first.parent().unwrap(), root);
+        let key = first.file_name().unwrap().to_str().unwrap();
+        assert_eq!(key.len(), 64);
+        assert!(key.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn ensure_creates_a_private_directory_and_remove_deletes_it() {
+        let root = scratch_root();
+        let dir = ensure_mcp_server_data_dir("server", Some(&root)).unwrap();
+        assert!(dir.is_dir());
+        assert_eq!(dir.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        std::fs::write(dir.join("state.db"), b"persisted").unwrap();
+        // Re-ensuring keeps the existing contents (data survives restarts).
+        assert_eq!(
+            ensure_mcp_server_data_dir("server", Some(&root)).unwrap(),
+            dir
+        );
+        assert!(dir.join("state.db").exists());
+
+        remove_mcp_server_data_dir("server", Some(&root)).unwrap();
+        assert!(!dir.exists());
+        // Removing a missing directory is not an error.
+        remove_mcp_server_data_dir("server", Some(&root)).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn symlinked_data_paths_are_rejected() {
+        let root = scratch_root();
+        let target = scratch_root();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let dir = mcp_server_data_dir("server", Some(&root));
+        std::os::unix::fs::symlink(&target, &dir).unwrap();
+        assert!(ensure_mcp_server_data_dir("server", Some(&root)).is_err());
+        assert!(remove_mcp_server_data_dir("server", Some(&root)).is_err());
+        assert!(target.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&target).unwrap();
     }
 }
