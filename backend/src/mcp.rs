@@ -298,6 +298,76 @@ async fn get_server(
     }
 }
 
+/// Backup export: `getAllMcpServers` (name → config) and `getAllMcpKeys`.
+pub(crate) async fn export_config(
+    pool: &sqlx::PgPool,
+) -> Result<(serde_json::Map<String, Value>, Vec<Value>), String> {
+    let rows = sqlx::query(&format!(
+        "SELECT {SERVER_COLUMNS} FROM mcp_servers ORDER BY id"
+    ))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut servers = serde_json::Map::new();
+    for row in rows {
+        servers.insert(
+            row.try_get::<String, _>("name").unwrap_or_default(),
+            server_view(&row),
+        );
+    }
+    let keys = sqlx::query(
+        "SELECT s.name, k.key, k.is_active FROM mcp_keys k JOIN mcp_servers s ON s.id = k.mcp_server_id ORDER BY k.id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .iter()
+    .map(|row| {
+        json!({
+            "serverName": row.try_get::<String, _>("name").unwrap_or_default(),
+            "key": row.try_get::<String, _>("key").unwrap_or_default(),
+            "isActive": row.try_get::<bool, _>("is_active").unwrap_or(true),
+        })
+    })
+    .collect();
+    Ok((servers, keys))
+}
+
+/// Backup restore of `McpKeyConfig[]` (`batchInsertMcpKeys`): replaces the keys
+/// of every named server, failing on a key for an unknown server.
+pub(crate) async fn restore_keys(
+    pool: &sqlx::PgPool,
+    keys: &[(String, String, bool)],
+) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for server in keys
+        .iter()
+        .map(|(server, _, _)| server)
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        sqlx::query("DELETE FROM mcp_keys WHERE mcp_server_id IN (SELECT id FROM mcp_servers WHERE name=$1)")
+            .bind(server)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    for (server, key, active) in keys {
+        let inserted = sqlx::query("INSERT INTO mcp_keys (mcp_server_id,key,is_active,created_at,updated_at) SELECT id,$2,$3,NOW(),NOW() FROM mcp_servers WHERE name=$1")
+            .bind(server)
+            .bind(key)
+            .bind(active)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        if inserted.rows_affected() == 0 {
+            return Err(format!(
+                "Cannot restore MCP key for unknown server: {server}"
+            ));
+        }
+    }
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
 /// `validateServerName`: slug, 2–63 chars, not reserved.
 fn valid_name(value: &str) -> bool {
     let b = value.as_bytes();
@@ -313,7 +383,7 @@ fn invalid_name() -> Response {
 }
 
 /// `saveMcpServer`.
-async fn save_server(state: &AppState, name: &str, config: &Value) -> Result<(), ()> {
+pub(crate) async fn save_server(state: &AppState, name: &str, config: &Value) -> Result<(), ()> {
     let Some(pool) = &state.inner.database else {
         return Err(());
     };

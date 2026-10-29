@@ -590,7 +590,14 @@ async fn restore_archive(
         counts.insert((*table).to_string(), rows.len() as u64);
     }
     tx.commit().await.map_err(|e| e.to_string())?;
-    restore_config(pool, state, &config).await?;
+    // `config.json` holds the bare config; Plexus wraps it in an envelope before
+    // restoring. Tolerate a file that is already wrapped.
+    let envelope = if config.get("data").is_some() {
+        config
+    } else {
+        serde_json::json!({ "data": config })
+    };
+    restore_config(pool, state, &envelope).await?;
     Ok(counts)
 }
 
@@ -636,6 +643,14 @@ fn plexus_row_to_db(
                     if !(table == "meter_snapshots" && *column == "success") =>
                 {
                     serde_json::Value::from(*b as i32)
+                }
+                // Plexus on SQLite exports its timestamp-mode integer columns
+                // as ISO strings; Trefoil stores them as epoch milliseconds.
+                (Col::Number, serde_json::Value::String(text)) => {
+                    match chrono::DateTime::parse_from_rfc3339(text) {
+                        Ok(moment) => serde_json::Value::from(moment.timestamp_millis()),
+                        Err(_) => value,
+                    }
                 }
                 _ => value,
             };
@@ -703,9 +718,20 @@ async fn restore_config(
             )
         })
         .collect();
-    let aliases: HashMap<String, crate::state::ModelConfig> =
+    // Like providers, aliases are raw Plexus repository configs: normalize
+    // them through the alias view instead of strict struct deserialization.
+    let raw_aliases: serde_json::Map<String, serde_json::Value> =
         serde_json::from_value(data.get("models").cloned().ok_or("missing models")?)
             .map_err(|_| "invalid models")?;
+    let aliases: HashMap<String, crate::state::ModelConfig> = raw_aliases
+        .iter()
+        .map(|(slug, raw)| {
+            (
+                slug.clone(),
+                crate::alias_view::from_view(crate::alias_view::repository_view(raw)),
+            )
+        })
+        .collect();
     let keys: HashMap<String, crate::state::KeyConfig> =
         serde_json::from_value(data.get("keys").cloned().ok_or("missing keys")?)
             .map_err(|_| "invalid keys")?;
@@ -740,7 +766,135 @@ async fn restore_config(
     *state.inner.keys.write().unwrap() = keys;
     *state.inner.providers.write().unwrap() = providers;
     *state.inner.aliases.write().unwrap() = aliases;
+    restore_extras(pool, state, data).await
+}
+
+/// The rest of a Plexus config backup: user quotas, settings, MCP servers and
+/// keys, and OAuth credentials. Every section is optional (older Plexus
+/// revisions omit `user_quotas`/`mcp_keys`); present sections are upserted.
+async fn restore_extras(
+    pool: &sqlx::PgPool,
+    state: &AppState,
+    data: &serde_json::Value,
+) -> Result<(), String> {
+    let section = |name: &str| data.get(name).filter(|v| !v.is_null());
+
+    if let Some(raw) = section("user_quotas") {
+        let quotas: HashMap<String, crate::state::QuotaDefinition> =
+            serde_json::from_value(raw.clone()).map_err(|e| format!("invalid user_quotas: {e}"))?;
+        for (name, quota) in &quotas {
+            crate::database::upsert_user_quota(pool, name, quota)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        state.inner.user_quotas.write().unwrap().extend(quotas);
+    }
+
+    if let Some(raw) = section("settings") {
+        let settings = raw.as_object().ok_or("invalid settings")?;
+        crate::database::upsert_settings_bulk(pool, settings)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut live = state.inner.settings.write().unwrap();
+        for (key, value) in settings {
+            live.insert(key.clone(), value.clone());
+        }
+    }
+
+    if let Some(raw) = section("mcp_servers") {
+        for (name, config) in raw.as_object().ok_or("invalid mcp_servers")? {
+            crate::mcp::save_server(state, name, config)
+                .await
+                .map_err(|_| format!("could not restore MCP server {name}"))?;
+        }
+    }
+    if let Some(raw) = section("mcp_keys") {
+        let keys = raw
+            .as_array()
+            .ok_or("invalid mcp_keys")?
+            .iter()
+            .map(|entry| {
+                Ok((
+                    entry
+                        .get("serverName")
+                        .and_then(|v| v.as_str())
+                        .ok_or("mcp_keys entry is missing serverName")?
+                        .to_owned(),
+                    entry
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .ok_or("mcp_keys entry is missing key")?
+                        .to_owned(),
+                    entry
+                        .get("isActive")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true),
+                ))
+            })
+            .collect::<Result<Vec<_>, &str>>()?;
+        crate::mcp::restore_keys(pool, &keys).await?;
+    }
+
+    if let Some(raw) = section("oauth_credentials") {
+        for entry in raw.as_array().ok_or("invalid oauth_credentials")? {
+            let text = |field: &str| entry.get(field).and_then(|v| v.as_str());
+            let (Some(provider), Some(account), Some(access)) = (
+                text("provider_type"),
+                text("account_id"),
+                text("access_token"),
+            ) else {
+                return Err("oauth_credentials entry is missing required fields".into());
+            };
+            let mut credentials = crate::oauth_login::OAuthCredentials::new(
+                access,
+                text("refresh_token").unwrap_or_default(),
+                entry
+                    .get("expires_at")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+            );
+            credentials.enterprise_url = text("enterprise_url").map(str::to_owned);
+            crate::database::upsert_oauth_credential(
+                pool,
+                provider,
+                account,
+                &credentials.access,
+                &credentials.stored_refresh(),
+                credentials.expires,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
     Ok(())
+}
+
+/// Decrypted OAuth credentials in Plexus's backup shape. GitHub Copilot's
+/// enterprise domain is stored as a `<domain>\n` prefix on the refresh token
+/// (see `OAuthCredentials::stored_refresh`); split it back out for the backup.
+async fn export_oauth_credentials(pool: &sqlx::PgPool) -> Result<Vec<serde_json::Value>, String> {
+    let credentials = crate::database::load_oauth_credentials(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(credentials
+        .into_iter()
+        .map(|(provider, account, access, refresh, expires_at)| {
+            let (enterprise_url, refresh) = match refresh.split_once('\n') {
+                Some((domain, token)) if provider == "github-copilot" => {
+                    (Some(domain.to_owned()), token.to_owned())
+                }
+                _ => (None, refresh),
+            };
+            serde_json::json!({
+                "provider_type": provider,
+                "account_id": account,
+                "access_token": access,
+                "refresh_token": refresh,
+                "enterprise_url": enterprise_url,
+                "expires_at": expires_at,
+            })
+        })
+        .collect())
 }
 
 async fn export(
@@ -782,14 +936,34 @@ async fn export(
         },
         [("module".into(), serde_json::json!("backup"))],
     );
+    let (mcp_servers, mcp_keys) = match crate::mcp::export_config(pool).await {
+        Ok(exported) => exported,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to create backup: {error}"),
+            )
+                .into_response()
+        }
+    };
+    let oauth_credentials = match export_oauth_credentials(pool).await {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to create backup: {error}"),
+            )
+                .into_response()
+        }
+    };
     let config = serde_json::json!({
         "providers": state.inner.providers.read().unwrap().clone(),
         "models": state.inner.aliases.read().unwrap().clone(),
         "keys": state.inner.keys.read().unwrap().clone(),
         "user_quotas": state.inner.user_quotas.read().unwrap().clone(),
-        "mcp_servers": {}, "mcp_keys": [],
+        "mcp_servers": mcp_servers, "mcp_keys": mcp_keys,
         "settings": state.inner.settings.read().unwrap().clone(),
-        "oauth_credentials": [],
+        "oauth_credentials": oauth_credentials,
     });
     if !query.full.unwrap_or(false) {
         return json_response(
@@ -896,8 +1070,24 @@ fn append_bytes<W: Write>(
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_archive_entry, StatusCode};
+    use super::{plexus_row_to_db, valid_archive_entry, StatusCode};
     use std::path::Path;
+
+    #[test]
+    fn sqlite_iso_timestamps_in_numeric_columns_become_epoch_millis() {
+        let row = |checked_at: &str| {
+            let mut row = serde_json::Map::new();
+            row.insert("checkedAt".into(), checked_at.into());
+            row.insert("provider".into(), "2026-10-29T22:58:06.000Z".into());
+            plexus_row_to_db("meter_snapshots", row)
+        };
+        let converted = row("2026-10-29T22:58:06.000Z");
+        assert_eq!(converted["checked_at"], 1_793_314_686_000_i64);
+        // Text columns keep date-looking strings untouched.
+        assert_eq!(converted["provider"], "2026-10-29T22:58:06.000Z");
+        // Non-date strings in numeric columns pass through for the database to judge.
+        assert_eq!(row("not a date")["checked_at"], "not a date");
+    }
 
     #[test]
     fn rejects_traversal_links_duplicates_and_oversized_entries() {

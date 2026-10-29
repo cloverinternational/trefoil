@@ -14,6 +14,7 @@ use sqlx::PgPool;
 /// (`packages/backend/src/config.ts`) accepts/persists for
 /// `/v0/management/keys/:name` CRUD (see `backend/src/keys.rs`).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
 pub struct KeyConfig {
     pub secret: String,
     #[serde(rename = "permissionGroup", skip_serializing_if = "Option::is_none")]
