@@ -230,6 +230,15 @@ pub const PROVIDERS: &[(&str, &str, bool)] = &[
     ("xai", "xAI (Grok/X subscription)", false),
 ];
 
+/// OAuth implementations retained for existing configs but not offered for new
+/// ones (Plexus `NON_SELECTABLE_PROVIDERS`).
+const NON_SELECTABLE_PROVIDERS: &[&str] = &["openai-codex"];
+
+/// Whether a provider is offered for new provider configurations.
+pub fn is_selectable(provider_id: &str) -> bool {
+    !NON_SELECTABLE_PROVIDERS.contains(&provider_id)
+}
+
 fn login_fn<F, Fut>(f: F) -> LoginFn
 where
     F: Fn(Interaction) -> Fut + Send + Sync + 'static,
@@ -469,9 +478,16 @@ pub struct Interaction {
     inner: Arc<ManagerInner>,
     session_id: String,
     abort: watch::Receiver<bool>,
+    device_id: Option<String>,
 }
 
 impl Interaction {
+    /// pi-ai `options.getDeviceId()`: this installation's stable device ID,
+    /// resolved before the login starts (Sign in with ChatGPT needs it).
+    pub fn device_id(&self) -> Option<&str> {
+        self.device_id.as_deref()
+    }
+
     pub fn is_aborted(&self) -> bool {
         *self.abort.borrow()
     }
@@ -637,6 +653,19 @@ impl OAuthLoginSessionManager {
         account_id: &str,
         store: CredentialStore,
     ) -> Result<OAuthSession, String> {
+        self.create_session_with_device_id(provider_id, account_id, store, None)
+            .await
+    }
+
+    /// `createSession` with the installation device ID handed to the login
+    /// (pi-ai `getDeviceId`).
+    pub async fn create_session_with_device_id(
+        &self,
+        provider_id: &str,
+        account_id: &str,
+        store: CredentialStore,
+        device_id: Option<String>,
+    ) -> Result<OAuthSession, String> {
         self.cleanup_expired();
         self.start_cleanup();
         if account_id.trim().is_empty() {
@@ -704,6 +733,7 @@ impl OAuthLoginSessionManager {
             inner: self.inner.clone(),
             session_id: id.clone(),
             abort: abort_rx,
+            device_id,
         };
         let inner = self.inner.clone();
         tokio::spawn(async move {
