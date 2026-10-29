@@ -96,7 +96,31 @@ fn with_cache_control(mut block: Obj, part: &Value) -> Value {
 /// `buildAnthropicRequest`.
 pub fn build_anthropic_request(request: &Value) -> EngineResult<Value> {
     let mut system: Option<Value> = None;
-    let mut messages: Vec<(String, Vec<Value>)> = Vec::new();
+    // Built messages; the third element carries the caller's raw
+    // mid-conversation `role: 'system'` entry.
+    let mut messages: Vec<(String, Vec<Value>, Option<Value>)> = Vec::new();
+
+    // Anthropic mid-conversation `role: 'system'` entries live inside
+    // `messages` and must be re-emitted there verbatim: they carry per-turn
+    // directives (`output_config` under the mid-conversation-output-config
+    // beta, the system-level content of mid-conversation-system) plus fields
+    // the unified shape does not model. The parser marks each one, so pairing
+    // the markers with the caller's own entries in order recovers the exact
+    // entry — content order and block-level `cache_control` included. Anything
+    // rebuilt from a unified request without `originalBody` falls back to the
+    // flattened content.
+    let native_mid_conversation_entries: Vec<&Value> = request
+        .get("originalBody")
+        .and_then(|b| b.get("messages"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|m| m.is_object() && get_str(m, &["role"]) == Some("system"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut native_mid_conversation_cursor = 0;
 
     let Some(msgs) = request.get("messages").and_then(Value::as_array) else {
         return Err(not_iterable("request.messages"));
@@ -107,6 +131,20 @@ pub fn build_anthropic_request(request: &Value) -> EngineResult<Value> {
         }
         let role = get_str(msg, &["role"]);
         match role {
+            Some("system") if truthy(msg.get("mid_conversation")) => {
+                let native = native_mid_conversation_entries
+                    .get(native_mid_conversation_cursor)
+                    .copied();
+                native_mid_conversation_cursor += 1;
+                let entry = match native {
+                    Some(entry) => entry.clone(),
+                    None => json!({
+                        "role": "system",
+                        "content": msg.get("content").and_then(Value::as_str).unwrap_or(""),
+                    }),
+                };
+                messages.push(("system".to_owned(), Vec::new(), Some(entry)));
+            }
             Some("system") => match msg.get("content") {
                 Some(Value::String(s)) => system = Some(json!(s)),
                 Some(Value::Array(blocks)) => {
@@ -210,7 +248,7 @@ pub fn build_anthropic_request(request: &Value) -> EngineResult<Value> {
                         ]));
                     }
                 }
-                messages.push((r.to_owned(), content));
+                messages.push((r.to_owned(), content, None));
             }
             Some("tool") => {
                 let result_content = match msg.get("content") {
@@ -224,6 +262,7 @@ pub fn build_anthropic_request(request: &Value) -> EngineResult<Value> {
                         ("tool_use_id", msg.get("tool_call_id").cloned()),
                         ("content", result_content),
                     ])],
+                    None,
                 ));
             }
             _ => {}
@@ -232,19 +271,32 @@ pub fn build_anthropic_request(request: &Value) -> EngineResult<Value> {
 
     // Merge consecutive messages of the same role. This is required by the
     // Anthropic API: can't have consecutive user or assistant messages.
-    let mut merged: Vec<(String, Vec<Value>)> = Vec::new();
-    for (role, content) in messages {
-        if let Some(last) = merged.last_mut() {
-            if last.0 == role {
-                last.1.extend(content);
+    // Mid-conversation entries are forwarded byte-for-byte: merging would
+    // concatenate content arrays and rewrite the caller's entries.
+    enum Built {
+        Entry(Value),
+        Message(String, Vec<Value>),
+    }
+    let mut merged: Vec<Built> = Vec::new();
+    for (role, content, mid_conversation_entry) in messages {
+        if let Some(entry) = mid_conversation_entry {
+            merged.push(Built::Entry(entry));
+            continue;
+        }
+        if let Some(Built::Message(last_role, last_content)) = merged.last_mut() {
+            if *last_role == role {
+                last_content.extend(content);
                 continue;
             }
         }
-        merged.push((role, content));
+        merged.push(Built::Message(role, content));
     }
     let merged: Vec<Value> = merged
         .into_iter()
-        .map(|(role, content)| json!({"role": role, "content": content}))
+        .map(|b| match b {
+            Built::Entry(entry) => entry,
+            Built::Message(role, content) => json!({"role": role, "content": content}),
+        })
         .collect();
 
     let tools = if truthy(request.get("tools")) {
@@ -455,6 +507,115 @@ mod tests {
                 "metadata": null,
                 "top_k": 5,
             }))
+        );
+    }
+
+    /// Parse an inbound Messages body and rebuild it the way the dispatcher
+    /// does (same-format egress with `originalBody` attached).
+    fn roundtrip(body: &Value, with_original: bool) -> Value {
+        use crate::engine::anthropic::request_parser::parse_anthropic_request;
+        let mut unified = parse_anthropic_request(body).unwrap();
+        if with_original {
+            unified["incomingApiType"] = json!("messages");
+            unified["originalBody"] = body.clone();
+        }
+        build_anthropic_request(&unified).unwrap()
+    }
+
+    fn request_with_entry() -> Value {
+        json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "system": "You are a helpful assistant.",
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "low"},
+            "messages": [
+                {"role": "user", "content": "first turn"},
+                {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+                {"role": "system", "content": [{"type": "text", "text": "Answer in one sentence."}], "output_config": {"effort": "high"}},
+                {"role": "user", "content": "second turn"},
+            ],
+        })
+    }
+
+    #[test]
+    fn mid_conversation_entries_stay_in_place() {
+        let request = request_with_entry();
+        let built = roundtrip(&request, true);
+        assert_eq!(built["system"], json!("You are a helpful assistant."));
+        assert_eq!(built["messages"].as_array().unwrap().len(), 4);
+        assert_eq!(built["messages"][2], request["messages"][2]);
+    }
+
+    #[test]
+    fn mid_conversation_entries_are_not_hoisted_into_system() {
+        let mut request = request_with_entry();
+        request.as_object_mut().unwrap().remove("system");
+        let built = roundtrip(&request, true);
+        assert!(built.get("system").is_none());
+        assert_eq!(built["messages"][2], request["messages"][2]);
+    }
+
+    #[test]
+    fn consecutive_mid_conversation_entries_stay_separate() {
+        let request = json!({
+            "model": "claude-opus-5.5",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "system", "content": [], "output_config": {"effort": "low"}},
+                {"role": "system", "content": [{"type": "text", "text": "Be terse."}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            ],
+        });
+        let built = roundtrip(&request, true);
+        assert_eq!(built["messages"][1], request["messages"][1]);
+        assert_eq!(built["messages"][2], request["messages"][2]);
+    }
+
+    #[test]
+    fn output_config_only_entry_is_reemitted_verbatim() {
+        let entry = json!({"role": "system", "content": [], "output_config": {"effort": "high"}});
+        let request = json!({
+            "model": "claude-opus-5.5",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "hello"},
+                entry,
+                {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            ],
+        });
+        assert_eq!(roundtrip(&request, true)["messages"][1], entry);
+    }
+
+    #[test]
+    fn per_entry_effort_is_clamped_without_mutating_the_inbound_body() {
+        let request = json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "system", "content": [
+                    {"type": "text", "text": "Think hard."},
+                    {"type": "text", "text": "And long."},
+                ], "output_config": {"effort": "minimal"}},
+                {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            ],
+        });
+        let built = roundtrip(&request, true);
+        assert_eq!(built["messages"][1]["output_config"], json!({"effort": "low"}));
+        assert_eq!(
+            request["messages"][1]["output_config"],
+            json!({"effort": "minimal"})
+        );
+    }
+
+    #[test]
+    fn mid_conversation_entry_falls_back_to_flattened_content() {
+        let built = roundtrip(&request_with_entry(), false);
+        assert_eq!(
+            built["messages"][2],
+            json!({"role": "system", "content": "Answer in one sentence."})
         );
     }
 

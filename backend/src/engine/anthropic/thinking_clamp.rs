@@ -139,6 +139,33 @@ pub fn clamp_anthropic_effort_and_thinking(mut payload: Value, model_id: Option<
         map["output_config"]["effort"] = json!(clamped());
     }
 
+    // Mid-conversation `role: 'system'` entries carry their OWN per-turn
+    // `output_config.effort`. Anthropic accepts only low..max there too, and a
+    // per-turn value cannot disable the request-level thinking mode, so an
+    // 'off'/unknown value clamps to the lowest expressible level ('low') rather
+    // than deleting the directive (which would silently fall back to the
+    // top-level placeholder effort).
+    if let Some(Value::Array(messages)) = map.get_mut("messages") {
+        for message in messages {
+            if message.get("role").and_then(Value::as_str) != Some("system") {
+                continue;
+            }
+            let Some(Value::Object(entry)) = message.get_mut("output_config") else {
+                continue;
+            };
+            let Some(raw) = entry.get("effort") else {
+                continue;
+            };
+            let clamped = match normalize_effort(Some(raw)) {
+                Some(effort) if effort != "off" => {
+                    clamp_effort_to_window(effort, Some("low"), Some("max"))
+                }
+                _ => "low",
+            };
+            entry.insert("effort".into(), json!(clamped));
+        }
+    }
+
     payload
 }
 
@@ -176,6 +203,54 @@ mod tests {
 
     fn clamp(v: Value) -> Value {
         clamp_anthropic_effort_and_thinking(v, None)
+    }
+
+    fn with_entry(effort: Value, model: &str) -> Value {
+        json!({
+            "model": model,
+            "messages": [
+                {"role": "user", "content": []},
+                {"role": "system", "content": [], "output_config": {"effort": effort}},
+                {"role": "assistant", "content": []},
+            ],
+        })
+    }
+
+    #[test]
+    fn clamps_mid_conversation_entry_effort() {
+        for (effort, expected) in [
+            ("minimal", "low"),
+            ("off", "low"),
+            ("none", "low"),
+            ("turbo", "low"),
+            ("LOW", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
+        ] {
+            let out = clamp(with_entry(json!(effort), "claude-sonnet-4-6"));
+            assert_eq!(
+                out["messages"][1]["output_config"],
+                json!({"effort": expected}),
+                "{effort}"
+            );
+        }
+        // Models that cannot disable thinking clamp per-entry effort too.
+        let out = clamp(with_entry(json!("off"), "claude-opus-5"));
+        assert_eq!(out["messages"][1]["output_config"], json!({"effort": "low"}));
+    }
+
+    #[test]
+    fn leaves_other_messages_alone() {
+        let payload = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [
+                {"role": "user", "content": [], "output_config": {"effort": "minimal"}},
+                {"role": "system", "content": []},
+            ],
+        });
+        assert_eq!(clamp(payload.clone())["messages"], payload["messages"]);
     }
 
     #[test]

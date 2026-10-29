@@ -15,6 +15,29 @@ use crate::engine::js::{get, get_str, obj, stringify, truthy, Obj};
 use crate::engine::transformer::{EngineError, EngineResult};
 use serde_json::{json, Value};
 
+/// `flattenMidConversationSystemContent`: flattens an Anthropic
+/// mid-conversation `role: 'system'` entry's content into the unified string
+/// form.
+///
+/// Anthropic egress re-emits the caller's raw entry (so content and
+/// block-level `cache_control` survive there), which means the unified string
+/// only feeds cross-format egress — and the Responses/Gemini emitters
+/// stringify array content, so joining the text blocks produces a usable
+/// system prompt instead of a JSON blob. Contentless entries (the per-turn
+/// `output_config`-only shape) become the empty string.
+fn flatten_mid_conversation_system_content(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter(|p| get_str(p, &["type"]) == Some("text"))
+            .filter_map(|p| p.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => String::new(),
+    }
+}
+
 /// `parseAnthropicRequest`.
 pub fn parse_anthropic_request(input: &Value) -> EngineResult<Value> {
     let mut messages: Vec<Value> = Vec::new();
@@ -56,6 +79,19 @@ pub fn parse_anthropic_request(input: &Value) -> EngineResult<Value> {
                 return Err(type_error(Some(msg), "msg.role"));
             }
             let role = get_str(msg, &["role"]);
+            // Anthropic allows `role: 'system'` entries INSIDE `messages` under
+            // the mid-conversation-system / mid-conversation-output-config
+            // betas. They are per-turn directives at a position in the
+            // conversation, not part of the request-level `system` prompt, so
+            // keep them (marked) in place instead of discarding or hoisting.
+            if role == Some("system") {
+                messages.push(json!({
+                    "role": "system",
+                    "content": flatten_mid_conversation_system_content(msg.get("content")),
+                    "mid_conversation": true,
+                }));
+                continue;
+            }
             if role != Some("user") && role != Some("assistant") {
                 continue;
             }

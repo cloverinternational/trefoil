@@ -644,6 +644,60 @@ fn lite_payload_enforces_reasoning_context() {
 }
 
 #[test]
+fn drop_mid_conversation_entries_semantics() {
+    // Untouched when there are no markers.
+    let plain = json!({"model": "m", "messages": [{"role": "user", "content": "hello"}]});
+    assert_eq!(drop_mid_conversation_entries(plain.clone()), plain);
+
+    // Drops marked entries (including contentless ones) but keeps the system
+    // prompt and every other message.
+    let request = json!({
+        "model": "m",
+        "reasoning": {"effort": "high", "enabled": true},
+        "messages": [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "Answer briefly.", "mid_conversation": true},
+            {"role": "system", "content": "", "mid_conversation": true},
+            {"role": "assistant", "content": "ok"},
+        ],
+    });
+    let out = drop_mid_conversation_entries(request.clone());
+    assert_eq!(
+        out["messages"],
+        json!([
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "ok"},
+        ])
+    );
+    assert_eq!(out["reasoning"], request["reasoning"]);
+    assert_eq!(out["model"], "m");
+}
+
+#[test]
+fn mid_conversation_entries_only_survive_messages_targets() {
+    let r = route(
+        "claude-sonnet-4-6",
+        json!({"api_base_url": "https://x/v1", "api_key": "k"}),
+        None,
+    );
+    let request = json!({"model": "alias", "incomingApiType": "chat", "stream": false, "messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "system", "content": "x", "mid_conversation": true},
+    ]});
+    // FakeTransformer echoes `messages`, so this observes what it was handed.
+    let to_messages =
+        build_request_payload(&request, &r, &FakeTransformer, "messages", &[], &Config::default())
+            .unwrap();
+    assert_eq!(to_messages.payload["messages"].as_array().unwrap().len(), 2);
+    let to_chat =
+        build_request_payload(&request, &r, &FakeTransformer, "chat", &[], &Config::default())
+            .unwrap();
+    assert_eq!(to_chat.payload["messages"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn base_responses_target_does_not_get_lite_reasoning() {
     let r = route(
         "gpt-5",

@@ -91,6 +91,32 @@ pub fn apply_auto_anthropic_betas(headers: &mut Headers, payload: &Value, target
     );
 }
 
+/// `dropMidConversationEntries(request)`: drops Anthropic mid-conversation
+/// `role: 'system'` entries for egress formats that have no in-conversation
+/// system concept.
+///
+/// Those entries are marked by the Messages parser so a rebuilt Messages
+/// request can re-emit the caller's own entry verbatim at its position. Other
+/// wire formats cannot express a system turn mid-conversation, and folding the
+/// content into the target's system prompt would rewrite the caller's prompt,
+/// so cross-format egress drops them deliberately — the same documented-drop
+/// convention used for other Anthropic-native fields the target cannot
+/// express. The per-turn effort they carry is not lost: it already travelled
+/// to the target on `request.reasoning` (see `get_mid_conversation_effort`).
+pub fn drop_mid_conversation_entries(mut request: Value) -> Value {
+    let has_marker = request
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|ms| ms.iter().any(|m| truthy(m.get("mid_conversation"))));
+    if !has_marker {
+        return request;
+    }
+    if let Some(Value::Array(ms)) = request.get_mut("messages") {
+        ms.retain(|m| !truthy(m.get("mid_conversation")));
+    }
+    request
+}
+
 /// `shouldUsePassThrough(request, targetApiType, route)`.
 pub fn should_use_pass_through(
     request: &Value,
@@ -208,7 +234,14 @@ pub fn build_request_payload(
             r.insert("metadata".into(), Value::Object(metadata));
             Value::Object(r)
         };
-        transformer.transform_request(&with_provider)?
+        // Same-format Messages egress keeps the mid-conversation markers so the
+        // builder can re-emit the caller's entries in place; every other target
+        // deliberately drops them (see `drop_mid_conversation_entries`).
+        if base_type(target_api_type) == "messages" {
+            transformer.transform_request(&with_provider)?
+        } else {
+            transformer.transform_request(&drop_mid_conversation_entries(with_provider))?
+        }
     };
 
     let claude_passthrough = anthropic_native
