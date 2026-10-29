@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Brand: the mark is now a three-leaf clover (a trefoil) instead of a knot, and the
-  accent color is green (`#22c55e` dark, `#16a34a` light) across the README banner
+- Brand: the mark is now a three-leaf clover (a trefoil) instead of a knot, drawn
+  as a connection: one line enters the top leaf, meets a hub and splits into the
+  two lower leaves. The accent color is green (`#22c55e` dark, `#16a34a` light) across the README banner
   and badges, favicon, admin UI tokens and charts.
 - Reference Plexus moved to `a4cd39b0` (46 commits). Ported: Anthropic OAuth
   reasoning translation and system-prompt preservation, mid-conversation system
