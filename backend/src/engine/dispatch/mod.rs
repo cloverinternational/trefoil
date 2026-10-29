@@ -30,6 +30,7 @@ pub mod empty_completion;
 pub mod errors;
 pub mod failover_policy;
 pub mod model_behaviors;
+pub mod muse_builtin_tool;
 pub mod oauth_routes;
 pub mod pi_ai;
 pub mod request_payload;
