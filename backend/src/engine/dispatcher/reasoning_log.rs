@@ -1,5 +1,6 @@
 //! `getReasoningLogValue` from `services/pi-ai/reasoning.ts` (usage log
 //! `reasoningEffort`).
+use crate::engine::anthropic::helpers::get_mid_conversation_effort;
 use crate::engine::dispatch::pi_ai::{budget_to_effort, normalize_effort, split_reasoning_suffix};
 use crate::engine::js::*;
 use serde_json::Value;
@@ -59,6 +60,13 @@ pub fn get_reasoning_log_value(request: Option<&Value>, payload: &Value) -> Opti
             _ => v,
         }
     };
+    // A mid-conversation `output_config.effort` describes this turn; the
+    // top-level value is a cache-stable placeholder in those requests, so the
+    // in-`messages` value takes precedence.
+    let mid_conversation_effort = get_mid_conversation_effort(source).map(Value::String);
+    let output_effort = mid_conversation_effort
+        .as_ref()
+        .or_else(|| get(source, &["output_config", "effort"]));
     if let Some(thinking) = source
         .get("thinking")
         .filter(|t| truthy(Some(t)) && (t.is_object() || t.is_array()))
@@ -68,7 +76,7 @@ pub fn get_reasoning_log_value(request: Option<&Value>, payload: &Value) -> Opti
             .and_then(Value::as_str)
             .map(str::to_lowercase);
         let v = resolve(intent_to_log_value(&Intent {
-            effort: get(source, &["output_config", "effort"]),
+            effort: output_effort,
             budget_tokens: thinking.get("budget_tokens"),
             enabled: match kind.as_deref() {
                 Some("disabled") => Some(Value::Bool(false)),
@@ -147,7 +155,7 @@ pub fn get_reasoning_log_value(request: Option<&Value>, payload: &Value) -> Opti
         }
     }
     let effort = {
-        let e = get(source, &["output_config", "effort"]);
+        let e = output_effort;
         if nullish(e) {
             source.get("thinking_level")
         } else {
@@ -236,5 +244,51 @@ mod tests {
             Some("high")
         );
         assert_eq!(get_reasoning_log_value(None, &json!({"model": "m"})), None);
+    }
+
+    #[test]
+    fn mid_conversation_effort_wins_over_top_level_placeholder() {
+        let payload = json!({
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "system", "output_config": {"effort": "low"}},
+                {"role": "assistant", "content": "ok"},
+                {"role": "system", "output_config": {"effort": "max"}},
+                {"role": "user", "content": "again"},
+            ],
+        });
+        assert_eq!(
+            get_reasoning_log_value(None, &payload).as_deref(),
+            Some("max")
+        );
+        // No per-turn entries: the top-level value still applies.
+        assert_eq!(
+            get_reasoning_log_value(
+                None,
+                &json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}, "messages": []})
+            )
+            .as_deref(),
+            Some("high")
+        );
+        // Explicitly disabled thinking still records as off.
+        assert_eq!(
+            get_reasoning_log_value(
+                None,
+                &json!({"thinking": {"type": "disabled"}, "messages": [{"role": "system", "output_config": {"effort": "high"}}]})
+            )
+            .as_deref(),
+            Some("off")
+        );
+        // Blank per-turn efforts are ignored.
+        assert_eq!(
+            get_reasoning_log_value(
+                None,
+                &json!({"output_config": {"effort": "medium"}, "messages": [{"role": "system", "output_config": {"effort": "  "}}]})
+            )
+            .as_deref(),
+            Some("medium")
+        );
     }
 }

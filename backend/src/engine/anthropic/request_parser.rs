@@ -6,7 +6,10 @@
 //! - Tool choice normalization
 //! - Thinking configuration mapping
 use super::content_mapper::convert_anthropic_content;
-use super::helpers::{get_think_level, normalize_effort, not_iterable, stringify_opt, type_error};
+use super::helpers::{
+    get_mid_conversation_effort, get_think_level, normalize_effort, not_iterable, stringify_opt,
+    type_error,
+};
 use super::tool_mapper::convert_anthropic_tools_to_unified;
 use crate::engine::js::{get, get_str, obj, stringify, truthy, Obj};
 use crate::engine::transformer::{EngineError, EngineResult};
@@ -215,7 +218,14 @@ pub fn parse_anthropic_request(input: &Value) -> EngineResult<Value> {
         let thinking_budget = get(input, &["thinking", "budget_tokens"]).and_then(Value::as_f64);
         let thinking_type_str = thinking_type.and_then(Value::as_str);
         let enabled = matches!(thinking_type_str, Some("enabled" | "adaptive"));
-        let configured = normalize_effort(get(input, &["output_config", "effort"]));
+        // With the mid-conversation output-config beta, the top-level
+        // `output_config.effort` is a cache-stable placeholder; the effort this
+        // turn actually runs at is the last `output_config.effort` carried
+        // inside `messages`. Prefer it so cross-format egress (and logging off
+        // the unified request) sees the real per-turn effort.
+        let mid_effort = get_mid_conversation_effort(input).map(Value::String);
+        let configured =
+            normalize_effort(mid_effort.as_ref().or_else(|| get(input, &["output_config", "effort"])));
         let effort = if enabled {
             if configured == Some("off") {
                 Some("none")
@@ -325,5 +335,31 @@ mod tests {
             r["reasoning"],
             json!({"effort": "xhigh", "max_tokens": 20000, "enabled": true})
         );
+    }
+
+    #[test]
+    fn reasoning_effort_prefers_last_mid_conversation_value() {
+        let r = parse_anthropic_request(&json!({
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "system", "output_config": {"effort": "low"}},
+                {"role": "system", "output_config": {"effort": "medium"}},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(
+            r["reasoning"],
+            json!({"effort": "medium", "enabled": true, "adaptive": true})
+        );
+        // No per-turn entries: the top-level effort is used.
+        let r = parse_anthropic_request(&json!({
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+            "messages": [{"role": "user", "content": "hi"}],
+        }))
+        .unwrap();
+        assert_eq!(r["reasoning"]["effort"], "high");
     }
 }
