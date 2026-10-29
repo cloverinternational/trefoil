@@ -46,7 +46,8 @@ pub fn router() -> Router<AppState> {
 }
 
 fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
-    match resolve_principal(state, headers.get("x-admin-key").and_then(|v| v.to_str().ok())) {
+    let provided = crate::auth::admin_key_or_bearer(headers);
+    match resolve_principal(state, provided.as_deref()) {
         Some(Principal::Admin) => Ok(()),
         Some(Principal::Limited { .. }) => Err((StatusCode::FORBIDDEN, Json(json!({"error":{"message":"Admin privileges required","type":"forbidden","code":403}}))).into_response()),
         None => Err((StatusCode::UNAUTHORIZED, Json(json!({"error":{"message":"Unauthorized","type":"auth_error","code":401}}))).into_response()),
