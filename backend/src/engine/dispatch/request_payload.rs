@@ -9,12 +9,14 @@
 //! (token resolution, masking, stash) runs in `engine::dispatcher::oauth`.
 use super::adapter_resolver::is_anthropic_target_provider;
 use super::adapters::ResolvedAdapter;
-use super::auto_compat::{apply_registry_auto_compat, strip_lite_unsupported_tools};
+use super::auto_compat::{
+    apply_native_anthropic_compat, apply_registry_auto_compat, strip_lite_unsupported_tools,
+};
 use super::cache_key_injection::{
     apply_body_cache_key_injection, apply_header_cache_key_injection,
 };
-use super::eager_tool_streaming::apply_eager_tool_input_streaming;
-use super::model_behaviors::apply_model_behaviors;
+use super::eager_tool_streaming::{apply_eager_tool_input_streaming, sends_to_anthropic_api};
+use super::model_behaviors::{apply_model_behaviors, BehaviorContext};
 use super::oauth_routes::{is_claude_masking_api_key_route, is_native_oauth_route, is_pi_ai_route};
 use super::responses_extensions::{
     detect_responses_extensions, has_unsupported_responses_extensions,
@@ -89,6 +91,32 @@ pub fn apply_auto_anthropic_betas(headers: &mut Headers, payload: &Value, target
         existing.unwrap_or_else(|| "anthropic-beta".into()),
         json!(betas.join(",")),
     );
+}
+
+/// `dropMidConversationEntries(request)`: drops Anthropic mid-conversation
+/// `role: 'system'` entries for egress formats that have no in-conversation
+/// system concept.
+///
+/// Those entries are marked by the Messages parser so a rebuilt Messages
+/// request can re-emit the caller's own entry verbatim at its position. Other
+/// wire formats cannot express a system turn mid-conversation, and folding the
+/// content into the target's system prompt would rewrite the caller's prompt,
+/// so cross-format egress drops them deliberately — the same documented-drop
+/// convention used for other Anthropic-native fields the target cannot
+/// express. The per-turn effort they carry is not lost: it already travelled
+/// to the target on `request.reasoning` (see `get_mid_conversation_effort`).
+pub fn drop_mid_conversation_entries(mut request: Value) -> Value {
+    let has_marker = request
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|ms| ms.iter().any(|m| truthy(m.get("mid_conversation"))));
+    if !has_marker {
+        return request;
+    }
+    if let Some(Value::Array(ms)) = request.get_mut("messages") {
+        ms.retain(|m| !truthy(m.get("mid_conversation")));
+    }
+    request
 }
 
 /// `shouldUsePassThrough(request, targetApiType, route)`.
@@ -208,7 +236,14 @@ pub fn build_request_payload(
             r.insert("metadata".into(), Value::Object(metadata));
             Value::Object(r)
         };
-        transformer.transform_request(&with_provider)?
+        // Same-format Messages egress keeps the mid-conversation markers so the
+        // builder can re-emit the caller's entries in place; every other target
+        // deliberately drops them (see `drop_mid_conversation_entries`).
+        if base_type(target_api_type) == "messages" {
+            transformer.transform_request(&with_provider)?
+        } else {
+            transformer.transform_request(&drop_mid_conversation_entries(with_provider))?
+        }
     };
 
     let claude_passthrough = anthropic_native
@@ -219,6 +254,14 @@ pub fn build_request_payload(
     gemini_tail(&mut payload, target_api_type);
     payload = apply_service_tier_selection(payload, request, target_api_type);
     payload = apply_gemini_thinking_config(route, target_api_type, payload)?;
+    if anthropic_native && !bypass {
+        payload = apply_native_anthropic_compat(
+            payload,
+            request,
+            &route.model,
+            &crate::engine::dispatch::pi_ai::resolve_pi_ai_model,
+        );
+    }
     payload = apply_registry_auto_compat(payload, request, route, target_api_type);
     payload = apply_eager_tool_input_streaming(payload, request, route, target_api_type, bypass);
     payload = apply_body_cache_key_injection(payload, route, request, target_api_type);
@@ -229,13 +272,32 @@ pub fn build_request_payload(
         route.model_config.as_ref().and_then(|m| m.get("extraBody")),
     );
     if let Some(canonical) = route.canonical_model.as_deref().filter(|c| !c.is_empty()) {
-        if let Some(alias) = config.alias(canonical) {
+        let alias = config.alias(canonical);
+        if let Some(alias) = alias {
             payload = spread_into(payload, alias.get("extraBody"));
-            if let Some(advanced) = alias.get("advanced").filter(|a| truthy(Some(a))) {
-                let incoming = get_str(request, &["incomingApiType"]).unwrap_or("");
-                payload = apply_model_behaviors(payload, Some(advanced), incoming, canonical);
-            }
         }
+        // Invoked even when the alias has no `advanced` entries: some
+        // behaviors apply implicitly. `inject_cache_control` auto-enables for
+        // aliases that dispatch to Anthropic's own API, and an explicitly
+        // configured behavior (including `enabled: false`) always overrides
+        // that default.
+        let ctx = BehaviorContext {
+            incoming_api_type: get_str(request, &["incomingApiType"]).unwrap_or(""),
+            canonical_model: canonical,
+            target_api_type,
+            auto_enable_cache_control: sends_to_anthropic_api(route, target_api_type),
+            // The native Anthropic path rewrites `system` (Claude Code
+            // masking) after this point, so behaviors must not count on a
+            // system breakpoint there.
+            system_rewritten_by_masking: anthropic_native,
+        };
+        payload = apply_model_behaviors(
+            payload,
+            alias
+                .and_then(|a| a.get("advanced"))
+                .filter(|a| truthy(Some(a))),
+            &ctx,
+        );
     }
 
     for entry in adapters {
@@ -253,12 +315,11 @@ pub fn build_request_payload(
 
     if !native_oauth && target_api_type.to_lowercase() == "responses:lite" {
         let mut m = obj_of(Some(&payload));
-        if let Some(reasoning) = m.get("reasoning").filter(|r| truthy(Some(r))).cloned() {
-            let mut r = obj_of(Some(&reasoning));
-            let context = coalesce(reasoning.get("context"), None).unwrap_or(json!("all_turns"));
-            r.insert("context".into(), context);
-            m.insert("reasoning".into(), Value::Object(r));
-        }
+        // The lite header requires `context: "all_turns"` even when the client
+        // omits reasoning entirely; other reasoning options are preserved.
+        let mut r = obj_of(m.get("reasoning").filter(|r| truthy(Some(r))));
+        r.insert("context".into(), json!("all_turns"));
+        m.insert("reasoning".into(), Value::Object(r));
         m.insert("parallel_tool_calls".into(), json!(false));
         payload = strip_lite_unsupported_tools(Value::Object(m)).0;
     }

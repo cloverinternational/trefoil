@@ -379,7 +379,14 @@ fn prepare_anthropic(
         NativeAuth::OAuth(t) => t.clone(),
         NativeAuth::ApiKey(k) => format!("sk-ant-oat-mask-{k}"),
     };
-    let transformed = masking::apply_claude_oauth_transform(prepared.clone(), &masking_token);
+    // Canonicalize tool names once, then let the masking pipeline own identity
+    // relocation and signing. Running the full v1 transform here would also
+    // relocate the system prompt, causing masking to inject a second synthetic
+    // reminder.
+    let mut transformed = prepared.clone();
+    if masking_token.contains("sk-ant-oat") {
+        masking::remap_oauth_tool_names(&mut transformed);
+    }
     let (masked, pairs) = masking::apply_claude_code_masking(&transformed);
     let caller_tools: Vec<String> = prepared
         .get("tools")

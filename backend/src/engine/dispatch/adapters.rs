@@ -144,12 +144,34 @@ pub fn is_muse_target(route: &RouteResult) -> bool {
     })
 }
 
+/// `isMuseSubscriptionTarget(route)`: whether a dispatch carries a Muse Code
+/// *subscription* credential, the only case Meta's builtin-tool check applies
+/// to. A direct `api.meta.ai` provider with a pay-as-you-go key speaks the
+/// same wire contract but is not gated, so it must not receive the
+/// declaration.
+pub fn is_muse_subscription_target(route: &RouteResult) -> bool {
+    if get_str(&route.config, &["oauth_provider"]) == Some("meta") {
+        return true;
+    }
+    if crate::engine::config::oauth_provider_of(&route.provider, &route.config) != "meta" {
+        return false;
+    }
+    match route.config.get("api_base_url") {
+        Some(Value::String(s)) => crate::engine::config::is_oauth_placeholder_url(s),
+        Some(Value::Object(m)) => m
+            .values()
+            .filter_map(Value::as_str)
+            .any(crate::engine::config::is_oauth_placeholder_url),
+        _ => false,
+    }
+}
+
 pub struct MuseCodeCompat;
 impl ProviderAdapter for MuseCodeCompat {
     fn name(&self) -> &'static str {
         "muse_code_compat"
     }
-    fn pre_dispatch(&self, payload: Value, _options: Option<&Value>) -> Value {
+    fn pre_dispatch(&self, payload: Value, options: Option<&Value>) -> Value {
         let mut next = payload;
         if next.get("tool_choice").is_some() {
             if let Some(m) = next.as_object_mut() {
@@ -165,6 +187,9 @@ impl ProviderAdapter for MuseCodeCompat {
             if kept.len() != tools.len() {
                 next = with_key(next, "tools", Value::Array(kept));
             }
+        }
+        if options.and_then(|o| o.get("inject_builtin_tool")) == Some(&Value::Bool(true)) {
+            next = super::muse_builtin_tool::inject_muse_builtin_tool(next);
         }
         next
     }
@@ -689,6 +714,63 @@ mod tests {
             SuppressUnsupportedGpt5Options.pre_dispatch(p, None),
             json!({"model": "gpt-5", "input": []})
         );
+    }
+
+    #[test]
+    fn muse_injects_builtin_tool_only_when_asked() {
+        use crate::engine::dispatch::muse_builtin_tool::has_muse_builtin_namespace;
+        let payload = json!({"tools": [{"type": "function", "name": "read"}]});
+        assert_eq!(MuseCodeCompat.pre_dispatch(payload.clone(), None), payload);
+        assert_eq!(
+            MuseCodeCompat.pre_dispatch(
+                payload.clone(),
+                Some(&json!({"inject_builtin_tool": false}))
+            ),
+            payload
+        );
+        let injected =
+            MuseCodeCompat.pre_dispatch(payload, Some(&json!({"inject_builtin_tool": true})));
+        assert!(has_muse_builtin_namespace(
+            injected["tools"].as_array().unwrap()
+        ));
+        // Custom tools are still dropped before the declaration is appended.
+        let both = MuseCodeCompat.pre_dispatch(
+            json!({"tools": [{"type": "custom", "name": "c"}, {"type": "function", "name": "f"}]}),
+            Some(&json!({"inject_builtin_tool": true})),
+        );
+        let names: Vec<&str> = both["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert_eq!(names, ["f", "muse"]);
+    }
+
+    #[test]
+    fn muse_subscription_target_detection() {
+        let route = |config: Value| RouteResult {
+            provider: "p".into(),
+            model: "m".into(),
+            config,
+            model_config: None,
+            incoming_model_alias: None,
+            canonical_model: None,
+        };
+        assert!(is_muse_subscription_target(&route(
+            json!({"api_base_url": "oauth://plexus", "oauth_provider": "meta"})
+        )));
+        // Pay-as-you-go key on the same host is not gated.
+        assert!(!is_muse_subscription_target(&route(
+            json!({"api_base_url": "https://api.meta.ai/v1"})
+        )));
+        // A provider slugged `meta` is a subscription target only on an
+        // OAuth placeholder URL.
+        let mut meta = route(json!({"api_base_url": {"responses": "oauth://plexus"}}));
+        meta.provider = "meta".into();
+        assert!(is_muse_subscription_target(&meta));
+        meta.config = json!({"api_base_url": "https://api.meta.ai/v1"});
+        assert!(!is_muse_subscription_target(&meta));
     }
 
     #[test]

@@ -187,10 +187,34 @@ fn build_model_config() -> Schema {
             "advanced",
             array(discriminated(
                 "type",
-                vec![object(vec![
-                    ("type", literal("strip_adaptive_thinking")),
-                    ("enabled", boolean().default(true)),
-                ])],
+                vec![
+                    object(vec![
+                        ("type", literal("strip_adaptive_thinking")),
+                        ("enabled", boolean().default(true)),
+                    ]),
+                    // Fills `cache_control` breakpoints into requests that were
+                    // translated to the Messages API from a format that cannot
+                    // express them (chat, responses). Auto-enabled for aliases
+                    // that dispatch to Anthropic's own API; adding the behavior
+                    // explicitly (or with `enabled: false`) overrides that.
+                    object(vec![
+                        ("type", literal("inject_cache_control")),
+                        ("enabled", boolean().default(true)),
+                        // Mark the last tool definition, caching the tools block.
+                        ("tools", boolean().default(true)),
+                        // Mark the last system text block.
+                        ("system", boolean().default(true)),
+                        // Trailing "walking" breakpoints on the conversation tail
+                        // (0 disables).
+                        (
+                            "message_breakpoints",
+                            number().int().min(0.0).max(4.0).default(2),
+                        ),
+                        // Omitted leaves Anthropic's 5m default (1.25x write);
+                        // '1h' costs 2x.
+                        ("ttl", enumeration(&["5m", "1h"]).optional()),
+                    ]),
+                ],
             ))
             .optional(),
         ),
@@ -633,6 +657,62 @@ pub fn legacy_view(config: &ModelConfig) -> Value {
 impl ModelConfig {
     pub fn public_view(&self) -> Value {
         self.view.clone().unwrap_or_else(|| legacy_view(self))
+    }
+}
+
+#[cfg(test)]
+mod advanced_behaviors {
+    use serde_json::json;
+
+    fn advanced(entries: serde_json::Value) -> Result<serde_json::Value, Vec<serde_json::Value>> {
+        super::model_config()
+            .safe_parse(&json!({"targets": [], "advanced": entries}))
+            .map(|ok| ok["advanced"].clone())
+    }
+
+    #[test]
+    fn inject_cache_control_gets_schema_defaults() {
+        assert_eq!(
+            advanced(json!([{"type": "inject_cache_control"}])).unwrap(),
+            json!([{
+                "type": "inject_cache_control",
+                "enabled": true,
+                "tools": true,
+                "system": true,
+                "message_breakpoints": 2,
+            }])
+        );
+        assert_eq!(
+            advanced(json!([{"type": "inject_cache_control", "enabled": false, "tools": false, "system": false, "message_breakpoints": 0, "ttl": "1h"}])).unwrap(),
+            json!([{
+                "type": "inject_cache_control",
+                "enabled": false,
+                "tools": false,
+                "system": false,
+                "message_breakpoints": 0,
+                "ttl": "1h",
+            }])
+        );
+    }
+
+    #[test]
+    fn inject_cache_control_rejects_out_of_range_values() {
+        for bad in [
+            json!({"type": "inject_cache_control", "message_breakpoints": 5}),
+            json!({"type": "inject_cache_control", "message_breakpoints": -1}),
+            json!({"type": "inject_cache_control", "message_breakpoints": 1.5}),
+            json!({"type": "inject_cache_control", "ttl": "2h"}),
+        ] {
+            assert!(advanced(json!([bad.clone()])).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn strip_adaptive_thinking_is_unchanged() {
+        assert_eq!(
+            advanced(json!([{"type": "strip_adaptive_thinking"}])).unwrap(),
+            json!([{"type": "strip_adaptive_thinking", "enabled": true}])
+        );
     }
 }
 

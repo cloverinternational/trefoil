@@ -1,5 +1,7 @@
 //! `services/dispatch/adapter-resolver.ts`.
-use super::adapters::{adapter_by_name, is_muse_target, ResolvedAdapter};
+use super::adapters::{
+    adapter_by_name, is_muse_subscription_target, is_muse_target, ResolvedAdapter,
+};
 use super::util::base_type;
 use crate::engine::config::{is_oauth_placeholder_url, oauth_provider_of};
 use crate::engine::js::*;
@@ -53,7 +55,15 @@ fn resolve_implicit_adapters(route: &RouteResult, effective_api_type: Option<&st
         out.push(implicit("strip_unsupported_tool_search"));
     }
     if is_muse_target(route) {
-        out.push(implicit("muse_code_compat"));
+        // Subscription keys carry Meta's builtin-tool entitlement check; a
+        // pay-as-you-go key on the same host does not, so only OAuth routes
+        // get the declaration appended.
+        let options = if is_muse_subscription_target(route) {
+            json!({"inject_builtin_tool": true})
+        } else {
+            json!({})
+        };
+        out.push(json!({"name": "muse_code_compat", "options": options, "enabled": true}));
     }
     if let Some(api) = effective_api_type.filter(|a| !a.is_empty()) {
         if base_type(api) == "messages" && is_anthropic_target_provider(route, Some(api)) {
@@ -125,6 +135,25 @@ mod tests {
     }
     fn names(r: &[ResolvedAdapter]) -> Vec<&'static str> {
         r.iter().map(|a| a.adapter.name()).collect()
+    }
+
+    #[test]
+    fn muse_declaration_is_requested_only_for_subscription_routes() {
+        let subscription = route(
+            "m",
+            json!({"api_base_url": "oauth://plexus", "oauth_provider": "meta"}),
+            None,
+        );
+        let resolved = resolve_adapters(&subscription, None);
+        assert_eq!(names(&resolved), vec!["muse_code_compat"]);
+        assert_eq!(
+            resolved[0].options,
+            Some(json!({"inject_builtin_tool": true}))
+        );
+        let payg = route("m", json!({"api_base_url": "https://api.meta.ai/v1"}), None);
+        let resolved = resolve_adapters(&payg, None);
+        assert_eq!(names(&resolved), vec!["muse_code_compat"]);
+        assert_eq!(resolved[0].options, Some(json!({})));
     }
 
     #[test]

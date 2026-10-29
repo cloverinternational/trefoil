@@ -34,6 +34,27 @@ pub fn normalize_effort_str(raw: &str) -> Option<&'static str> {
     }
 }
 
+/// `getMidConversationEffort(payload)`: the raw effort from the LAST
+/// `output_config` carried by an entry inside `messages` (the
+/// `mid-conversation-output-config` beta). Those entries are history, so the
+/// last one is the effort applied to the turn being generated and the
+/// top-level `output_config.effort` is only a cache-stable placeholder.
+/// `None` when no entry carries one.
+pub fn get_mid_conversation_effort(payload: &Value) -> Option<String> {
+    let mut effort = None;
+    for message in payload.get("messages")?.as_array()? {
+        let raw = message
+            .get("output_config")
+            .filter(|c| c.is_object())
+            .and_then(|c| c.get("effort"))
+            .and_then(Value::as_str);
+        if let Some(raw) = raw.filter(|r| !js_trim(r).is_empty()) {
+            effort = Some(raw.to_owned());
+        }
+    }
+    effort
+}
+
 /// `clampEffortToWindow(effort, floor, ceiling)`.
 pub fn clamp_effort_to_window(
     effort: &'static str,

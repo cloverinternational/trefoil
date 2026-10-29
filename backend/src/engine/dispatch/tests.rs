@@ -109,7 +109,7 @@ fn auto_compat_matches_typescript_goldens() {
         (
             "inline",
             json!({"model": "x", "messages": [], "reasoning": {"effort": "high"}, "temperature": 0.4, "max_tokens": 256, "service_tier": "flex"}),
-            req(json!({"originalBody": {"service_tier": "flex"}})),
+            req(json!({"originalBody": {"service_tier": "flex", "reasoning": {"effort": "high"}}})),
             route(
                 "upstream/special",
                 json!({"auto_compat": true, "pi_ai_quirks": {"chat": {"api": "openai-completions", "reasoning": true, "thinkingLevelMap": {"off": "none", "high": "high"}, "serviceTierMap": {"standard": "default"}, "compat": {"thinkingFormat": "openrouter", "maxTokensField": "max_completion_tokens", "supportsTemperature": false}, "models": {"upstream/special": {"thinkingLevelMap": {"high": "hard"}, "compat": {"supportsTemperature": true}, "maxTokens": 64}}}}}),
@@ -172,6 +172,73 @@ fn default_route() -> RouteResult {
         json!({"api_base_url": "https://example.test/v1", "api_key": "k", "auto_compat": true, "pi_ai_provider": "openai"}),
         Some(json!({"pi_ai_model_id": "registry-model"})),
     )
+}
+
+fn native_anthropic_model() -> Value {
+    pi_model(json!({
+        "id": "claude-opus-5-5",
+        "provider": "anthropic",
+        "api": "anthropic-messages",
+        "maxTokens": 64000,
+        "compat": {"forceAdaptiveThinking": true},
+    }))
+}
+
+#[test]
+fn native_anthropic_compat_translates_effort_and_uses_catalog_ceiling() {
+    let request = req(json!({
+        "incomingApiType": "responses",
+        "originalBody": {"reasoning": {"effort": "medium"}, "temperature": 1},
+    }));
+    let out = apply_native_anthropic_compat(
+        json!({"model": "claude-opus-5-5", "messages": [], "max_tokens": 4096, "temperature": 1}),
+        &request,
+        "claude-opus-5-5",
+        &mocked(native_anthropic_model()),
+    );
+    assert_eq!(
+        out["thinking"],
+        json!({"type": "adaptive", "display": "summarized"})
+    );
+    assert_eq!(out["output_config"]["effort"], "medium");
+    // The client sent no limit: the catalog ceiling replaces the fallback.
+    assert_eq!(out["max_tokens"], 64000);
+    // Temperature is dropped while thinking is on.
+    assert!(out.get("temperature").is_none());
+}
+
+#[test]
+fn native_anthropic_compat_keeps_explicit_limits_and_hidden_reasoning() {
+    let request = req(json!({
+        "incomingApiType": "responses",
+        "max_tokens": 12345,
+        "originalBody": {"reasoning": {"effort": "high", "summary": "none"}, "max_output_tokens": 12345},
+    }));
+    let out = apply_native_anthropic_compat(
+        json!({"model": "provider-model", "max_tokens": 12345}),
+        &request,
+        "provider-model",
+        &mocked(native_anthropic_model()),
+    );
+    assert_eq!(out["max_tokens"], 12345);
+    assert_eq!(
+        out["thinking"],
+        json!({"type": "adaptive", "display": "omitted"})
+    );
+}
+
+#[test]
+fn native_anthropic_compat_ignores_non_anthropic_models() {
+    let payload = json!({"model": "m", "messages": []});
+    let out = apply_native_anthropic_compat(
+        payload.clone(),
+        &req(json!({})),
+        "m",
+        &mocked(pi_model(json!({}))),
+    );
+    assert_eq!(out, payload);
+    let none = apply_native_anthropic_compat(payload.clone(), &req(json!({})), "m", &|_, _| None);
+    assert_eq!(none, payload);
 }
 
 #[test]
@@ -592,6 +659,144 @@ fn payload_transformed_with_adapters_and_lite() {
     assert_eq!(out.payload["seen_oauth_provider"], "p");
     assert_eq!(out.payload["parallel_tool_calls"], false);
     assert_eq!(out.payload["tools"], json!([]));
+    assert_eq!(out.payload["reasoning"], json!({"context": "all_turns"}));
+}
+
+#[test]
+fn lite_payload_enforces_reasoning_context() {
+    let original_input = json!([
+        {"type": "additional_tools", "role": "developer", "tools": []},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+    ]);
+    let cases: [(&str, Option<Value>); 5] = [
+        ("omitted", None),
+        ("null", Some(Value::Null)),
+        ("empty", Some(json!({}))),
+        (
+            "incompatible",
+            Some(json!({"effort": "high", "summary": "auto", "context": "last_turn"})),
+        ),
+        (
+            "valid",
+            Some(json!({"effort": "high", "context": "all_turns"})),
+        ),
+    ];
+    for (label, reasoning) in cases {
+        let r = route(
+            "gpt-6.1-terra",
+            json!({"api_base_url": "https://x/v1", "api_key": "k"}),
+            None,
+        );
+        let mut body = json!({"model": "gpt-6.1-terra", "input": original_input});
+        if let Some(reasoning) = reasoning.clone() {
+            body["reasoning"] = reasoning;
+        }
+        let request = json!({"model": "alias", "messages": [], "incomingApiType": "responses:lite", "originalBody": body});
+        let out = build_request_payload(
+            &request,
+            &r,
+            &FakeTransformer,
+            "responses:lite",
+            &[],
+            &Config::default(),
+        )
+        .unwrap();
+        assert!(out.bypass_transformation, "{label}");
+        let mut expected = reasoning
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        expected.insert("context".into(), json!("all_turns"));
+        assert_eq!(out.payload["reasoning"], Value::Object(expected), "{label}");
+        assert_eq!(out.payload["input"], original_input, "{label}");
+        // The caller's original body is never mutated.
+        assert_eq!(request["originalBody"], body, "{label}");
+    }
+}
+
+#[test]
+fn drop_mid_conversation_entries_semantics() {
+    // Untouched when there are no markers.
+    let plain = json!({"model": "m", "messages": [{"role": "user", "content": "hello"}]});
+    assert_eq!(drop_mid_conversation_entries(plain.clone()), plain);
+
+    // Drops marked entries (including contentless ones) but keeps the system
+    // prompt and every other message.
+    let request = json!({
+        "model": "m",
+        "reasoning": {"effort": "high", "enabled": true},
+        "messages": [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "Answer briefly.", "mid_conversation": true},
+            {"role": "system", "content": "", "mid_conversation": true},
+            {"role": "assistant", "content": "ok"},
+        ],
+    });
+    let out = drop_mid_conversation_entries(request.clone());
+    assert_eq!(
+        out["messages"],
+        json!([
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "ok"},
+        ])
+    );
+    assert_eq!(out["reasoning"], request["reasoning"]);
+    assert_eq!(out["model"], "m");
+}
+
+#[test]
+fn mid_conversation_entries_only_survive_messages_targets() {
+    let r = route(
+        "claude-sonnet-4-6",
+        json!({"api_base_url": "https://x/v1", "api_key": "k"}),
+        None,
+    );
+    let request = json!({"model": "alias", "incomingApiType": "chat", "stream": false, "messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "system", "content": "x", "mid_conversation": true},
+    ]});
+    // FakeTransformer echoes `messages`, so this observes what it was handed.
+    let to_messages = build_request_payload(
+        &request,
+        &r,
+        &FakeTransformer,
+        "messages",
+        &[],
+        &Config::default(),
+    )
+    .unwrap();
+    assert_eq!(to_messages.payload["messages"].as_array().unwrap().len(), 2);
+    let to_chat = build_request_payload(
+        &request,
+        &r,
+        &FakeTransformer,
+        "chat",
+        &[],
+        &Config::default(),
+    )
+    .unwrap();
+    assert_eq!(to_chat.payload["messages"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn base_responses_target_does_not_get_lite_reasoning() {
+    let r = route(
+        "gpt-5",
+        json!({"api_base_url": "https://x/v1", "api_key": "k"}),
+        None,
+    );
+    let request = json!({"model": "alias", "messages": [], "incomingApiType": "responses",
+        "originalBody": {"model": "gpt-5", "input": []}});
+    let out = build_request_payload(
+        &request,
+        &r,
+        &FakeTransformer,
+        "responses",
+        &[],
+        &Config::default(),
+    )
+    .unwrap();
     assert!(out.payload.get("reasoning").is_none());
 }
 
@@ -651,6 +856,69 @@ fn payload_plans_oauth_routes() {
     .oauth
     .unwrap();
     assert!(!plan.native && plan.provider == "xai");
+}
+
+/// Chat → Messages request dispatched through `alias`, to `base_url`.
+fn cache_control_payload(base_url: &str, advanced: Option<Value>, extra_config: Value) -> Value {
+    let mut config = json!({"api_base_url": base_url, "api_key": "k"});
+    for (k, v) in extra_config.as_object().unwrap() {
+        config[k] = v.clone();
+    }
+    let mut r = route("claude-sonnet-4-6", config, None);
+    r.canonical_model = Some("alias".into());
+    let mut alias = json!({});
+    if let Some(advanced) = advanced {
+        alias["advanced"] = advanced;
+    }
+    let app = Config::new(json!({"models": {"alias": alias}}));
+    let request = json!({"model": "alias", "incomingApiType": "chat", "stream": false,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]});
+    build_request_payload(&request, &r, &FakeTransformer, "messages", &[], &app)
+        .unwrap()
+        .payload
+}
+
+#[test]
+fn cache_control_is_injected_implicitly_for_anthropic_hosts() {
+    // No `advanced` entries at all: the behavior auto-enables.
+    let p = cache_control_payload("https://api.anthropic.com/v1", None, json!({}));
+    assert_eq!(p["tools"][0]["cache_control"], json!({"type": "ephemeral"}));
+    assert_eq!(
+        p["messages"][0]["content"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
+
+    // Explicit opt-out wins over the implicit default.
+    let off = json!([{"type": "inject_cache_control", "enabled": false}]);
+    let p = cache_control_payload("https://api.anthropic.com/v1", Some(off), json!({}));
+    assert!(p["tools"][0].get("cache_control").is_none());
+    assert!(p["messages"][0]["content"][0]
+        .get("cache_control")
+        .is_none());
+
+    // Other hosts only get it when asked for explicitly.
+    let p = cache_control_payload("https://proxy.example/v1", None, json!({}));
+    assert!(p["tools"][0].get("cache_control").is_none());
+    let on = json!([{"type": "inject_cache_control", "ttl": "1h"}]);
+    let p = cache_control_payload("https://proxy.example/v1", Some(on), json!({}));
+    assert_eq!(
+        p["tools"][0]["cache_control"],
+        json!({"type": "ephemeral", "ttl": "1h"})
+    );
+}
+
+#[test]
+fn cache_control_system_site_is_skipped_on_masking_routes() {
+    let p = cache_control_payload(
+        "https://api.anthropic.com",
+        None,
+        json!({"useClaudeMasking": true}),
+    );
+    // Masking rebuilds `system`, so only tools and the tail are marked.
+    assert!(p["tools"][0].get("cache_control").is_some());
+    assert!(p["messages"][0]["content"][0]
+        .get("cache_control")
+        .is_some());
 }
 
 #[test]
