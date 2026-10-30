@@ -9,10 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Brand: the mark is now a three-leaf clover (a trefoil) instead of a knot, drawn
-  as a connection: one line enters the top leaf, meets a hub and splits into the
-  two lower leaves. The accent color is green (`#22c55e` dark, `#16a34a` light) across the README banner
-  and badges, favicon, admin UI tokens and charts.
+- Brand: new identity. The mark is three equal lobes, each bitten by its neighbour,
+  whose channels meet at one point (one endpoint, routed to many providers), built
+  from circles as single-path SVGs with a separate 16-24px cut; lowercase Geist
+  wordmark; jade green on one OKLCH hue. See `docs/brand/`. New favicon.ico,
+  adaptive favicon.svg, apple-touch-icon and social preview.
+- Admin UI colors: primary, success and accent use the brand greens; destructive is
+  darker in light mode and lighter in dark mode. All text and button-label pairs
+  now pass WCAG AA (light-mode primary text and destructive labels failed before).
+  Success and error badges show an icon.
 - Reference Plexus moved to `a4cd39b0` (46 commits). Ported: Anthropic OAuth
   reasoning translation and system-prompt preservation, mid-conversation system
   entries and per-turn effort, `responses:lite` reasoning context, Muse Code

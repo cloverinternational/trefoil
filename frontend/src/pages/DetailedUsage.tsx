@@ -16,7 +16,7 @@ const formatNumber=(n:number|null|undefined)=>n==null?'—':number.format(n);
 const bucketLabel=(ms:number,range:string)=>new Date(ms).toLocaleString(undefined,(range==='day'?{weekday:'short',hour:'2-digit',minute:'2-digit'}:{month:'short',day:'short'}) as Intl.DateTimeFormatOptions);
 export const DetailedUsage: React.FC = () => {
   const { theme } = useTheme();
-  const chart = { green: theme === "dark" ? "#22c55e" : "#16a34a", neutral: theme === "dark" ? "#a3a3a3" : "#737373", label: theme === "dark" ? "#a3a3a3" : "#737373", grid: theme === "dark" ? "#262626" : "#e5e5e5" };
+  const chart = { green: theme === "dark" ? "#60d291" : "#187647", neutral: theme === "dark" ? "#a3a3a3" : "#737373", label: theme === "dark" ? "#a3a3a3" : "#737373", grid: theme === "dark" ? "#262626" : "#e5e5e5" };
   const {isAdmin}=useAuth(); const [rows,setRows]=useState<UsageRecord[]>([]); const [summary,setSummary]=useState<Record<string,number>|null>(null); const [total,setTotal]=useState(0); const [offset,setOffset]=useState(0); const [loading,setLoading]=useState(true); const [error,setError]=useState<string|null>(null); const limit=25;
   const [range,setRange]=useState<'day'|'week'|'month'>('day'); const [series,setSeries]=useState<UsageBucket[]>([]);
   const load=useCallback(async()=>{setLoading(true);setError(null);try{const [result,totals,buckets]=await Promise.all([getUsage(limit,offset),getUsageSummary(),getUsageSeries(range)]);setRows(result.data);setTotal(result.total);setSummary(totals);setSeries(buckets);}catch(e){setError(e instanceof Error?e.message:'Unable to load usage data');}finally{setLoading(false);}},[offset,range]);

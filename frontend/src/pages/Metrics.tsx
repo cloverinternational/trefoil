@@ -16,7 +16,7 @@ const valueOf=(metrics:Metric[],name:string)=>metrics.find(metric=>metric.name==
 const fmt=new Intl.NumberFormat();
 export const Metrics: React.FC = () => {
   const { theme } = useTheme();
-  const chart = { green: theme === "dark" ? "#22c55e" : "#16a34a", neutral: theme === "dark" ? "#a3a3a3" : "#737373", label: theme === "dark" ? "#a3a3a3" : "#737373", grid: theme === "dark" ? "#262626" : "#e5e5e5" };
+  const chart = { green: theme === "dark" ? "#60d291" : "#187647", neutral: theme === "dark" ? "#a3a3a3" : "#737373", label: theme === "dark" ? "#a3a3a3" : "#737373", grid: theme === "dark" ? "#262626" : "#e5e5e5" };
   const {isAdmin}=useAuth(); const [raw,setRaw]=useState(''); const [loading,setLoading]=useState(true); const [error,setError]=useState<string|null>(null);
   const [series,setSeries]=useState<UsageBucket[]>([]); const [range,setRange]=useState<'day'|'week'|'month'>('day');
   const load=useCallback(async()=>{setLoading(true);setError(null);try{const [text,buckets]=await Promise.all([getMetrics(),getUsageSeries(range)]);setRaw(text);setSeries(buckets);}catch(cause){setError(cause instanceof Error?cause.message:'Unable to load metrics');}finally{setLoading(false);}},[range]);

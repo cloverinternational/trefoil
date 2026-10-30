@@ -3,13 +3,13 @@
   <desc id="d">Clients speaking OpenAI, Anthropic and Gemini formats connect through Trefoil to many upstream providers.</desc>
   <defs>
     <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#22c55e" stop-opacity=".15"/>
-      <stop offset=".5" stop-color="#22c55e"/>
-      <stop offset="1" stop-color="#22c55e" stop-opacity=".15"/>
+      <stop offset="0" stop-color="#35b271" stop-opacity=".15"/>
+      <stop offset=".5" stop-color="#35b271"/>
+      <stop offset="1" stop-color="#35b271" stop-opacity=".15"/>
     </linearGradient>
     <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0" stop-color="#22c55e" stop-opacity=".28"/>
-      <stop offset="1" stop-color="#22c55e" stop-opacity="0"/>
+      <stop offset="0" stop-color="#35b271" stop-opacity=".28"/>
+      <stop offset="1" stop-color="#35b271" stop-opacity="0"/>
     </radialGradient>
     <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
       <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity=".045" stroke-width="1"/>
@@ -26,34 +26,13 @@
   <rect width="1280" height="360" fill="#0a0a0a"/>
   <rect width="1280" height="360" fill="url(#grid)"/>
   <ellipse cx="1000" cy="180" rx="320" ry="200" fill="url(#glow)"/>
-  <rect x="0" y="0" width="1280" height="4" fill="#22c55e"/>
+  <rect x="0" y="0" width="1280" height="4" fill="#35b271"/>
   <rect x=".5" y=".5" width="1279" height="359" fill="none" stroke="#262626"/>
 
   <!-- Wordmark -->
-  <g transform="translate(66 80) scale(2)">
-    <defs>
-      <linearGradient id="b0g" x1="0" y1="1" x2="0" y2="0">
-        <stop offset="0" stop-color="#15803D"/><stop offset=".55" stop-color="#22C55E"/><stop offset="1" stop-color="#86EFAC"/>
-      </linearGradient>
-      <path id="b0l" fill="url(#b0g)" d="M0 0C-3 -3 -12 -9 -12 -17C-12 -22 -8.5 -25 -5 -25C-2.5 -25 -.8 -23.7 0 -22C.8 -23.7 2.5 -25 5 -25C8.5 -25 12 -22 12 -17C12 -9 3 -3 0 0Z"/>
-    </defs>
-    <g transform="translate(32 36)">
-      <use href="#b0l" transform="translate(0 -1.5)"/>
-      <use href="#b0l" transform="rotate(120) translate(0 -1.5)"/>
-      <use href="#b0l" transform="rotate(240) translate(0 -1.5)"/>
-      <g stroke="#052E16" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M0 -23V0"/><path d="M0 0L15.6 9"/><path d="M0 0L-15.6 9"/>
-      </g>
-      <path d="M0 -31V-23" stroke="#22C55E" stroke-width="1.7" stroke-linecap="round"/>
-      <circle cy="-31" r="2" fill="#22C55E"/>
-      <g fill="#ECFDF5" stroke="#052E16" stroke-width="1.1">
-        <circle r="2.6"/><circle cx="15.6" cy="9" r="2.1"/><circle cx="-15.6" cy="9" r="2.1"/>
-      </g>
-    </g>
-  </g>
-  <text x="212" y="170" class="sans" font-size="76" font-weight="700" letter-spacing="-2" fill="#fafafa">Trefoil</text>
-  <text x="214" y="208" class="sans" font-size="23" fill="#a3a3a3">Self-hosted LLM API gateway &amp; router</text>
-  <text x="214" y="238" class="mono" font-size="14" fill="#737373">one endpoint · any wire format · automatic failover</text>
+  <g transform="translate(40 34) scale(2.2243)"><title>trefoil</title><path fill="#35b271" d="M52.98 25.98C52.98 27.4 52.75 28.77 52.34 30.06C52.12 30.06 51.91 30.05 51.69 30.05C45.01 30.05 39.16 33.56 35.87 38.84C30.28 37.23 26.2 32.08 26.2 25.98C26.2 18.58 32.19 12.59 39.59 12.59C46.98 12.59 52.98 18.58 52.98 25.98ZM39.37 49.55C39.37 56.95 33.37 62.94 25.98 62.94C18.58 62.94 12.59 56.95 12.59 49.55C12.59 43.13 17.11 37.77 23.14 36.47C26.18 42.18 32.11 46.12 38.98 46.34C39.23 47.37 39.37 48.45 39.37 49.55ZM66.59 49.55C66.59 56.95 60.59 62.94 53.2 62.94C49.27 62.94 45.74 61.25 43.29 58.55C45.08 55.69 46.12 52.31 46.12 48.68C46.12 45.5 45.32 42.52 43.92 39.9C46.33 37.59 49.6 36.16 53.2 36.16C60.59 36.16 66.59 42.16 66.59 49.55Z"/><path fill="#fafafa" d="M160.57 49.34Q157.29 49.34 154.84 47.91Q152.38 46.49 151.03 43.88Q149.68 41.27 149.68 37.76Q149.68 34.24 151.03 31.65Q152.38 29.06 154.84 27.62Q157.29 26.19 160.57 26.19Q163.85 26.19 166.29 27.62Q168.74 29.06 170.09 31.65Q171.44 34.24 171.44 37.76Q171.44 41.27 170.09 43.88Q168.74 46.49 166.29 47.91Q163.85 49.34 160.57 49.34ZM122.85 49.34Q119.54 49.34 117.1 47.91Q114.67 46.49 113.33 43.88Q112 41.27 112 37.76Q112 34.26 113.33 31.67Q114.67 29.09 117.08 27.64Q119.49 26.19 122.75 26.19Q125.91 26.19 128.28 27.6Q130.66 29.02 131.96 31.67Q133.25 34.33 133.25 38.06L133.25 39.24L117.51 39.24Q117.67 42.17 119.1 43.63Q120.53 45.09 122.91 45.09Q124.69 45.09 125.86 44.3Q127.04 43.51 127.51 42.05L132.94 42.39Q132.05 45.6 129.37 47.47Q126.68 49.34 122.85 49.34ZM138.32 48.84L138.32 30.81L135.17 30.81L135.17 26.69L138.32 26.69L138.32 25.83Q138.32 22.83 139.98 21.11Q141.64 19.38 145.14 19.38L149.48 19.38L149.48 23.51L146.14 23.51Q144.85 23.51 144.25 24.17Q143.65 24.84 143.65 26.1L143.65 26.69L149.17 26.69L149.17 30.81L143.65 30.81L143.65 48.84ZM90.57 48.84Q87.27 48.84 85.71 47.32Q84.16 45.79 84.16 42.5L84.16 30.8L80.69 30.8L80.69 26.69L84.16 26.69L84.16 21.49L89.47 21.49L89.47 26.69L95.32 26.69L95.32 30.8L89.47 30.8L89.47 41.99Q89.47 43.55 90.14 44.14Q90.81 44.73 92.2 44.73L95.32 44.73L95.32 48.84ZM191.01 48.84Q188.57 48.84 187.13 47.6Q185.7 46.35 185.7 43.6L185.7 19.38L191.01 19.38L191.01 43.06Q191.01 43.92 191.43 44.32Q191.86 44.73 192.66 44.73L194.28 44.73L194.28 48.84ZM98.73 48.84L98.73 26.69L103.7 26.69L103.84 31Q104.37 29.13 105.34 28.12Q106.73 26.69 109.12 26.69L111.17 26.69L111.17 31.23L109.11 31.23Q107.4 31.23 106.28 31.74Q105.17 32.24 104.61 33.3Q104.05 34.35 104.05 36.08L104.05 48.84ZM160.57 45.04Q163.13 45.04 164.54 43.12Q165.95 41.2 165.95 37.76Q165.95 34.35 164.54 32.42Q163.13 30.49 160.57 30.49Q158.01 30.49 156.59 32.42Q155.17 34.35 155.17 37.76Q155.17 41.2 156.59 43.12Q158.01 45.04 160.57 45.04ZM175.08 48.84L175.08 26.69L180.39 26.69L180.39 48.84ZM117.51 35.67L127.74 35.67Q127.58 32.98 126.22 31.67Q124.86 30.37 122.75 30.37Q120.62 30.37 119.23 31.74Q117.84 33.1 117.51 35.67ZM174.98 23.72L174.98 19.03L180.49 19.03L180.49 23.72Z"/></g>
+  <text x="219" y="184" class="sans" font-size="23" fill="#a3a3a3">Self-hosted LLM API gateway &amp; router</text>
+  <text x="219" y="214" class="mono" font-size="14" fill="#737373">one endpoint · any wire format · automatic failover</text>
 
   <g class="mono" font-size="12" fill="#d4d4d4">
     <g transform="translate(64 276)">
@@ -66,7 +45,7 @@
       <rect width="54" height="26" fill="none" stroke="#404040"/><text x="27" y="17" text-anchor="middle">MCP</text>
     </g>
     <g transform="translate(302 276)">
-      <rect width="146" height="26" fill="none" stroke="#22c55e"/><text x="73" y="17" text-anchor="middle" fill="#22c55e">Plexus-compatible</text>
+      <rect width="146" height="26" fill="none" stroke="#35b271"/><text x="73" y="17" text-anchor="middle" fill="#35b271">Plexus-compatible</text>
     </g>
   </g>
 
@@ -99,28 +78,8 @@
     </g>
 
     <!-- hub -->
-    <rect x="940" y="140" width="120" height="80" fill="#111111" stroke="#22c55e" stroke-width="1.5"/>
-    <g transform="translate(971 141) scale(.9)">
-      <defs>
-        <linearGradient id="b1g" x1="0" y1="1" x2="0" y2="0">
-          <stop offset="0" stop-color="#15803D"/><stop offset=".55" stop-color="#22C55E"/><stop offset="1" stop-color="#86EFAC"/>
-        </linearGradient>
-        <path id="b1l" fill="url(#b1g)" d="M0 0C-3 -3 -12 -9 -12 -17C-12 -22 -8.5 -25 -5 -25C-2.5 -25 -.8 -23.7 0 -22C.8 -23.7 2.5 -25 5 -25C8.5 -25 12 -22 12 -17C12 -9 3 -3 0 0Z"/>
-      </defs>
-      <g transform="translate(32 36)">
-        <use href="#b1l" transform="translate(0 -1.5)"/>
-        <use href="#b1l" transform="rotate(120) translate(0 -1.5)"/>
-        <use href="#b1l" transform="rotate(240) translate(0 -1.5)"/>
-        <g stroke="#052E16" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M0 -23V0"/><path d="M0 0L15.6 9"/><path d="M0 0L-15.6 9"/>
-        </g>
-        <path d="M0 -31V-23" stroke="#22C55E" stroke-width="1.7" stroke-linecap="round"/>
-        <circle cy="-31" r="2" fill="#22C55E"/>
-        <g fill="#ECFDF5" stroke="#052E16" stroke-width="1.1">
-          <circle r="2.6"/><circle cx="15.6" cy="9" r="2.1"/><circle cx="-15.6" cy="9" r="2.1"/>
-        </g>
-      </g>
-    </g>
+    <rect x="940" y="140" width="120" height="80" fill="#111111" stroke="#35b271" stroke-width="1.5"/>
+    <path transform="translate(975 146) scale(.78)" fill="#35b271" d="M46.44 16.28C46.44 17.91 46.17 19.49 45.66 20.96C38.66 21.29 32.52 24.93 28.77 30.35C22.35 28.89 17.56 23.14 17.56 16.28C17.56 8.3 24.03 1.84 32 1.84C39.97 1.84 46.44 8.3 46.44 16.28ZM30.88 43.23C30.88 51.2 24.41 57.67 16.44 57.67C8.46 57.67 2 51.2 2 43.23C2 36.21 7.01 30.36 13.66 29.06C17.24 34.61 23.28 38.44 30.25 38.99C30.66 40.33 30.88 41.75 30.88 43.23ZM62 43.23C62 51.2 55.54 57.67 47.56 57.67C43.22 57.67 39.33 55.75 36.68 52.72C38.22 49.73 39.09 46.34 39.09 42.75C39.09 39.4 38.34 36.23 36.99 33.39C39.63 30.56 43.39 28.79 47.56 28.79C55.54 28.79 62 35.26 62 43.23Z"/>
     <text x="1000" y="212" text-anchor="middle" fill="#a3a3a3" font-size="10" letter-spacing="1.5">ROUTER</text>
 
     <!-- providers -->

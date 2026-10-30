@@ -165,7 +165,7 @@ export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) 
     >
       <div className="flex items-center justify-between px-1 py-2">
         <div className="flex items-center gap-2">
-          <TrefoilMark className="h-5 w-5" />
+          <TrefoilMark size={20} />
           {(mobile || !collapsed) && <span className="text-xs font-bold text-sidebar-foreground">Trefoil</span>}
         </div>
         {mobile && (
