@@ -190,14 +190,44 @@ async fn serve_file(path: std::path::PathBuf) -> Response {
 pub async fn health() -> Response {
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "OK").into_response()
 }
+fn redirect(location: &str) -> Response {
+    let mut response = StatusCode::FOUND.into_response();
+    if let Ok(value) = header::HeaderValue::from_str(location) {
+        response.headers_mut().insert(header::LOCATION, value);
+    }
+    response
+}
+
+/// The SPA owns `/`; this redirect exists only for links built against the old
+/// `/ui/` mount.
 pub async fn root_redirect() -> Response {
-    (StatusCode::FOUND, [(header::LOCATION, "/ui/")]).into_response()
+    redirect("/")
 }
 pub async fn ui_index() -> Response {
     serve_file(ui_dir().join("index.html")).await
 }
 
-/// SPA routes (no extension) resolve to the shell; assets come from disk.
+/// Join a request path onto the UI directory, rejecting traversal components.
+fn safe_join(dir: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
+    if relative.is_empty() {
+        return None;
+    }
+    let mut joined = dir.to_path_buf();
+    for component in relative.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return None;
+        }
+        joined.push(component);
+    }
+    Some(joined)
+}
+
+/// SPA routes (no extension) resolve to the shell; files come from disk.
+///
+/// The built `index.html` references its bundle with absolute paths
+/// (`/assets/index-<hash>.js`), while the shell itself is mounted at `/ui/`. File
+/// requests are therefore resolved from the UI directory whether they arrive under
+/// the mount (`/ui/assets/...`) or at the root (`/assets/...`).
 pub async fn fallback(request: Request) -> Response {
     let path = request.uri().path().to_owned();
     if path.starts_with("/v1") || path.starts_with("/v0") {
@@ -206,12 +236,34 @@ pub async fn fallback(request: Request) -> Response {
     if path == "/ui" {
         return root_redirect().await;
     }
-    if let Some(file) = path.strip_prefix("/ui/") {
-        // `/ui/:filename` is single-segment; deeper paths hit the SPA fallback.
-        if file.is_empty() || file.contains('/') || !file.contains('.') {
-            return ui_index().await;
+
+    let relative: &str = match path.strip_prefix("/ui/") {
+        Some(rest) => rest,
+        None => path.trim_start_matches('/'),
+    };
+
+    // A final segment containing a dot is a file request; anything else is a
+    // client-side route and receives the shell so the SPA can take over.
+    let looks_like_file = relative
+        .rsplit('/')
+        .next()
+        .is_some_and(|segment| segment.contains('.'));
+
+    if looks_like_file {
+        if let Some(file) = safe_join(&ui_dir(), relative) {
+            if file.is_file() {
+                return serve_file(file).await;
+            }
         }
-        return serve_file(ui_dir().join(file)).await;
+        return not_found();
     }
-    not_found()
+
+    // Client-side route. The router has no basename, so the shell must answer at
+    // the path the route table expects: `/ui/x` is redirected to `/x` rather than
+    // served in place, which would render an empty tree.
+    if path.starts_with("/ui/") {
+        return redirect(&format!("/{relative}"));
+    }
+
+    ui_index().await
 }
