@@ -2,6 +2,17 @@
 
 let
   cfg = config.services.trefoil;
+
+  # What the service needs, by name. `environmentFile` and `databaseUrlFile` predate
+  # this map and remain as shorthands; `credentials` wins when both are set.
+  credentialFiles =
+    lib.optionalAttrs (cfg.environmentFile != null) { env = { file = cfg.environmentFile; }; }
+    // lib.optionalAttrs (cfg.databaseUrlFile != null) { databaseUrl = { file = cfg.databaseUrlFile; }; }
+    // cfg.credentials;
+
+  requiredCredentials = [ "env" "databaseUrl" ];
+  missingCredentials =
+    builtins.filter (name: !(builtins.hasAttr name credentialFiles)) requiredCredentials;
 in
 {
   options.services.trefoil = {
@@ -42,15 +53,44 @@ in
       description = "PostgreSQL pool size (`DATABASE_MAX_CONNECTIONS`).";
     };
 
+    credentials = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options.file = lib.mkOption {
+          type = lib.types.path;
+          description = "File staged into the unit under this credential name.";
+        };
+      });
+      default = { };
+      example = lib.literalExpression ''
+        {
+          env.file = "/run/secrets/trefoil-env";
+          databaseUrl.file = "/run/secrets/trefoil-database-url";
+        }
+      '';
+      description = ''
+        Credentials the service needs, staged by systemd and exposed under
+        `$CREDENTIALS_DIRECTORY`. Two names are required:
+
+        - `env` — dotenv with `ADMIN_KEY`, `TREFOIL_CREDENTIAL_KEY` (exactly 64 hex
+          characters) and optionally `ENCRYPTION_KEY`;
+        - `databaseUrl` — the PostgreSQL connection URL
+          (`postgres://user:password@host:5432/db`).
+
+        Each value is only a *path*. Anything that materialises secrets as files
+        works — sops-nix, agenix, `systemd.credentials`, a cloud agent — and the
+        module does not need to know which. Inline secret values are deliberately
+        not accepted: the Nix store is world-readable, and a path keeps the module
+        fail-closed without prescribing a specific secret manager.
+      '';
+    };
+
     environmentFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
       example = "/run/keys/trefoil.env";
       description = ''
-        File holding `ADMIN_KEY`, `TREFOIL_CREDENTIAL_KEY` and optionally
-        `ENCRYPTION_KEY`. It is consumed through systemd `LoadCredential`, so it
-        must be readable by root and is never copied into the world-readable
-        Nix store. `TREFOIL_CREDENTIAL_KEY` must be exactly 64 hex characters.
+        Shorthand for `credentials.env.file`. The file holds `ADMIN_KEY`,
+        `TREFOIL_CREDENTIAL_KEY` and optionally `ENCRYPTION_KEY`.
       '';
     };
 
@@ -58,10 +98,7 @@ in
       type = lib.types.nullOr lib.types.path;
       default = null;
       example = "/run/keys/trefoil-database-url";
-      description = ''
-        File containing the PostgreSQL connection URL
-        (`postgres://user:password@host:5432/db`). Consumed via `LoadCredential`.
-      '';
+      description = "Shorthand for `credentials.databaseUrl.file`.";
     };
 
     extraEnvironment = lib.mkOption {
@@ -80,12 +117,12 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.environmentFile != null;
-        message = "services.trefoil.environmentFile must point at a root-owned file containing ADMIN_KEY and TREFOIL_CREDENTIAL_KEY; secrets cannot come from the Nix store.";
-      }
-      {
-        assertion = cfg.databaseUrlFile != null;
-        message = "services.trefoil.databaseUrlFile must point at a file containing the PostgreSQL URL.";
+        assertion = missingCredentials == [ ];
+        message =
+          "services.trefoil is missing credential(s): "
+          + lib.concatStringsSep ", " missingCredentials
+          + ". Point services.trefoil.credentials.<name>.file at a file your secret manager writes "
+          + "(required: env, databaseUrl), or use the environmentFile/databaseUrlFile shorthands.";
       }
     ];
 
@@ -119,10 +156,8 @@ in
 
       # Credentials are staged by systemd as root into a per-service tmpfs; the
       # unit's own user never needs read access to the source files.
-      serviceConfig.LoadCredential = [
-        "env:${toString cfg.environmentFile}"
-        "databaseUrl:${toString cfg.databaseUrlFile}"
-      ];
+      serviceConfig.LoadCredential =
+        lib.mapAttrsToList (name: cred: "${name}:${toString cred.file}") credentialFiles;
 
       script = ''
         set -eu
