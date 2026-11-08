@@ -35,7 +35,7 @@ const SelectContent = React.forwardRef<
       ref={ref}
       position={position}
       className={cn(
-        "relative z-50 max-h-76 min-w-[8rem] overflow-hidden  border bg-popover text-popover-foreground ",
+        "relative z-50 max-h-76 min-w-[8rem] overflow-hidden border bg-popover text-popover-foreground shadow-md",
         className,
       )}
       {...props}
