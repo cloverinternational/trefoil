@@ -19,6 +19,9 @@ let
     nodejs = nodejs_22;
     # Resolve straight from frontend/package-lock.json: no npmDepsHash to guess.
     npmDeps = importNpmLock { npmRoot = ../frontend; };
+    # buildNpmPackage's default hook validates a npmDepsHash; importNpmLock
+    # replaces that validation with the package-lock.json it was given.
+    npmConfigHook = importNpmLock.npmConfigHook;
     npmBuildScript = "build";
     installPhase = ''
       runHook preInstall
