@@ -1,0 +1,906 @@
+{
+  "routes": {
+    "ANY /raw/:provider/*path": {
+      "purpose": "Registered in `backend/src/raw.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "ANY /v1/conversations/:conversation_id": {
+      "purpose": "Registered in `backend/src/engine/dispatcher/routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "DELETE /v0/management/cooldowns/:provider": {
+      "purpose": "Registered in `backend/src/cooldowns.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE /v0/management/errors/:request_id": {
+      "purpose": "Registered in `backend/src/errors.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE /v0/management/logs/reset": {
+      "purpose": "Registered in `backend/src/usage.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE /v0/management/mcp-logs/:request_id": {
+      "purpose": "Registered in `backend/src/mcp_logs.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE /v0/management/mcp-servers/:name/keys/:key_id": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE /v0/management/models": {
+      "purpose": "Registered in `backend/src/aliases.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE /v0/management/models/*slug": {
+      "purpose": "Registered in `backend/src/aliases.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE /v0/management/oauth/credentials": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE /v0/management/usage/:request_id": {
+      "purpose": "Registered in `backend/src/usage.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE /v1/responses/:response_id": {
+      "purpose": "Registered in `backend/src/engine/dispatcher/routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "DELETE/GET /v0/management/cooldowns": {
+      "purpose": "Registered in `backend/src/cooldowns.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/GET /v0/management/debug/logs": {
+      "purpose": "Registered in `backend/src/debug_logs.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/GET /v0/management/debug/logs/:request_id": {
+      "purpose": "Registered in `backend/src/debug_logs.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/GET /v0/management/errors": {
+      "purpose": "Registered in `backend/src/errors.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/GET /v0/management/mcp-logs": {
+      "purpose": "Registered in `backend/src/mcp_logs.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/GET /v0/management/performance": {
+      "purpose": "Registered in `backend/src/performance.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/GET /v0/management/usage": {
+      "purpose": "Registered in `backend/src/usage.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/GET/PATCH/PUT /v0/management/custom-checkers/:id": {
+      "purpose": "Registered in `backend/src/custom_checkers.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/GET/POST /mcp/:name": {
+      "purpose": "Registered in `backend/src/mcp_proxy.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "DELETE/GET/POST /mcp/plexus": {
+      "purpose": "Registered in `backend/src/mcp_plexus.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "DELETE/GET/PUT /v0/management/analytics/dashboards/:id": {
+      "purpose": "Registered in `backend/src/analytics.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/PATCH /v0/management/mcp-oauth/clients/:client_id": {
+      "purpose": "Registered in `backend/src/mcp_oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/PUT /v0/management/catalog-organization/:kind/:id": {
+      "purpose": "Registered in `backend/src/catalog_organization.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "DELETE/PUT /v0/management/catalog-organization/groups/:name": {
+      "purpose": "Registered in `backend/src/catalog_organization.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /": {
+      "purpose": "Registered in `backend/src/lib.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /.well-known/oauth-authorization-server": {
+      "purpose": "Registered in `backend/src/oauth_server.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /.well-known/oauth-protected-resource/mcp/:name": {
+      "purpose": "Registered in `backend/src/oauth_server.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /.well-known/plexus/openapi.json": {
+      "purpose": "Registered in `backend/src/openapi.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /bad": {
+      "purpose": "Registered in `backend/src/cli_versions.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /embeddings/models": {
+      "purpose": "Registered in `backend/src/metadata.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /health": {
+      "purpose": "Registered in `backend/src/lib.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /healthz": {
+      "purpose": "Liveness probe; returns the literal body `ok`.",
+      "auth": "none",
+      "verified": "yes",
+      "notes": "Observed: `GET /healthz` -> `ok`, HTTP 200, within ~2s of start (backend/src/lib.rs:78)."
+    },
+    "GET /models": {
+      "purpose": "Registered in `backend/src/metadata.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /muse-code/models": {
+      "purpose": "Registered in `backend/src/models_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /npm": {
+      "purpose": "Registered in `backend/src/cli_versions.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /ui/": {
+      "purpose": "Registered in `backend/src/lib.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /usage": {
+      "purpose": "Registered in `backend/src/custom_checkers.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /v0/management/aliases": {
+      "purpose": "Model alias administration: list, and create/replace an alias by id with `{\"type\":..., \"targets\":[{\"provider\":..,\"model\":..}]}`.",
+      "auth": "x-admin-key",
+      "verified": "yes",
+      "notes": "Observed: `PUT /v0/management/aliases/wafer-glm-5.2` with `{\"type\":\"text\",...}` -> `{\"success\":true,\"slug\":\"wafer-glm-5.2\"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400)."
+    },
+    "GET /v0/management/aliases/*slug": {
+      "purpose": "Model alias administration: list, and create/replace an alias by id with `{\"type\":..., \"targets\":[{\"provider\":..,\"model\":..}]}`.",
+      "auth": "x-admin-key",
+      "verified": "yes",
+      "notes": "Observed: `PUT /v0/management/aliases/wafer-glm-5.2` with `{\"type\":\"text\",...}` -> `{\"success\":true,\"slug\":\"wafer-glm-5.2\"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400)."
+    },
+    "GET /v0/management/auth/verify": {
+      "purpose": "Registered in `backend/src/auth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/backup": {
+      "purpose": "Export configuration (or a full archive) for backup/restore.",
+      "auth": "x-admin-key",
+      "verified": "yes",
+      "notes": "Observed: HTTP 200 JSON. **Contains provider API keys in plaintext** (confirmed by literal match) - encrypt the export and treat it as a secret."
+    },
+    "GET /v0/management/catalog-organization": {
+      "purpose": "Registered in `backend/src/catalog_organization.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/catalog/status": {
+      "purpose": "Registered in `backend/src/pi_catalog.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/concurrency": {
+      "purpose": "Registered in `backend/src/concurrency.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/config": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/config/export": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/config/status": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/custom-checkers": {
+      "purpose": "Registered in `backend/src/custom_checkers.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/events": {
+      "purpose": "Registered in `backend/src/usage.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/keys": {
+      "purpose": "List all client API keys.",
+      "auth": "x-admin-key",
+      "verified": "yes",
+      "notes": "Observed: returns every key **including its plaintext secret**. In a multi-tenant deployment the admin key is therefore a master key to all workspaces."
+    },
+    "GET /v0/management/keys/:name": {
+      "purpose": "Per-tenant client key create/replace/read/delete by name (PUT with `{\"secret\":\"...\"}`), plus optional quota, allowedModels, allowedProviders, allowedIps.",
+      "auth": "x-admin-key",
+      "verified": "yes",
+      "notes": "Observed: `PUT /v0/management/keys/e2e` with `{\"secret\":...}` -> `{\"success\":true,\"name\":\"e2e\"}`. Field is `secret`, not `key`. A collection-level `POST /v0/management/keys` returns 404."
+    },
+    "GET /v0/management/logging/level": {
+      "purpose": "Registered in `backend/src/logging.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/logging/modules": {
+      "purpose": "Registered in `backend/src/logging.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/mcp-oauth/clients": {
+      "purpose": "Registered in `backend/src/mcp_oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/mcp-servers": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/mcp-servers/:name": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/mcp-servers/:name/process-logs": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/mcp-servers/:name/status": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/metrics": {
+      "purpose": "Registered in `backend/src/metrics.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/oauth/credentials/status": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/oauth/models": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/oauth/providers": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/oauth/sessions/:id": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/pi/models": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/pi/providers": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/provider-presets": {
+      "purpose": "Registered in `backend/src/provider_presets.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/providers": {
+      "purpose": "Provider administration: list, create/replace by slug (PUT), read masked (GET), patch, delete, and fetch a provider's model list.",
+      "auth": "x-admin-key",
+      "verified": "yes",
+      "notes": "Observed: `PUT /v0/management/providers/wafer` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{\"success\":true,\"slug\":\"wafer\"}`. `GET .../wafer` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases."
+    },
+    "GET /v0/management/providers/*slug": {
+      "purpose": "Provider administration: list, create/replace by slug (PUT), read masked (GET), patch, delete, and fetch a provider's model list.",
+      "auth": "x-admin-key",
+      "verified": "yes",
+      "notes": "Observed: `PUT /v0/management/providers/wafer` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{\"success\":true,\"slug\":\"wafer\"}`. `GET .../wafer` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases."
+    },
+    "GET /v0/management/quota-checker-types": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/quota-checkers": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/quota/status/:key": {
+      "purpose": "Registered in `backend/src/quota_management.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/quotas": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/quotas/:checker_id": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/quotas/:checker_id/history": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/self/me": {
+      "purpose": "Registered in `backend/src/self_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/self/quota": {
+      "purpose": "Registered in `backend/src/self_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/usage/summary": {
+      "purpose": "Registered in `backend/src/usage.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/user-quotas": {
+      "purpose": "Registered in `backend/src/user_quotas.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/management/user-quotas/:name": {
+      "purpose": "Registered in `backend/src/user_quotas.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET /v0/system/logs/recent": {
+      "purpose": "Registered in `backend/src/system_logs.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /v0/system/logs/stream": {
+      "purpose": "Registered in `backend/src/system_logs.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /v1/metadata/lookup": {
+      "purpose": "Registered in `backend/src/models_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /v1/metadata/search": {
+      "purpose": "Registered in `backend/src/models_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /v1/models": {
+      "purpose": "Registered in `backend/src/models_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /v1/muse-code/models": {
+      "purpose": "Registered in `backend/src/models_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET /v1/openrouter/models": {
+      "purpose": "Registered in `backend/src/models_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/background-exploration": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/capture-trace-on-error": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/compaction": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/cooldown": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/exploration-rate": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/failover": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/mcp-enabled": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/stall": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/timeout": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/trusted-proxies": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/config/vision-fallthrough": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/debug": {
+      "purpose": "Registered in `backend/src/debug.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/PATCH /v0/management/system-settings": {
+      "purpose": "Registered in `backend/src/system_settings.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/POST /oauth/authorize": {
+      "purpose": "Registered in `backend/src/oauth_server.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "GET/POST /v0/management/analytics/dashboards": {
+      "purpose": "Registered in `backend/src/analytics.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "GET/POST /v0/management/mcp-servers/:name/keys": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "PATCH /v0/management/self/comment": {
+      "purpose": "Registered in `backend/src/self_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /api/accounts/deviceauth/token": {
+      "purpose": "Registered in `backend/src/oauth/tests.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /completions": {
+      "purpose": "Registered in `backend/src/engine/dispatcher/routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /kimi/api/oauth/device_authorization": {
+      "purpose": "Registered in `backend/src/oauth/tests.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /kimi/api/oauth/token": {
+      "purpose": "Registered in `backend/src/oauth/tests.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /login/oauth/access_token": {
+      "purpose": "Registered in `backend/src/oauth/tests.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /meta/dead": {
+      "purpose": "Registered in `backend/src/oauth/tests.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /meta/device": {
+      "purpose": "Registered in `backend/src/oauth/tests.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /meta/mint": {
+      "purpose": "Registered in `backend/src/oauth/tests.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /meta/token": {
+      "purpose": "Registered in `backend/src/oauth/tests.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /oauth/register": {
+      "purpose": "Registered in `backend/src/oauth_server.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /oauth/revoke": {
+      "purpose": "Registered in `backend/src/oauth_server.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /oauth/token": {
+      "purpose": "Registered in `backend/src/oauth_server.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v0/management/analytics/query": {
+      "purpose": "Registered in `backend/src/analytics.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/cache/vision-descriptor/clear": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/catalog/refresh-all": {
+      "purpose": "Registered in `backend/src/pi_catalog.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/custom-checkers/:id/check": {
+      "purpose": "Registered in `backend/src/custom_checkers.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/custom-checkers/:id/test": {
+      "purpose": "Registered in `backend/src/custom_checkers.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/keys/:name/disable": {
+      "purpose": "Disable one client key by name (workspace offboarding).",
+      "auth": "x-admin-key",
+      "verified": "no",
+      "notes": "Implemented in `infra/scripts/hoja-trefoil-key revoke`; not yet exercised against a live instance."
+    },
+    "POST /v0/management/mcp-oauth/clients/:client_id/revoke": {
+      "purpose": "Registered in `backend/src/mcp_oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/mcp-oauth/tokens/:id/revoke": {
+      "purpose": "Registered in `backend/src/mcp_oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/mcp-servers/:name/keys/:key_id/clear-cooldown": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/mcp-servers/:name/restart": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/mcp-servers/:name/start": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/mcp-servers/:name/stop": {
+      "purpose": "Registered in `backend/src/mcp.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/models/metadata/refresh": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/models/metadata/resolve": {
+      "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/oauth/sessions": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/oauth/sessions/:id/cancel": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/oauth/sessions/:id/manual-code": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/oauth/sessions/:id/prompt": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/oauth/sessions/:id/select": {
+      "purpose": "Registered in `backend/src/oauth.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/pi/resolve-provider": {
+      "purpose": "Registered in `backend/src/pi_resolve.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/providers/fetch-models": {
+      "purpose": "Provider administration: list, create/replace by slug (PUT), read masked (GET), patch, delete, and fetch a provider's model list.",
+      "auth": "x-admin-key",
+      "verified": "yes",
+      "notes": "Observed: `PUT /v0/management/providers/wafer` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{\"success\":true,\"slug\":\"wafer\"}`. `GET .../wafer` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases."
+    },
+    "POST /v0/management/quota/clear": {
+      "purpose": "Registered in `backend/src/quota_management.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/quota/recompute": {
+      "purpose": "Registered in `backend/src/quota_management.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/quotas/:id/check": {
+      "purpose": "Registered in `backend/src/custom_checkers.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/restart": {
+      "purpose": "Registered in `backend/src/restart.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/restore": {
+      "purpose": "Registered in `backend/src/backup.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/self/debug/toggle": {
+      "purpose": "Registered in `backend/src/self_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/self/rotate": {
+      "purpose": "Registered in `backend/src/self_routes.rs`; behaviour not yet described.",
+      "auth": "x-admin-key",
+      "verified": "no"
+    },
+    "POST /v0/management/test": {
+      "purpose": "Manual probe: one request to a configured provider/model to prove reachability and credentials.",
+      "auth": "x-admin-key",
+      "verified": "yes",
+      "notes": "Observed: `{\"provider\":\"wafer\",\"model\":\"GLM-5.2\",\"apiType\":\"chat\"}` -> `{\"success\":true,\"durationMs\":1321,\"response\":\"acknowledged\"}`."
+    },
+    "POST /v1/audio/speech": {
+      "purpose": "Registered in `backend/src/media_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/audio/transcriptions": {
+      "purpose": "Registered in `backend/src/media_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/chat/completions": {
+      "purpose": "OpenAI-compatible chat completions, authenticated with a client key as a bearer token; SSE streaming supported.",
+      "auth": "Bearer <client key>",
+      "verified": "yes",
+      "notes": "Observed: streaming emits `data: {...}` chunks then `data: [DONE]`, with a trailing `usage` chunk. `model` must resolve to an alias, unless `direct/<provider>/<model>` is used to bypass aliases."
+    },
+    "POST /v1/codex/responses": {
+      "purpose": "Registered in `backend/src/engine/dispatcher/routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/completions": {
+      "purpose": "Registered in `backend/src/engine/dispatcher/routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/decisions": {
+      "purpose": "Registered in `backend/src/decisions.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/embeddings": {
+      "purpose": "Registered in `backend/src/media_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/images": {
+      "purpose": "Registered in `backend/src/media_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/images/edits": {
+      "purpose": "Registered in `backend/src/media_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/images/generations": {
+      "purpose": "Registered in `backend/src/media_routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/messages": {
+      "purpose": "Registered in `backend/src/engine/dispatcher/routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/responses": {
+      "purpose": "Registered in `backend/src/engine/dispatcher/routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1/systemone": {
+      "purpose": "Registered in `backend/src/decisions.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    },
+    "POST /v1beta/models/:model_with_action": {
+      "purpose": "Registered in `backend/src/engine/dispatcher/routes.rs`; behaviour not yet described.",
+      "auth": "unknown",
+      "verified": "no"
+    }
+  },
+  "env": {
+    "ADMIN_KEY": {
+      "purpose": "Admin credential for every `/v0/management/*` route, sent as `x-admin-key`.",
+      "verified": "yes"
+    },
+    "ALIAS_SCHEMA_CORPUS": {
+      "purpose": "Read in `backend/src/alias_view.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "DATABASE_MAX_CONNECTIONS": {
+      "purpose": "PostgreSQL pool size.",
+      "verified": "yes"
+    },
+    "DATABASE_URL": {
+      "purpose": "PostgreSQL connection URL; migrations apply automatically at startup.",
+      "verified": "yes"
+    },
+    "DEBUG": {
+      "purpose": "Read in `backend/src/logging.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "ENCRYPTION_KEY": {
+      "purpose": "Enables the `enc:v1:` envelope for provider keys at rest; empty disables encryption and logs a warning.",
+      "verified": "yes"
+    },
+    "KIMI_CODE_OAUTH_HOST": {
+      "purpose": "Read in `backend/src/kimi_oauth.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "KIMI_OAUTH_HOST": {
+      "purpose": "Read in `backend/src/kimi_oauth.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "LOG_LEVEL": {
+      "purpose": "Startup log level: error, warn, info, debug, verbose or silly.",
+      "verified": "yes"
+    },
+    "OAUTH_DIFF_IN": {
+      "purpose": "Read in `backend/src/engine/dispatcher/oauth/native.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "OAUTH_DIFF_OUT": {
+      "purpose": "Read in `backend/src/engine/dispatcher/oauth/native.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "PI_OAUTH_CALLBACK_HOST": {
+      "purpose": "Read in `backend/src/oauth_login.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "PLEXUS_METRICS_CACHE_TTL_MS": {
+      "purpose": "Read in `backend/src/metrics.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "PLEXUS_MODEL_CATALOG_REFRESH": {
+      "purpose": "Read in `backend/src/pi_catalog.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "PLEXUS_PROVIDER_PERFORMANCE_RETENTION_LIMIT": {
+      "purpose": "Read in `backend/src/engine/observability/storage.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "PORT": {
+      "purpose": "Port the backend listens on. The binary reads `PORT`; `TREFOIL_PORT`/`TREFOIL_BIND_ADDRESS` are Compose-only and ignored.",
+      "verified": "yes"
+    },
+    "PROVIDER_SCHEMA_CORPUS": {
+      "purpose": "Read in `backend/src/provider_schema.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "RESPONSES_DIFF_IN": {
+      "purpose": "Read in `backend/src/engine/responses/tests.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "RESPONSES_DIFF_OUT": {
+      "purpose": "Read in `backend/src/engine/responses/tests.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "TREFOIL_CREDENTIAL_KEY": {
+      "purpose": "AES-256-GCM key for OAuth tokens; exactly 64 hex characters. Changing it strands existing rows.",
+      "verified": "yes"
+    },
+    "TREFOIL_OAUTH_DEVICE_ID": {
+      "purpose": "Read in `backend/src/openai_chatgpt_oauth.rs`; behaviour not yet described.",
+      "verified": "no"
+    },
+    "TREFOIL_UI_DIR": {
+      "purpose": "Directory holding the built admin UI; the Nix wrapper points it at the package's share/trefoil/ui.",
+      "verified": "yes"
+    }
+  }
+}

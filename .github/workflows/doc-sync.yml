@@ -1,0 +1,20 @@
+name: doc-sync
+
+# Mirrors the DeepSeek Harness doc-sync discipline: the interaction catalog is
+# generated from source and a completeness guard fails the build when a route or
+# environment variable exists in code but not in docs/interactions.json.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  interactions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify interaction catalog is complete and fresh
+        run: python3 scripts/gen-interactions.py --check
