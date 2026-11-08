@@ -27,6 +27,7 @@
 }
 
 :root {
+  color-scheme: light;
   --background: hsl(0 0% 98%);
   --foreground: hsl(0 0% 9%);
   --card: hsl(0 0% 100%);
@@ -59,6 +60,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: hsl(0 0% 4%);
   --foreground: hsl(0 0% 98%);
   --card: hsl(0 0% 6%);
@@ -110,6 +112,8 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
   --radius-xs: 0; --radius-sm: 0; --radius-md: 0; --radius-lg: 0;
   --radius-xl: 0; --radius-2xl: 0; --radius-3xl: 0; --radius-4xl: 0;
   --font-heading: "Red Hat Display", Geist, ui-sans-serif, system-ui, sans-serif;
@@ -155,6 +159,12 @@ thead th { position: sticky; top: 0; background: var(--card); z-index: 1; }
   letter-spacing: -0.02em;
 }
 * { border-color: var(--border); }
+/* Native <select> popups follow color-scheme; pin options to the popover surface too. */
+select option, select optgroup { background: var(--popover); color: var(--popover-foreground); }
+/* Layer stack — every layer paints an opaque token surface (guarded by src/surfaces.guard.test.ts):
+   z-1  sticky table header (bg-card)   z-20 app header (bg-background)
+   z-30 mobile nav scrim (bg-black/60)  z-40 sidebar (bg-sidebar)
+   z-50 dialog scrim + content (bg-card), select/popover content (bg-popover, portalled last). */
 :focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: var(--muted); }

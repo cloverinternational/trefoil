@@ -6,7 +6,8 @@ import tailwindcss from '@tailwindcss/vite';
 // /v0 and /v1 paths identically to the Plexus reference.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  test: { exclude: ['e2e/**', 'tests/e2e/**', 'node_modules/**'] },
+  // css.include: let src/surfaces.guard.test.ts read globals.css?raw (vitest stubs CSS otherwise).
+  test: { exclude: ['e2e/**', 'tests/e2e/**', 'node_modules/**'], css: { include: [/globals\.css/] } },
   server: {
     proxy: {
       '/v0': 'http://127.0.0.1:8080',
