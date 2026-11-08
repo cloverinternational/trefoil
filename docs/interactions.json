@@ -200,13 +200,13 @@
       "purpose": "Model alias administration: list, and create/replace an alias by id with `{\"type\":..., \"targets\":[{\"provider\":..,\"model\":..}]}`.",
       "auth": "x-admin-key",
       "verified": "yes",
-      "notes": "Observed: `PUT /v0/management/aliases/wafer-glm-5.2` with `{\"type\":\"text\",...}` -> `{\"success\":true,\"slug\":\"wafer-glm-5.2\"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400)."
+      "notes": "Observed: `PUT /v0/management/aliases/<alias>` with `{\"type\":\"text\",...}` -> `{\"success\":true,\"slug\":\"<alias>\"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400)."
     },
     "GET /v0/management/aliases/*slug": {
       "purpose": "Model alias administration: list, and create/replace an alias by id with `{\"type\":..., \"targets\":[{\"provider\":..,\"model\":..}]}`.",
       "auth": "x-admin-key",
       "verified": "yes",
-      "notes": "Observed: `PUT /v0/management/aliases/wafer-glm-5.2` with `{\"type\":\"text\",...}` -> `{\"success\":true,\"slug\":\"wafer-glm-5.2\"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400)."
+      "notes": "Observed: `PUT /v0/management/aliases/<alias>` with `{\"type\":\"text\",...}` -> `{\"success\":true,\"slug\":\"<alias>\"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400)."
     },
     "GET /v0/management/auth/verify": {
       "purpose": "Registered in `backend/src/auth.rs`; behaviour not yet described.",
@@ -350,13 +350,13 @@
       "purpose": "Provider administration: list, create/replace by slug (PUT), read masked (GET), patch, delete, and fetch a provider's model list.",
       "auth": "x-admin-key",
       "verified": "yes",
-      "notes": "Observed: `PUT /v0/management/providers/wafer` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{\"success\":true,\"slug\":\"wafer\"}`. `GET .../wafer` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases."
+      "notes": "Observed: `PUT /v0/management/providers/<slug>` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{\"success\":true,\"slug\":\"<slug>\"}`. `GET .../<slug>` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases."
     },
     "GET /v0/management/providers/*slug": {
       "purpose": "Provider administration: list, create/replace by slug (PUT), read masked (GET), patch, delete, and fetch a provider's model list.",
       "auth": "x-admin-key",
       "verified": "yes",
-      "notes": "Observed: `PUT /v0/management/providers/wafer` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{\"success\":true,\"slug\":\"wafer\"}`. `GET .../wafer` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases."
+      "notes": "Observed: `PUT /v0/management/providers/<slug>` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{\"success\":true,\"slug\":\"<slug>\"}`. `GET .../<slug>` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases."
     },
     "GET /v0/management/quota-checker-types": {
       "purpose": "Registered in `backend/src/config_routes.rs`; behaviour not yet described.",
@@ -622,7 +622,7 @@
       "purpose": "Disable one client key by name (workspace offboarding).",
       "auth": "x-admin-key",
       "verified": "no",
-      "notes": "Implemented in `infra/scripts/hoja-trefoil-key revoke`; not yet exercised against a live instance."
+      "notes": "Implemented in Not yet exercised against a live instance."
     },
     "POST /v0/management/mcp-oauth/clients/:client_id/revoke": {
       "purpose": "Registered in `backend/src/mcp_oauth.rs`; behaviour not yet described.",
@@ -698,7 +698,7 @@
       "purpose": "Provider administration: list, create/replace by slug (PUT), read masked (GET), patch, delete, and fetch a provider's model list.",
       "auth": "x-admin-key",
       "verified": "yes",
-      "notes": "Observed: `PUT /v0/management/providers/wafer` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{\"success\":true,\"slug\":\"wafer\"}`. `GET .../wafer` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases."
+      "notes": "Observed: `PUT /v0/management/providers/<slug>` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{\"success\":true,\"slug\":\"<slug>\"}`. `GET .../<slug>` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases."
     },
     "POST /v0/management/quota/clear": {
       "purpose": "Registered in `backend/src/quota_management.rs`; behaviour not yet described.",
@@ -739,7 +739,7 @@
       "purpose": "Manual probe: one request to a configured provider/model to prove reachability and credentials.",
       "auth": "x-admin-key",
       "verified": "yes",
-      "notes": "Observed: `{\"provider\":\"wafer\",\"model\":\"GLM-5.2\",\"apiType\":\"chat\"}` -> `{\"success\":true,\"durationMs\":1321,\"response\":\"acknowledged\"}`."
+      "notes": "Observed: `{\"provider\":\"<slug>\",\"model\":\"<model>\",\"apiType\":\"chat\"}` -> `{\"success\":true,\"durationMs\":1321,\"response\":\"acknowledged\"}`."
     },
     "POST /v1/audio/speech": {
       "purpose": "Registered in `backend/src/media_routes.rs`; behaviour not yet described.",
@@ -900,6 +900,10 @@
     },
     "TREFOIL_UI_DIR": {
       "purpose": "Directory holding the built admin UI; the Nix wrapper points it at the package's share/trefoil/ui.",
+      "verified": "yes"
+    },
+    "TREFOIL_BIND_ADDRESS": {
+      "purpose": "Interface the HTTP listener binds to. Defaults to 0.0.0.0; set it to 127.0.0.1 to confine the service to loopback behind a proxy.",
       "verified": "yes"
     }
   }

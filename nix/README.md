@@ -51,8 +51,8 @@ The service runs as a dedicated `trefoil` system user with `ProtectSystem=strict
 
 1. **Migrations run at startup** (`sqlx::migrate!()`); PostgreSQL 16 must already
    be reachable via `DATABASE_URL`.
-2. **Hoja's `validate_model_base_url` rejects loopback and private targets.**
-   Pointing Hoja at `http://127.0.0.1:8080/v1` will fail with
-   `Model base URL must not point to a local or private address.` Publish trefoil
-   behind a TLS-terminating proxy at a public name (`https://trefoil.example/v1`)
-   or accept the workspace-wide `HOJA_ALLOW_INSECURE_MODEL_URL=1` downgrade.
+2. **Exposure is a deployment decision, not a trefoil feature.** The module binds
+   loopback by default. If clients on other hosts must reach the API, put a
+   TLS-terminating reverse proxy - or a private network - in front of it. Some
+   client-side HTTP guards refuse loopback and private addresses; the gateway
+   cannot relax that for you.

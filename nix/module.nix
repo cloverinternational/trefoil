@@ -19,9 +19,8 @@ in
       default = "127.0.0.1";
       description = ''
         Interface the backend binds to (`PORT` is configured separately).
-        Note: Hoja's `validate_model_base_url` rejects loopback/private targets,
-        so a public https name in front of this port is required for Hoja to
-        reach trefoil (see HOJA-21).
+        Defaults to loopback. Reach it through a reverse proxy or a private
+        network, and terminate TLS in front of it.
       '';
     };
 
@@ -154,7 +153,7 @@ in
         WorkingDirectory = "/var/lib/trefoil";
         UMask = "0077";
 
-        # Hardening (HOJA-21 acceptance criterion 3).
+        # Hardening.
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         ProtectHome = true;
