@@ -107,7 +107,11 @@ async fn main() {
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(8080);
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+    // Honour an explicit bind address so the service can be confined to loopback
+    // (behind a proxy such as `tailscale serve`) instead of every interface.
+    let bind_address = std::env::var("TREFOIL_BIND_ADDRESS")
+        .unwrap_or_else(|_| "0.0.0.0".to_string());
+    let listener = tokio::net::TcpListener::bind((bind_address.as_str(), port))
         .await
         .expect("failed to bind configured port");
     trefoil_backend::system_logs::event(
