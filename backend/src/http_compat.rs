@@ -197,7 +197,27 @@ pub async fn ui_index() -> Response {
     serve_file(ui_dir().join("index.html")).await
 }
 
-/// SPA routes (no extension) resolve to the shell; assets come from disk.
+/// Join a request path onto the UI directory, rejecting traversal components.
+fn safe_join(dir: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
+    if relative.is_empty() {
+        return None;
+    }
+    let mut joined = dir.to_path_buf();
+    for component in relative.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return None;
+        }
+        joined.push(component);
+    }
+    Some(joined)
+}
+
+/// SPA routes (no extension) resolve to the shell; files come from disk.
+///
+/// The built `index.html` references its bundle with absolute paths
+/// (`/assets/index-<hash>.js`), while the shell itself is mounted at `/ui/`. File
+/// requests are therefore resolved from the UI directory whether they arrive under
+/// the mount (`/ui/assets/...`) or at the root (`/assets/...`).
 pub async fn fallback(request: Request) -> Response {
     let path = request.uri().path().to_owned();
     if path.starts_with("/v1") || path.starts_with("/v0") {
@@ -206,12 +226,27 @@ pub async fn fallback(request: Request) -> Response {
     if path == "/ui" {
         return root_redirect().await;
     }
-    if let Some(file) = path.strip_prefix("/ui/") {
-        // `/ui/:filename` is single-segment; deeper paths hit the SPA fallback.
-        if file.is_empty() || file.contains('/') || !file.contains('.') {
-            return ui_index().await;
+
+    let relative: &str = match path.strip_prefix("/ui/") {
+        Some(rest) => rest,
+        None => path.trim_start_matches('/'),
+    };
+
+    // A final segment containing a dot is a file request; anything else is a
+    // client-side route and receives the shell so the SPA can take over.
+    let looks_like_file = relative
+        .rsplit('/')
+        .next()
+        .is_some_and(|segment| segment.contains('.'));
+
+    if looks_like_file {
+        if let Some(file) = safe_join(&ui_dir(), relative) {
+            if file.is_file() {
+                return serve_file(file).await;
+            }
         }
-        return serve_file(ui_dir().join(file)).await;
+        return not_found();
     }
-    not_found()
+
+    ui_index().await
 }
