@@ -117,8 +117,9 @@ pub fn app(state: AppState) -> Router {
         .merge(system_logs::router())
         .merge(usage::router())
         .route("/health", get(http_compat::health))
-        .route("/", get(http_compat::root_redirect))
-        .route("/ui/", get(http_compat::ui_index))
+        .route("/", get(http_compat::ui_index))
+        .route("/ui/", get(http_compat::root_redirect))
+        .route("/ui", get(http_compat::root_redirect))
         .fallback(http_compat::fallback)
         .layer(axum::middleware::from_fn(
             http_compat::method_not_allowed_as_404,

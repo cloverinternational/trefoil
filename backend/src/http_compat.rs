@@ -190,8 +190,18 @@ async fn serve_file(path: std::path::PathBuf) -> Response {
 pub async fn health() -> Response {
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "OK").into_response()
 }
+fn redirect(location: &str) -> Response {
+    let mut response = StatusCode::FOUND.into_response();
+    if let Ok(value) = header::HeaderValue::from_str(location) {
+        response.headers_mut().insert(header::LOCATION, value);
+    }
+    response
+}
+
+/// The SPA owns `/`; this redirect exists only for links built against the old
+/// `/ui/` mount.
 pub async fn root_redirect() -> Response {
-    (StatusCode::FOUND, [(header::LOCATION, "/ui/")]).into_response()
+    redirect("/")
 }
 pub async fn ui_index() -> Response {
     serve_file(ui_dir().join("index.html")).await
@@ -246,6 +256,13 @@ pub async fn fallback(request: Request) -> Response {
             }
         }
         return not_found();
+    }
+
+    // Client-side route. The router has no basename, so the shell must answer at
+    // the path the route table expects: `/ui/x` is redirected to `/x` rather than
+    // served in place, which would render an empty tree.
+    if path.starts_with("/ui/") {
+        return redirect(&format!("/{relative}"));
     }
 
     ui_index().await
