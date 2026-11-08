@@ -36,13 +36,24 @@ postgres://trefoil:<password>@127.0.0.1:5432/trefoil
 {
   services.trefoil = {
     enable = true;
-    environmentFile = "/run/keys/trefoil.env";
-    databaseUrlFile = "/run/keys/trefoil-database-url";
+    credentials = {
+      env.file = "/run/secrets/trefoil-env";             # secret manager writes this
+      databaseUrl.file = "/run/secrets/trefoil-database-url";
+    };
     address = "127.0.0.1";
     port = 8080;
   };
 }
 ```
+
+`credentials.<name>.file` is only ever a **path**. Anything that materialises secrets
+as files works — sops-nix, agenix, `systemd.credentials`, a cloud agent — and the
+module needs to know none of it. Inline secret values are deliberately rejected
+because the Nix store is world-readable.
+
+Two names are required (`env`, `databaseUrl`); extra ones are staged too and appear
+under `$CREDENTIALS_DIRECTORY`. `environmentFile` and `databaseUrlFile` remain as
+shorthands for the two required names.
 
 The service runs as a dedicated `trefoil` system user with `ProtectSystem=strict`,
 `NoNewPrivileges`, an empty capability set and `MemoryDenyWriteExecute`.

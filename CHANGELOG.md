@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- NixOS module: secrets are declared by name through `services.trefoil.credentials.<name>.file`
+  (staged with `LoadCredential`), so any secret manager that produces files works.
+  `environmentFile` and `databaseUrlFile` remain as shorthands.
 - Admin UI is now served at `/`; `/ui` and `/ui/*` redirect to the root
   equivalent, because the client router has no basename.
 - Admin UI: compact, square-edged redesign across every page (no rounded
