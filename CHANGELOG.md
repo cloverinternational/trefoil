@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Admin UI is now served at `/`; `/ui` and `/ui/*` redirect to the root
+  equivalent, because the client router has no basename.
 - Admin UI: compact, square-edged redesign across every page (no rounded
   corners or shadows, 13px base type, denser tables, cards and forms), a
   brighter destructive color in dark mode, and a full-width layout.
@@ -17,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Nix packaging: `flake.nix` with `packages.default` (backend plus built admin UI)
+  and `nixosModules.default` exposing `services.trefoil`, running the service as a
+  dedicated system user with systemd credentials and hardening.
+- Generated interaction catalog (`docs/interactions.md`) covering every management
+  route and environment variable, verified in CI by
+  `scripts/gen-interactions.py --check`.
 - Admin UI keyboard shortcuts: command palette (Ctrl/⌘+K), `g` + letter
   navigation, `/` to focus search, `[` to collapse the sidebar, `?` for help.
 - Brand assets (`docs/assets/banner.svg`, `docs/assets/logo.svg`) and a UI
@@ -27,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `TREFOIL_BIND_ADDRESS` is honoured by the listener. It was documented and read by
+  Compose, but the server always bound `0.0.0.0`.
+- Admin UI static assets were served as the HTML shell (or 404) instead of the
+  bundle, so the interface failed to load.
 - `Button` ignored `asChild`, so link buttons rendered as a `<button>` wrapping
   an anchor (the Models "Add model" button wrapped onto two lines).
 - Overview used CSS classes that were not defined in this app, leaving an

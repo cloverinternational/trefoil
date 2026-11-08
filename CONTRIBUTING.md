@@ -25,6 +25,24 @@ git clone https://github.com/cloverinternational/trefoil.git && cd trefoil
 npm --prefix frontend ci
 ```
 
+## Scope: what belongs here
+
+Trefoil is a general-purpose gateway. This repository holds behaviour that is true
+for **every** deployment: routing, provider translation, quotas, the admin UI, and
+packaging that does not name a specific operator.
+
+Keep operator-specific policy in the repository that owns it:
+
+| Belongs here | Belongs in your own repo |
+|---|---|
+| A new provider adapter, alias rule or quota check | Which providers *you* enable, and with what credentials |
+| A bug in routing, streaming or the UI | Your internal hostnames, tunnels and network layout |
+| Packaging that works for any operator | Allowlists, tenant provisioning and billing rules |
+| Generic documentation | Company names, ticket ids, customer slugs |
+
+If a change only makes sense with knowledge of your infrastructure, it is an
+operator change - ship it alongside this project rather than inside it.
+
 ## Before you open a pull request
 
 Run the same checks CI runs:
@@ -70,6 +88,9 @@ Also run what your change touches:
 - [ ] Tests added or updated; all checks above pass
 - [ ] Docs and changelog updated where behaviour changed
 - [ ] No secrets, generated files or unrelated formatting churn
+- [ ] No operator-specific policy (company names, internal hosts, ticket ids,
+      customer slugs, or env vars only your deployment sets) - see
+      [Scope](#scope-what-belongs-here)
 
 ## Licensing
 
