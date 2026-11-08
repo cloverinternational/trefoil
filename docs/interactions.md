@@ -11,7 +11,7 @@ catalog cannot silently fall behind the code.
 `verified` means the behaviour below was exercised against a running instance and
 the observed response recorded; everything else is declared but unproven.
 
-**Coverage:** 160 routes, 22 environment variables. Described: 12/160 routes (8%). Verified against a live instance: 11/160 routes.
+**Coverage:** 160 routes, 23 environment variables. Described: 12/160 routes (8%). Verified against a live instance: 11/160 routes.
 
 ## Routes
 
@@ -201,6 +201,7 @@ the observed response recorded; everything else is declared but unproven.
 | `PROVIDER_SCHEMA_CORPUS` | Read in `backend/src/provider_schema.rs`; behaviour not yet described. | no |
 | `RESPONSES_DIFF_IN` | Read in `backend/src/engine/responses/tests.rs`; behaviour not yet described. | no |
 | `RESPONSES_DIFF_OUT` | Read in `backend/src/engine/responses/tests.rs`; behaviour not yet described. | no |
+| `TREFOIL_BIND_ADDRESS` | Interface the HTTP listener binds to. Defaults to 0.0.0.0; set it to 127.0.0.1 to confine the service to loopback behind a proxy. | yes |
 | `TREFOIL_CREDENTIAL_KEY` | AES-256-GCM key for OAuth tokens; exactly 64 hex characters. Changing it strands existing rows. | yes |
 | `TREFOIL_OAUTH_DEVICE_ID` | Read in `backend/src/openai_chatgpt_oauth.rs`; behaviour not yet described. | no |
 | `TREFOIL_UI_DIR` | Directory holding the built admin UI; the Nix wrapper points it at the package's share/trefoil/ui. | yes |
@@ -213,11 +214,11 @@ Observed: `GET /healthz` -> `ok`, HTTP 200, within ~2s of start (backend/src/lib
 
 ### `GET /v0/management/aliases`
 
-Observed: `PUT /v0/management/aliases/wafer-glm-5.2` with `{"type":"text",...}` -> `{"success":true,"slug":"wafer-glm-5.2"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400).
+Observed: `PUT /v0/management/aliases/<alias>` with `{"type":"text",...}` -> `{"success":true,"slug":"<alias>"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400).
 
 ### `GET /v0/management/aliases/*slug`
 
-Observed: `PUT /v0/management/aliases/wafer-glm-5.2` with `{"type":"text",...}` -> `{"success":true,"slug":"wafer-glm-5.2"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400).
+Observed: `PUT /v0/management/aliases/<alias>` with `{"type":"text",...}` -> `{"success":true,"slug":"<alias>"}`. `type` must be one of text|embeddings|transcriptions|speech|image|decisions - `chat` is rejected (HTTP 400).
 
 ### `GET /v0/management/backup`
 
@@ -233,23 +234,23 @@ Observed: `PUT /v0/management/keys/e2e` with `{"secret":...}` -> `{"success":tru
 
 ### `GET /v0/management/providers`
 
-Observed: `PUT /v0/management/providers/wafer` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{"success":true,"slug":"wafer"}`. `GET .../wafer` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases.
+Observed: `PUT /v0/management/providers/<slug>` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{"success":true,"slug":"<slug>"}`. `GET .../<slug>` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases.
 
 ### `GET /v0/management/providers/*slug`
 
-Observed: `PUT /v0/management/providers/wafer` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{"success":true,"slug":"wafer"}`. `GET .../wafer` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases.
+Observed: `PUT /v0/management/providers/<slug>` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{"success":true,"slug":"<slug>"}`. `GET .../<slug>` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases.
 
 ### `POST /v0/management/keys/:name/disable`
 
-Implemented in `infra/scripts/hoja-trefoil-key revoke`; not yet exercised against a live instance.
+Implemented in Not yet exercised against a live instance.
 
 ### `POST /v0/management/providers/fetch-models`
 
-Observed: `PUT /v0/management/providers/wafer` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{"success":true,"slug":"wafer"}`. `GET .../wafer` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases.
+Observed: `PUT /v0/management/providers/<slug>` with `{display_name, api_base_url, api_key, models[], enabled}` -> `{"success":true,"slug":"<slug>"}`. `GET .../<slug>` returns the key masked. A provider's `models` list is NOT a routing table - requests resolve through aliases.
 
 ### `POST /v0/management/test`
 
-Observed: `{"provider":"wafer","model":"GLM-5.2","apiType":"chat"}` -> `{"success":true,"durationMs":1321,"response":"acknowledged"}`.
+Observed: `{"provider":"<slug>","model":"<model>","apiType":"chat"}` -> `{"success":true,"durationMs":1321,"response":"acknowledged"}`.
 
 ### `POST /v1/chat/completions`
 
