@@ -26,3 +26,7 @@ Thumbs.db
 .vscode/
 *.swp
 *.log
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
