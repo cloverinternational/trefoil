@@ -60,7 +60,12 @@ in
           description = "File staged into the unit under this credential name.";
         };
       });
-      default = { };
+      # Conventional paths, so the service installs and starts before any secret
+      # exists; write the files and restart to bring it up.
+      default = {
+        env.file = "/etc/trefoil/env";
+        databaseUrl.file = "/etc/trefoil/database-url";
+      };
       example = lib.literalExpression ''
         {
           env.file = "/run/secrets/trefoil-env";
@@ -115,18 +120,19 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = missingCredentials == [ ];
-        message =
-          "services.trefoil is missing credential(s): "
-          + lib.concatStringsSep ", " missingCredentials
-          + ". Point services.trefoil.credentials.<name>.file at a file your secret manager writes "
-          + "(required: env, databaseUrl), or use the environmentFile/databaseUrlFile shorthands.";
-      }
-    ];
-
-    warnings = lib.optional (cfg.address != "127.0.0.1" && !cfg.openFirewall)
+    # Starting without credentials is intentional: the service installs first and the
+    # operator drops the files in afterwards. Because the credentials are loaded by
+    # systemd, a missing file fails the start attempt and `Restart=on-failure` retries,
+    # so the unit comes up by itself once the files exist.
+    warnings = lib.optionals (missingCredentials != [ ]) [
+      ("services.trefoil is missing credential(s): "
+       + lib.concatStringsSep ", " missingCredentials
+       + ". Expected files: "
+       + lib.concatMapStringsSep ", " toString
+         (lib.mapAttrsToList (_: c: c.file) credentialFiles)
+       + ". The unit will fail to start until they exist.")
+    ]
+    ++ lib.optional (cfg.address != "127.0.0.1" && !cfg.openFirewall)
       "services.trefoil binds ${cfg.address} without openFirewall; TLS must terminate in front of trefoil because its HTTP layer is plain.";
 
     # Dedicated, non-root, no-login system user. Mirrors backend/Dockerfile

@@ -1,0 +1,51 @@
+[Unit]
+Description=trefoil LLM API gateway
+After=network-online.target trefoil-postgres.service
+Wants=network-online.target
+Requires=trefoil-postgres.service
+
+[Service]
+Type=simple
+User=@RUN_USER@
+Group=@RUN_USER@
+WorkingDirectory=@STATE_DIR@
+StateDirectory=trefoil
+UMask=0077
+
+# Secrets are staged per-service by systemd; the values are never in this unit,
+# never in the Nix store, and never in the process environment of the manager.
+LoadCredential=env:@ENV_FILE@
+LoadCredential=databaseUrl:@DB_URL_FILE@
+
+Environment=PORT=8080
+Environment=LOG_LEVEL=info
+# Bind loopback: reach it through a private network or a reverse proxy.
+Environment=TREFOIL_BIND_ADDRESS=127.0.0.1
+ExecStart=@START_SCRIPT@
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+RemoveIPC=true
+KeyringMode=private
+
+[Install]
+WantedBy=multi-user.target

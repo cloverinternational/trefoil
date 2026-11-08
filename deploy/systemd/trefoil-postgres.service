@@ -1,0 +1,21 @@
+[Unit]
+Description=trefoil PostgreSQL
+After=network.target
+
+[Service]
+Type=notify
+User=@RUN_USER@
+Group=@RUN_USER@
+Environment=PGDATA=@STATE_DIR@/pg
+# Loopback only: the gateway is internal infrastructure.
+ExecStart=@PG_BIN@ -D @STATE_DIR@/pg \
+  -c listen_addresses=127.0.0.1 -c port=5432 \
+  -c unix_socket_directories=@STATE_DIR@/pg
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGINT
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
