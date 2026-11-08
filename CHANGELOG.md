@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- NixOS module: installs and starts **before** credentials exist. `credentials`
+  defaults to `/etc/trefoil/env` and `/etc/trefoil/database-url`, and a missing file
+  is a warning rather than an evaluation failure, so the files can be added after the
+  service is installed and a restart brings it up.
 - NixOS module: secrets are declared by name through `services.trefoil.credentials.<name>.file`
   (staged with `LoadCredential`), so any secret manager that produces files works.
   `environmentFile` and `databaseUrlFile` remain as shorthands.
@@ -22,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Plain systemd units and an entrypoint under `deploy/` for hosts that are not
+  NixOS; both bind loopback and read credentials through `LoadCredential`.
 - Nix packaging: `flake.nix` with `packages.default` (backend plus built admin UI)
   and `nixosModules.default` exposing `services.trefoil`, running the service as a
   dedicated system user with systemd credentials and hardening.

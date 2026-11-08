@@ -1,0 +1,14 @@
+#!/bin/sh
+# Entrypoint for trefoil.service. Reads secrets systemd staged under
+# $CREDENTIALS_DIRECTORY (LoadCredential), so the unit's own user never needs
+# access to the source files and nothing secret is in its environment.
+set -eu
+set -a
+. "$CREDENTIALS_DIRECTORY/env"
+set +a
+export DATABASE_URL="$(cat "$CREDENTIALS_DIRECTORY/databaseUrl")"
+for key in ADMIN_KEY TREFOIL_CREDENTIAL_KEY DATABASE_URL; do
+  eval "value=\${$key:-}"
+  [ -n "$value" ] || { echo "trefoil: required secret $key is empty" >&2; exit 1; }
+done
+exec @TREFOIL_BIN@
